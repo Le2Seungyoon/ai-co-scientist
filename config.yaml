@@ -1,0 +1,55 @@
+agents:
+  pm: { port: 9001 }
+  research: { port: 9002 }
+  analysis: { port: 9003 }
+  coder: { port: 9004 }
+  executor: { port: 9005 }
+  critic: { port: 9006 }
+  harness_engineer: { port: 9007 }
+
+paths:
+  shared_log_db: "runtime/shared_log.sqlite3"
+  rules_dir: "rules"
+  wandb_db: "runtime/wandb.sqlite3"
+  lightning_db: "runtime/lightning.sqlite3"
+  dacon_db: "runtime/dacon.sqlite3"
+  toy_data_dir: "runtime/toy_data"
+
+mock:
+  llm: true
+  lightning: true
+  dacon: true
+  wandb: true
+  websearch: true
+
+pm:
+  max_cycles_default: 3
+  coder_retry_limit: 2
+  replan_limit: 2
+  poll_interval_s: 0.5
+  poll_timeout_s: 120
+  critic_round_limit: 2
+  human_resume_limit: 1
+
+executor_stub:
+  run_delay_s: 0.2
+
+executor:
+  run_timeout_s: 5
+
+coder:
+  self_correct_limit: 1
+  smoke_timeout_s: 5
+  workspace_dir: "runtime/workspace"
+
+llm:
+  provider: mock       # mock | gemini(M5+ 자리)
+  scenario: default    # env COSCIENTIST_MOCKLLM_SCENARIO가 우선
+
+analysis:
+  overfit_gap: 0.1
+
+harness:
+  failure_repeat_threshold: 2
+  escalation_window: 5
+  escalation_threshold: 2

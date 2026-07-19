@@ -1,0 +1,31 @@
+.venv/
+.env
+.env.*
+!.env.example
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+runtime/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# 대회 데이터 — 용량 문제로 커밋하지 않음 (data/README.md만 추적)
+data/*
+!data/README.md
+
+# 빌드 산출물
+build/
+dist/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# superpowers
+.superpowers
+
+# 설계 노트/참고 자료 — 로컬 전용
+docs/
