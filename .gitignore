@@ -10,6 +10,7 @@ runtime/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+.claude/
 
 # 대회 데이터 — 용량 문제로 커밋하지 않음 (data/README.md만 추적)
 data/*
@@ -29,3 +30,6 @@ Thumbs.db
 
 # 설계 노트/참고 자료 — 로컬 전용
 docs/
+
+# wandb 로그 - 로컬 전용
+wandb/

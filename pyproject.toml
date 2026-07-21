@@ -23,6 +23,7 @@ baseline = [
     "pandas>=2.2",
     "scikit-learn>=1.5",
     "tqdm>=4.66",
+    "wandb>=0.18",
 ]
 [build-system]
 requires = ["hatchling"]

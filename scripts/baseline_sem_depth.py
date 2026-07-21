@@ -28,8 +28,11 @@ import cv2
 import numpy as np
 import torch
 import torch.nn as nn
+import wandb
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
+
+from ai_co_scientist.core.config import load_dotenv
 
 CFG = {
     "WIDTH": 48,
@@ -160,9 +163,14 @@ def train(model, optimizer, train_loader, val_loader, device, epochs):
             train_loss.append(loss.item())
 
         val_loss, val_rmse = validation(model, criterion, val_loader, device)
+        train_loss_mean = np.mean(train_loss)
         print(
-            f"Epoch : [{epoch}] Train Loss : [{np.mean(train_loss):.5f}] "
+            f"Epoch : [{epoch}] Train Loss : [{train_loss_mean:.5f}] "
             f"Val Loss : [{val_loss:.5f}] Val RMSE : [{val_rmse:.5f}]"
+        )
+        wandb.log(
+            {"train_loss": train_loss_mean, "val_loss": val_loss, "val_rmse": val_rmse},
+            step=epoch,
         )
 
         if best_score > val_rmse:
@@ -220,6 +228,18 @@ def main():
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     print(f"device: {device}")
 
+    load_dotenv()
+    wandb_mode = "online" if os.environ.get("WANDB_API_KEY") else "disabled"
+    wandb.init(
+        project=os.environ.get("WANDB_PROJECT", "ai-co-scientist"),
+        entity=os.environ.get("WANDB_ENTITY") or None,
+        name=f"baseline-epochs{args.epochs}",
+        config={**CFG, "epochs": args.epochs},
+        mode=wandb_mode,
+    )
+    if wandb_mode == "disabled":
+        print("WANDB_API_KEY not set -- wandb logging disabled (see .env)")
+
     seed_everything(CFG["SEED"])
 
     simulation_sem_paths = sorted(glob.glob(str(data_dir / "simulation_data" / "SEM" / "*" / "*" / "*.png")))
@@ -259,6 +279,7 @@ def main():
 
     zip_path = inference(infer_model, test_loader, device, output_dir)
     print(f"submission written to {zip_path}")
+    wandb.finish()
 
 
 if __name__ == "__main__":
