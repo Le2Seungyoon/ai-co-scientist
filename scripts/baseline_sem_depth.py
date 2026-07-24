@@ -131,8 +131,8 @@ def validation(model, criterion, val_loader, device):
             model_pred = model(sem)
             loss = criterion(model_pred, depth)
 
-            pred = (model_pred * 255.0).type(torch.int8).float()
-            true = (depth * 255.0).type(torch.int8).float()
+            pred = (model_pred * 255.0).round().clamp(0, 255)
+            true = (depth * 255.0).round().clamp(0, 255)
             b_rmse = torch.sqrt(rmse(pred, true))
 
             val_loss.append(loss.item())
