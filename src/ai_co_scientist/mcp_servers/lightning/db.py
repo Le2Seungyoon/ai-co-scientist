@@ -30,6 +30,10 @@ def _connect(db_path: str):
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA journal_mode=WAL")
         con.executescript(_SCHEMA)
+        try:
+            con.execute("ALTER TABLE jobs ADD COLUMN deadline REAL")
+        except sqlite3.OperationalError:
+            pass  # 이미 마이그레이션됨(컬럼 존재)
         yield con
         con.commit()
     finally:
@@ -61,11 +65,12 @@ def deduct(db_path: str, amount: float) -> bool:
 
 def save_job(
     db_path: str, job_id: str, status: str, metrics: dict | None, artifacts: dict, detail: str,
+    deadline: float | None = None,
 ) -> None:
     with _connect(db_path) as con:
         con.execute(
-            "INSERT OR REPLACE INTO jobs (job_id, status, metrics, artifacts, detail, ts) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO jobs (job_id, status, metrics, artifacts, detail, ts, deadline) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 job_id,
                 status,
@@ -73,8 +78,14 @@ def save_job(
                 json.dumps(artifacts, ensure_ascii=False),
                 detail,
                 time.time(),
+                deadline,
             ),
         )
+
+
+def save_running(db_path: str, job_id: str, deadline: float) -> None:
+    """real 백엔드용 — 원격 잡 제출 직후 논터미널 상태로 기록(폴링 대상)."""
+    save_job(db_path, job_id, "running", None, {}, "", deadline=deadline)
 
 
 def get_job(db_path: str, job_id: str) -> dict | None:
@@ -87,4 +98,5 @@ def get_job(db_path: str, job_id: str) -> dict | None:
         "metrics": json.loads(row["metrics"]) if row["metrics"] is not None else None,
         "artifacts": json.loads(row["artifacts"]),
         "detail": row["detail"],
+        "deadline": row["deadline"],
     }

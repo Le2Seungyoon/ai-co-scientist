@@ -25,6 +25,9 @@ baseline = [
     "tqdm>=4.66",
     "wandb>=0.18",
 ]
+lightning = [
+    "lightning-sdk>=2025",
+]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

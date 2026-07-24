@@ -71,6 +71,27 @@ DACON이 forum(https://dacon.io/forum/403557)에 공식 배포하는 `dacon_subm
    # --cpt-id/--team-name 생략 시 .env 값 사용. 성공 시 {'isSubmitted': True, 'detail': 'Success', ...}
    ```
 
+### 4. Lightning AI GPU 잡 제출 활성화
+
+`mcp_servers/lightning/server.py`의 `_real_submit_job`/`_real_poll_job`/`_real_get_credits`가
+`lightning-sdk`로 원격 GPU(기본 T4)에 잡을 제출한다. mock과 달리 **비동기**다 — `submit_job`은
+잡을 던지고 즉시 `"running"`으로 반환하고, `poll_job`을 호출할 때마다 실제 상태를 조회한다.
+로컬 entrypoint 스크립트 하나만 이미지 안으로 base64 인라인해 실행하는 구조라, 별도 데이터
+파일에 의존하는 스크립트는 아직 지원 밖이다.
+
+1. https://lightning.ai → Settings → API Key 발급, `.env`의 `LIGHTNING_API_KEY`/
+   `LIGHTNING_USER_ID`/`LIGHTNING_TEAMSPACE` 채움
+2. `uv sync --group lightning`으로 `lightning-sdk` 설치
+3. `config.yaml`의 `mock.lightning`을 `false`로 바꾸면 Executor가 사이클 안에서 실제 T4에 제출한다.
+   수동으로 한 번만 검증하려면:
+   ```bash
+   uv run --group lightning python scripts/lightning_submit.py path/to/entrypoint.py
+   ```
+4. GPU 종류는 `COSCIENTIST_LIGHTNING_MACHINE`(기본 `T4`), 이미지는
+   `COSCIENTIST_LIGHTNING_IMAGE`(기본 `pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime`) 환경변수로 override 가능.
+   크레딧은 teamspace 잔액을 그대로 조회한다 — 리필 주기는 미확인(스펙 §7-②)이라 소진 시
+   "시간으로 해결" 대기 로직은 아직 Executor/PM 쪽에 배선돼 있지 않다.
+
 ## 프로젝트 구조
 
 ```
