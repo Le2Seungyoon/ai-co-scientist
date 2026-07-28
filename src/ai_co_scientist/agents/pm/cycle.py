@@ -389,8 +389,10 @@ async def _log_harness_action(cycle_id: int, proposal: HarnessProposal) -> None:
 async def run_cycles(n: int) -> list[dict]:
     """외곽 드라이버 — n 사이클 순환, 에스컬레이션 시 중단."""
     cfg = load_config()
+    # 실 LLM 에이전트는 응답까지 수 분 걸릴 수 있음 — 기본 60s면 coder에서 끊긴다
+    a2a_timeout = cfg["pm"].get("a2a_timeout_s", 60.0)
     clients = {
-        name: PMClient(f"http://127.0.0.1:{agent['port']}")
+        name: PMClient(f"http://127.0.0.1:{agent['port']}", timeout=a2a_timeout)
         for name, agent in cfg["agents"].items() if name != "pm"
     }
     pm = PMCycle(clients)
@@ -405,7 +407,8 @@ async def run_cycles(n: int) -> list[dict]:
                 "analysis_critic_rounds": 0, **carry,
             }
             final = await pm.graph.ainvoke(state)
-            print(f"[pm] cycle {cycle_id} outcome={final['outcome']}")
+            # flush — 파일 리다이렉트 감독 시 사이클 진행이 실시간으로 보여야 함
+            print(f"[pm] cycle {cycle_id} outcome={final['outcome']}", flush=True)
             results.append(dict(final))
 
             # Harness 트리거 감지 (결정적) — 사이클 종료마다 확인

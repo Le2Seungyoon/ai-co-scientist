@@ -24,6 +24,7 @@ mock:
 
 pm:
   max_cycles_default: 3
+  a2a_timeout_s: 600     # 에이전트 응답 대기 — 실 LLM은 self-correct 포함 수 분 소요
   coder_retry_limit: 2
   replan_limit: 2
   poll_interval_s: 0.5
@@ -43,8 +44,14 @@ coder:
   workspace_dir: "runtime/workspace"
 
 llm:
-  provider: mock       # mock | gemini(M5+ 자리)
-  scenario: default    # env COSCIENTIST_MOCKLLM_SCENARIO가 우선
+  provider: mock       # mock | gemini — env COSCIENTIST_LLM_PROVIDER가 우선.
+                       # 기본은 mock 유지(테스트 오프라인 불변식) — 실 기동 시 env로 gemini 켠다
+  scenario: default    # env COSCIENTIST_MOCKLLM_SCENARIO가 우선 (mock 전용)
+  gemini:
+    model: gemma-4-31b-it   # RPD 무제한 (AI Studio free tier). role_models로 역할별 override 가능
+    rpm: 20
+    max_retries: 3
+    timeout_s: 300       # thinking 모델 — 코드 생성 응답이 수 분 걸릴 수 있음
 
 analysis:
   overfit_gap: 0.1

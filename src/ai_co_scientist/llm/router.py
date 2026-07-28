@@ -1,4 +1,4 @@
-"""역할별 LLM 라우터 — M3: MockLLM(결정적 시나리오)만. Gemini는 자리(M5+)."""
+"""역할별 LLM 라우터 — mock(결정적 시나리오) | gemini(실 API, gemini.py 위임)."""
 import os
 
 from ai_co_scientist.core.config import load_config
@@ -8,7 +8,9 @@ from ai_co_scientist.llm.scenarios import SCENARIOS
 class LLMRouter:
     def __init__(self, scenario: str | None = None):
         cfg = load_config()["llm"]
-        provider = cfg["provider"]
+        # env가 config보다 우선 (COSCIENTIST_MOCKLLM_SCENARIO와 동일 패턴) —
+        # config 기본은 mock으로 두고(테스트 오프라인 불변식) 실 기동만 env로 전환
+        provider = os.environ.get("COSCIENTIST_LLM_PROVIDER") or cfg["provider"]
         if provider == "gemini":
             from ai_co_scientist.llm.gemini import GeminiRouter
             self._delegate = GeminiRouter()

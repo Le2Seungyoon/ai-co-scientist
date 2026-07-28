@@ -63,14 +63,24 @@ def test_critic_revise_scenario_revises_once():
     assert second["verdict"] == "pass"
 
 
-def test_gemini_provider_constructs_but_not_implemented(monkeypatch):
+def test_gemini_provider_without_key_raises(monkeypatch):
     from ai_co_scientist.core import config as config_module
     cfg = {**config_module.load_config()}
     cfg["llm"] = {**cfg["llm"], "provider": "gemini"}
     monkeypatch.setattr("ai_co_scientist.llm.router.load_config", lambda: cfg)
-    router = LLMRouter()          # 생성은 성공 (골격)
-    with pytest.raises(NotImplementedError):
-        router.invoke("research", {"cycle_id": 1})
+    # 빈 값으로 선점 — load_dotenv는 기존 키를 덮지 않으므로 .env가 있어도 결정적
+    monkeypatch.setenv("GOOGLE_API_KEY", "")
+    with pytest.raises(RuntimeError, match="GOOGLE_API_KEY"):
+        LLMRouter()
+
+
+def test_env_provider_override_selects_gemini(monkeypatch):
+    # config는 mock이어도 COSCIENTIST_LLM_PROVIDER=gemini가 우선 (실 기동 스위치)
+    from ai_co_scientist.llm.gemini import GeminiRouter
+    monkeypatch.setenv("COSCIENTIST_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GOOGLE_API_KEY", "dummy-key-no-network")
+    router = LLMRouter()
+    assert isinstance(router._delegate, GeminiRouter)  # 생성만 — invoke(네트워크)는 안 함
 
 
 def test_unknown_provider_raises(monkeypatch):
