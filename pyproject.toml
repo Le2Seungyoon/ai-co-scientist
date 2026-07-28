@@ -24,6 +24,8 @@ baseline = [
     "scikit-learn>=1.5",
     "tqdm>=4.66",
     "wandb>=0.18",
+    "segmentation-models-pytorch>=0.3",
+    "matplotlib>=3.11.1",
 ]
 lightning = [
     "lightning-sdk>=2025",
