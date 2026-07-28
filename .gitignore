@@ -11,6 +11,7 @@ runtime/
 *.sqlite3-wal
 *.sqlite3-shm
 .claude/
+CLAUDE.md
 
 # 대회 데이터 — 용량 문제로 커밋하지 않음 (data/README.md만 추적)
 data/*
