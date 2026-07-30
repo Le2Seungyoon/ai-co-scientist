@@ -130,6 +130,17 @@ def build_cache(data_dir: Path, cache_dir: Path) -> None:
     print(f"cache built at {cache_dir}: sim={len(sem)}, test={len(test)}")
 
 
+def build_sim_case_cache(data_dir: Path, cache_dir: Path) -> None:
+    """sim_sem.npy와 동일 순서(sorted glob)로 case 라벨(1~4)을 파생 저장 — 이미지 로드 없이 경로만.
+
+    case를 통째로 val로 격리하는 leave-one-case-out 검증용(train↔val 분포차 → sim→real 일반화 프록시).
+    """
+    sem = sorted(glob.glob(str(data_dir / "simulation_data" / "SEM" / "*" / "*" / "*.png")))
+    case = np.array([int(Path(p).parts[-3].split("_")[1]) for p in sem], dtype=np.int8)
+    np.save(cache_dir / "sim_case.npy", case)
+    print(f"sim_case cache: {len(case)} imgs, cases {sorted(set(case.tolist()))}", flush=True)
+
+
 def build_realproxy_cache(data_dir: Path, cache_dir: Path) -> None:
     """실측 train SEM + 사이트별 평균 depth를 캐시 (도메인 매칭 프록시용).
 
@@ -351,6 +362,8 @@ def main():
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--train-subsample", type=int, default=0,
                     help="학습 표본 상한 (0=전체). 저비용 스크리닝용 데이터 축소")
+    ap.add_argument("--val-case", type=int, default=0,
+                    help="N(1~4): Case_N을 통째로 val로 격리(leave-one-case-out). 0=기존 랜덤분할")
     ap.add_argument("--val-subsample", type=int, default=0,
                     help="검증 표본 상한 (0=전체). 스크리닝 시 검증도 빠르게")
     ap.add_argument("--hflip", action="store_true")
@@ -391,11 +404,26 @@ def main():
         rng = np.random.default_rng(args.seed)
         return np.sort(rng.choice(np.arange(lo, hi), size=cap, replace=False))
 
+    def subsample_pool(pool, cap):
+        """임의 인덱스 배열 pool에서 최대 cap개 무작위 추출(정렬)."""
+        if cap <= 0 or cap >= len(pool):
+            return np.sort(pool)
+        rng = np.random.default_rng(args.seed)
+        return np.sort(rng.choice(pool, size=cap, replace=False))
+
     hm_ref = build_histmatch_ref(cache_dir) if args.preproc == "histmatch" else None
     fda_ref = build_fda_ref(cache_dir) if args.fda_beta > 0 else None
 
-    tr_idx = subsample(0, n_train, args.train_subsample)
-    va_idx = subsample(n_train, len(sem), args.val_subsample)
+    if args.val_case > 0:  # leave-one-case-out: Case_N 통째 격리 (train↔val 분포차 = 일반화 프록시)
+        if not (cache_dir / "sim_case.npy").exists():
+            build_sim_case_cache(data_dir, cache_dir)
+        case = np.load(cache_dir / "sim_case.npy")
+        tr_idx = subsample_pool(np.where(case != args.val_case)[0], args.train_subsample)
+        va_idx = subsample_pool(np.where(case == args.val_case)[0], args.val_subsample)
+        print(f"[val-case] Case_{args.val_case} 격리: train {len(tr_idx)} / val {len(va_idx)}", flush=True)
+    else:
+        tr_idx = subsample(0, n_train, args.train_subsample)
+        va_idx = subsample(n_train, len(sem), args.val_subsample)
     # mmap fancy-index는 메모리로 로드됨 — 스크리닝의 작은 cap에서만 쓰고, 전체(slice)는 mmap 유지
     train_ds = AugmentDataset(sem[tr_idx], depth[tr_idx], hflip=args.hflip,
                               preproc=args.preproc, histmatch_ref=hm_ref, blur_aug=args.blur_aug,
