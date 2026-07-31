@@ -203,25 +203,51 @@ class AugmentDataset(Dataset):
 
     def __init__(self, sem: np.ndarray, depth: np.ndarray, hflip: bool, preproc: str = "none",
                  histmatch_ref: np.ndarray | None = None, blur_aug: float = 0.0,
-                 fda_ref: np.ndarray | None = None, fda_beta: float = 0.0):
+                 fda_ref: np.ndarray | None = None, fda_beta: float = 0.0,
+                 robust: dict | None = None):
         self.sem, self.depth, self.hflip, self.preproc = sem, depth, hflip, preproc
         self.histmatch_ref = histmatch_ref  # 데이터셋 속성 → 워커에 피클됨
         self.blur_aug = blur_aug  # >0이면 σ∈(0.1,blur_aug] 랜덤 블러(텍스처 강건성, 도메인 갭)
         self.fda_ref, self.fda_beta = fda_ref, fda_beta  # FDA: 실측 진폭 스펙트럼 공여 풀
+        # robust: domain-randomization 증강 세트(밝기/대비/감마/노이즈 + vflip/rot180). point-매칭이
+        # 아니라 학습 분포를 넓혀 test 분포 차이에 강건하게. 기하 변형은 SEM/Depth 동기 적용.
+        self.robust = robust or {}
 
     def __len__(self):
         return len(self.sem)
+
+    def _photometric(self, sem):
+        """SEM에만 적용하는 광도 증강 (depth는 불변)."""
+        r = self.robust
+        x = sem.astype(np.float32)
+        if r.get("brightness", 0) > 0:
+            x *= random.uniform(1 - r["brightness"], 1 + r["brightness"])
+        if r.get("contrast", 0) > 0:
+            m = float(x.mean())
+            x = (x - m) * random.uniform(1 - r["contrast"], 1 + r["contrast"]) + m
+        if r.get("gamma", 0) > 0:
+            g = random.uniform(1 - r["gamma"], 1 + r["gamma"])
+            x = 255.0 * np.clip(x / 255.0, 0, 1) ** g
+        if r.get("noise", 0) > 0:
+            x = x + np.random.normal(0, r["noise"] * 255.0, x.shape)
+        return np.clip(x, 0, 255).astype(np.uint8)
 
     def __getitem__(self, i):
         sem, depth = self.sem[i], self.depth[i]
         if self.hflip and random.random() < 0.5:
             sem, depth = sem[:, ::-1], depth[:, ::-1]
+        if self.robust.get("vflip") and random.random() < 0.5:
+            sem, depth = sem[::-1], depth[::-1]
+        if self.robust.get("rot180") and random.random() < 0.5:
+            sem, depth = sem[::-1, ::-1], depth[::-1, ::-1]
         sem = np.ascontiguousarray(sem)
         if self.fda_beta > 0 and self.fda_ref is not None:
             ref = self.fda_ref[random.randrange(len(self.fda_ref))]
             sem = fda_transform(sem, ref, self.fda_beta)
         if self.blur_aug > 0 and random.random() < 0.5:
             sem = cv2.GaussianBlur(sem, (0, 0), random.uniform(0.1, self.blur_aug))
+        if self.robust:
+            sem = self._photometric(sem)
         sem = apply_preproc(sem, self.preproc, self.histmatch_ref)
         return (torch.from_numpy(sem).unsqueeze(0),
                 torch.from_numpy(np.ascontiguousarray(depth)).unsqueeze(0).float() / 255.0)
@@ -356,6 +382,13 @@ def main():
     ap.add_argument("--no-amp", action="store_true", help="AMP 끄기 (트랜스포머 fp16 발산 회피)")
     ap.add_argument("--blur-aug", type=float, default=0.0, help="랜덤 블러 최대 σ (텍스처 강건성, 0=off)")
     ap.add_argument("--fda-beta", type=float, default=0.0, help="FDA 진폭교환 대역 비율 (0=off, 예: 0.01/0.1)")
+    # domain-randomization 강건성 증강 (test 분포 차이 대비 — point-매칭 대신 분포 확장)
+    ap.add_argument("--aug-brightness", type=float, default=0.0, help="밝기 ±비율 (예: 0.3)")
+    ap.add_argument("--aug-contrast", type=float, default=0.0, help="대비 ±비율")
+    ap.add_argument("--aug-gamma", type=float, default=0.0, help="감마 ±비율")
+    ap.add_argument("--aug-noise", type=float, default=0.0, help="가우시안 노이즈 σ(0-1 비율)")
+    ap.add_argument("--aug-vflip", action="store_true", help="수직 플립 (SEM/Depth 동기)")
+    ap.add_argument("--aug-rot180", action="store_true", help="180도 회전 (SEM/Depth 동기)")
     ap.add_argument("--clamp-lo", type=float, default=0.0, help="추론 예측 clamp 하한 (EDA: 25)")
     ap.add_argument("--clamp-hi", type=float, default=255.0, help="추론 예측 clamp 상한 (EDA: 170)")
     ap.add_argument("--tta", action="store_true", help="추론 시 hflip/vflip TTA 평균")
@@ -413,6 +446,10 @@ def main():
 
     hm_ref = build_histmatch_ref(cache_dir) if args.preproc == "histmatch" else None
     fda_ref = build_fda_ref(cache_dir) if args.fda_beta > 0 else None
+    robust = {"brightness": args.aug_brightness, "contrast": args.aug_contrast,
+              "gamma": args.aug_gamma, "noise": args.aug_noise,
+              "vflip": args.aug_vflip, "rot180": args.aug_rot180}
+    robust = robust if any(robust.values()) else None  # 하나라도 켜지면 활성
 
     if args.val_case > 0:  # leave-one-case-out: Case_N 통째 격리 (train↔val 분포차 = 일반화 프록시)
         if not (cache_dir / "sim_case.npy").exists():
@@ -427,7 +464,7 @@ def main():
     # mmap fancy-index는 메모리로 로드됨 — 스크리닝의 작은 cap에서만 쓰고, 전체(slice)는 mmap 유지
     train_ds = AugmentDataset(sem[tr_idx], depth[tr_idx], hflip=args.hflip,
                               preproc=args.preproc, histmatch_ref=hm_ref, blur_aug=args.blur_aug,
-                              fda_ref=fda_ref, fda_beta=args.fda_beta)
+                              fda_ref=fda_ref, fda_beta=args.fda_beta, robust=robust)
     # val은 clean sim (FDA/블러 미적용) — sim-val을 무-FDA 챔피언과 공정 비교하기 위함.
     # FDA를 '증강'으로 보고 clean sim-val을 낮추는 β를 찾는 스크리닝 (sim-val↔리더보드 상관 활용).
     val_ds = AugmentDataset(sem[va_idx], depth[va_idx], hflip=False,
@@ -453,7 +490,7 @@ def main():
                 "seed": args.seed, "train_subsample": args.train_subsample,
                 "val_subsample": args.val_subsample, "preproc": args.preproc,
                 "blur_aug": args.blur_aug, "warmup_epochs": args.warmup_epochs,
-                "grad_clip": args.grad_clip, "fda_beta": args.fda_beta},
+                "grad_clip": args.grad_clip, "fda_beta": args.fda_beta, "robust": robust},
         mode="online" if os.environ.get("WANDB_API_KEY") else "disabled",
     )
 
