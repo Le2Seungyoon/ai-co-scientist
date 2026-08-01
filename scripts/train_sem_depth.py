@@ -309,14 +309,14 @@ class SmpModel(nn.Module):
     unetpp/manet. DPT는 ViT 고정 크기(224) 필요, 나머지는 96×64(32 배수).
     """
 
-    def __init__(self, arch: str, encoder: str, in_size: tuple[int, int]):
+    def __init__(self, arch: str, encoder: str, in_size: tuple[int, int], in_channels: int = 1):
         super().__init__()
         import segmentation_models_pytorch as smp
         archs = {"unet": smp.Unet, "segformer": smp.Segformer, "dpt": smp.DPT,
                  "fpn": smp.FPN, "deeplabv3plus": smp.DeepLabV3Plus,
                  "unetpp": smp.UnetPlusPlus, "manet": smp.MAnet}
         self.net = archs[arch](encoder_name=encoder, encoder_weights="imagenet",
-                               in_channels=1, classes=1)
+                               in_channels=in_channels, classes=1)
         self._in = in_size
 
     def forward(self, x):
@@ -336,16 +336,16 @@ def predict_tta(model, batch, tta: bool):
     return pred
 
 
-def make_model(arch: str, width: int) -> nn.Module:
+def make_model(arch: str, width: int, in_channels: int = 1) -> nn.Module:
     if arch == "mlp":
         return BaselineMLP()
     if arch == "unet":
         return UNetSmall(width)
     if arch.startswith("pretrained:"):  # 하위호환: pretrained:resnet18 → smp Unet
-        return SmpModel("unet", arch.split(":", 1)[1], (96, 64))
+        return SmpModel("unet", arch.split(":", 1)[1], (96, 64), in_channels)
     if arch.startswith("smp:"):  # smp:<arch>:<encoder> (예: smp:segformer:mit_b0)
         _, a, enc = arch.split(":", 2)
-        return SmpModel(a, enc, (224, 224) if a == "dpt" else (96, 64))
+        return SmpModel(a, enc, (224, 224) if a == "dpt" else (96, 64), in_channels)
     raise ValueError(arch)
 
 
