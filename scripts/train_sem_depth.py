@@ -14,7 +14,6 @@ import glob
 import json
 import os
 import random
-import zipfile
 from pathlib import Path
 
 import cv2
@@ -22,73 +21,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import wandb
-from torch.utils.data import DataLoader, Dataset, TensorDataset
+from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
 H, W = 72, 48
-
-# ── 전처리 (SEM 입력에만 적용; depth 타겟은 항상 /255) ────────────
-# 도메인-중립 기법(standardize/clahe)은 train sim·val sim·test real에 동일 적용 → sim-val로 판정 가능.
-# 도메인-갭 기법(histmatch: sim→real)은 sim에만 적용 → sim-val로 측정 불가, real 프록시/제출 필요.
-# CLAHE는 지연 생성이라 워커(Windows spawn)에서 각자 만들어짐 → 전역 OK.
-# 반면 histmatch 참조 CDF는 런타임 값이라 전역으로 두면 워커에 안 넘어감 →
-# 반드시 ref_cdf 인자로 전달(데이터셋 속성으로 피클되게). (E2b 크래시 교훈)
-_CLAHE = None
-
-
-def apply_preproc(img_u8: np.ndarray, mode: str, ref_cdf: np.ndarray | None = None) -> np.ndarray:
-    """uint8 (H,W) → float32 (H,W). 정규화까지 포함해 모델 입력으로 바로 쓸 수 있게 반환."""
-    if mode == "none":
-        return img_u8.astype(np.float32) / 255.0
-    if mode == "standardize":
-        f = img_u8.astype(np.float32)
-        return (f - f.mean()) / (f.std() + 1e-6)
-    if mode == "clahe":
-        global _CLAHE
-        if _CLAHE is None:
-            _CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        return _CLAHE.apply(img_u8).astype(np.float32) / 255.0
-    if mode == "histmatch":
-        # 실측 참조 CDF로 히스토그램 매칭 (sim→real 도메인 갭 축소 가설)
-        if ref_cdf is None:
-            raise ValueError("histmatch에는 ref_cdf 필요 (데이터셋 속성으로 전달)")
-        src = img_u8.ravel()
-        hist = np.bincount(src, minlength=256).astype(np.float64)
-        src_cdf = np.cumsum(hist) / src.size
-        lut = np.interp(src_cdf, ref_cdf, np.arange(256)).astype(np.uint8)
-        return lut[img_u8].astype(np.float32) / 255.0
-    raise ValueError(f"unknown preproc: {mode}")
-
-
-def build_histmatch_ref(cache_dir: Path) -> np.ndarray:
-    """실측 test SEM의 평균 CDF — histmatch 참조(sim을 실측 밝기 분포로 맞춤)."""
-    real = np.load(cache_dir / "test_sem.npy", mmap_mode="r")
-    hist = np.bincount(np.asarray(real[::20]).ravel(), minlength=256).astype(np.float64)
-    return np.cumsum(hist) / hist.sum()
-
-
-def build_fda_ref(cache_dir: Path, n: int = 3000) -> np.ndarray:
-    """FDA 참조 풀 — 실측 test SEM 일부(진폭 스펙트럼 공여자)."""
-    real = np.load(cache_dir / "test_sem.npy", mmap_mode="r")
-    idx = np.linspace(0, len(real) - 1, min(n, len(real))).astype(int)
-    return np.ascontiguousarray(real[idx])
-
-
-def fda_transform(src_u8: np.ndarray, ref_u8: np.ndarray, beta: float) -> np.ndarray:
-    """Fourier Domain Adaptation: src의 저주파 진폭을 ref(real)로 교환, 위상(구조)은 보존.
-    beta는 교환할 중심 대역 비율. FFT만 쓰는 학습-불필요 도메인 정합 (Yang et al. CVPR'20)."""
-    src = src_u8.astype(np.float32)
-    fs = np.fft.fft2(src)
-    amp_s, pha_s = np.abs(fs), np.angle(fs)
-    amp_r = np.abs(np.fft.fft2(ref_u8.astype(np.float32)))
-    amp_s_sh = np.fft.fftshift(amp_s)
-    amp_r_sh = np.fft.fftshift(amp_r)
-    h, w = src.shape
-    b = int(round(min(h, w) * beta))
-    cy, cx = h // 2, w // 2
-    amp_s_sh[cy - b:cy + b + 1, cx - b:cx + b + 1] = amp_r_sh[cy - b:cy + b + 1, cx - b:cx + b + 1]
-    out = np.real(np.fft.ifft2(np.fft.ifftshift(amp_s_sh) * np.exp(1j * pha_s)))
-    return np.clip(out, 0, 255).astype(np.uint8)
 
 
 def seed_everything(seed: int) -> None:
@@ -130,17 +66,6 @@ def build_cache(data_dir: Path, cache_dir: Path) -> None:
     print(f"cache built at {cache_dir}: sim={len(sem)}, test={len(test)}")
 
 
-def build_sim_case_cache(data_dir: Path, cache_dir: Path) -> None:
-    """sim_sem.npy와 동일 순서(sorted glob)로 case 라벨(1~4)을 파생 저장 — 이미지 로드 없이 경로만.
-
-    case를 통째로 val로 격리하는 leave-one-case-out 검증용(train↔val 분포차 → sim→real 일반화 프록시).
-    """
-    sem = sorted(glob.glob(str(data_dir / "simulation_data" / "SEM" / "*" / "*" / "*.png")))
-    case = np.array([int(Path(p).parts[-3].split("_")[1]) for p in sem], dtype=np.int8)
-    np.save(cache_dir / "sim_case.npy", case)
-    print(f"sim_case cache: {len(case)} imgs, cases {sorted(set(case.tolist()))}", flush=True)
-
-
 def build_realproxy_cache(data_dir: Path, cache_dir: Path) -> None:
     """실측 train SEM + 사이트별 평균 depth를 캐시 (도메인 매칭 프록시용).
 
@@ -173,22 +98,23 @@ def build_realproxy_cache(data_dir: Path, cache_dir: Path) -> None:
 
 
 @torch.no_grad()
-def eval_realproxy(model, cache_dir: Path, device, preproc: str, batch_size: int = 256) -> float:
-    """실측 SEM으로 예측한 depth의 사이트별 평균 vs average_depth.csv → RMSE (도메인 매칭 지표).
+def validate_real_avgdepth(model, cache_dir: Path, device, batch_size: int = 256) -> float:
+    """X = 실측 train SEM, y = average_depth.csv(사이트별 평균, 실측 GT) → RMSE.
 
-    sim-val이 못 보는 sim↔real 도메인 갭에 민감. 절대 depth만 보고 공간 구조는 안 봄(약한 신호지만
-    실측 도메인이라 도메인-갭 전처리(histmatch 등) 판정에 sim-val보다 신뢰도 높음).
+    도메인은 test와 같은 real이지만 **평균(레벨)만** 재고 픽셀 구조는 못 본다.
+    구조가 이 태스크의 병목이므로 이 값 하나로 리더보드를 대신 판정하지 말 것 —
+    기록소의 metric 필드에 그대로 남겨 해석은 사람/critic이 한다.
     """
     sem = np.load(cache_dir / "real_sem.npy", mmap_mode="r")
     site_idx = np.load(cache_dir / "real_site_idx.npy")
     true_depth = np.load(cache_dir / "real_site_depth.npy")
-    pp = "none" if preproc == "histmatch" else preproc  # histmatch는 실측에 적용 안 함
     sum_d = np.zeros(len(true_depth), dtype=np.float64)
     cnt = np.zeros(len(true_depth), dtype=np.float64)
     model.eval()
     for start in range(0, len(sem), batch_size):
         imgs = np.asarray(sem[start:start + batch_size])
-        batch = torch.from_numpy(np.stack([apply_preproc(im, pp) for im in imgs])).unsqueeze(1)
+        batch = torch.from_numpy(
+            np.stack([im.astype(np.float32) / 255.0 for im in imgs])).unsqueeze(1)
         pred = (model(batch.to(device)) * 255.0).clamp(0, 255)
         per_img = pred.mean(dim=(1, 2, 3)).cpu().numpy()
         sites = site_idx[start:start + len(per_img)]
@@ -199,56 +125,19 @@ def eval_realproxy(model, cache_dir: Path, device, preproc: str, batch_size: int
 
 
 class AugmentDataset(Dataset):
-    """uint8 스택 -> SEM은 preproc 적용, depth는 /255 + (옵션) SEM/Depth 동기 좌우반전."""
+    """uint8 스택 -> SEM은 [0,1] 정규화, depth는 /255 + (옵션) SEM/Depth 동기 좌우반전."""
 
-    def __init__(self, sem: np.ndarray, depth: np.ndarray, hflip: bool, preproc: str = "none",
-                 histmatch_ref: np.ndarray | None = None, blur_aug: float = 0.0,
-                 fda_ref: np.ndarray | None = None, fda_beta: float = 0.0,
-                 robust: dict | None = None):
-        self.sem, self.depth, self.hflip, self.preproc = sem, depth, hflip, preproc
-        self.histmatch_ref = histmatch_ref  # 데이터셋 속성 → 워커에 피클됨
-        self.blur_aug = blur_aug  # >0이면 σ∈(0.1,blur_aug] 랜덤 블러(텍스처 강건성, 도메인 갭)
-        self.fda_ref, self.fda_beta = fda_ref, fda_beta  # FDA: 실측 진폭 스펙트럼 공여 풀
-        # robust: domain-randomization 증강 세트(밝기/대비/감마/노이즈 + vflip/rot180). point-매칭이
-        # 아니라 학습 분포를 넓혀 test 분포 차이에 강건하게. 기하 변형은 SEM/Depth 동기 적용.
-        self.robust = robust or {}
+    def __init__(self, sem: np.ndarray, depth: np.ndarray, hflip: bool):
+        self.sem, self.depth, self.hflip = sem, depth, hflip
 
     def __len__(self):
         return len(self.sem)
-
-    def _photometric(self, sem):
-        """SEM에만 적용하는 광도 증강 (depth는 불변)."""
-        r = self.robust
-        x = sem.astype(np.float32)
-        if r.get("brightness", 0) > 0:
-            x *= random.uniform(1 - r["brightness"], 1 + r["brightness"])
-        if r.get("contrast", 0) > 0:
-            m = float(x.mean())
-            x = (x - m) * random.uniform(1 - r["contrast"], 1 + r["contrast"]) + m
-        if r.get("gamma", 0) > 0:
-            g = random.uniform(1 - r["gamma"], 1 + r["gamma"])
-            x = 255.0 * np.clip(x / 255.0, 0, 1) ** g
-        if r.get("noise", 0) > 0:
-            x = x + np.random.normal(0, r["noise"] * 255.0, x.shape)
-        return np.clip(x, 0, 255).astype(np.uint8)
 
     def __getitem__(self, i):
         sem, depth = self.sem[i], self.depth[i]
         if self.hflip and random.random() < 0.5:
             sem, depth = sem[:, ::-1], depth[:, ::-1]
-        if self.robust.get("vflip") and random.random() < 0.5:
-            sem, depth = sem[::-1], depth[::-1]
-        if self.robust.get("rot180") and random.random() < 0.5:
-            sem, depth = sem[::-1, ::-1], depth[::-1, ::-1]
-        sem = np.ascontiguousarray(sem)
-        if self.fda_beta > 0 and self.fda_ref is not None:
-            ref = self.fda_ref[random.randrange(len(self.fda_ref))]
-            sem = fda_transform(sem, ref, self.fda_beta)
-        if self.blur_aug > 0 and random.random() < 0.5:
-            sem = cv2.GaussianBlur(sem, (0, 0), random.uniform(0.1, self.blur_aug))
-        if self.robust:
-            sem = self._photometric(sem)
-        sem = apply_preproc(sem, self.preproc, self.histmatch_ref)
+        sem = np.ascontiguousarray(sem).astype(np.float32) / 255.0
         return (torch.from_numpy(sem).unsqueeze(0),
                 torch.from_numpy(np.ascontiguousarray(depth)).unsqueeze(0).float() / 255.0)
 
@@ -309,14 +198,14 @@ class SmpModel(nn.Module):
     unetpp/manet. DPT는 ViT 고정 크기(224) 필요, 나머지는 96×64(32 배수).
     """
 
-    def __init__(self, arch: str, encoder: str, in_size: tuple[int, int], in_channels: int = 1):
+    def __init__(self, arch: str, encoder: str, in_size: tuple[int, int]):
         super().__init__()
         import segmentation_models_pytorch as smp
         archs = {"unet": smp.Unet, "segformer": smp.Segformer, "dpt": smp.DPT,
                  "fpn": smp.FPN, "deeplabv3plus": smp.DeepLabV3Plus,
                  "unetpp": smp.UnetPlusPlus, "manet": smp.MAnet}
         self.net = archs[arch](encoder_name=encoder, encoder_weights="imagenet",
-                               in_channels=in_channels, classes=1)
+                               in_channels=1, classes=1)
         self._in = in_size
 
     def forward(self, x):
@@ -326,26 +215,16 @@ class SmpModel(nn.Module):
         return nn.functional.interpolate(x, size=(h, w), mode="bilinear", align_corners=False)
 
 
-def predict_tta(model, batch, tta: bool):
-    """TTA: 원본 + hflip + vflip 예측을 평균 (되돌려 정렬). tta=False면 원본만."""
-    pred = model(batch)
-    if tta:
-        pred = pred + torch.flip(model(torch.flip(batch, [-1])), [-1])
-        pred = pred + torch.flip(model(torch.flip(batch, [-2])), [-2])
-        pred = pred / 3.0
-    return pred
-
-
-def make_model(arch: str, width: int, in_channels: int = 1) -> nn.Module:
+def make_model(arch: str, width: int) -> nn.Module:
     if arch == "mlp":
         return BaselineMLP()
     if arch == "unet":
         return UNetSmall(width)
     if arch.startswith("pretrained:"):  # 하위호환: pretrained:resnet18 → smp Unet
-        return SmpModel("unet", arch.split(":", 1)[1], (96, 64), in_channels)
+        return SmpModel("unet", arch.split(":", 1)[1], (96, 64))
     if arch.startswith("smp:"):  # smp:<arch>:<encoder> (예: smp:segformer:mit_b0)
         _, a, enc = arch.split(":", 2)
-        return SmpModel(a, enc, (224, 224) if a == "dpt" else (96, 64), in_channels)
+        return SmpModel(a, enc, (224, 224) if a == "dpt" else (96, 64))
     raise ValueError(arch)
 
 
@@ -370,7 +249,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default="data")
     ap.add_argument("--cache-dir", default="cache")
-    ap.add_argument("--output-dir", default="output")
+    ap.add_argument("--output-dir", default="runtime/ckpt")
     ap.add_argument("--arch", default="unet",
                     help="mlp | unet | pretrained:<encoder> (예: pretrained:resnet18)")
     ap.add_argument("--width", type=int, default=32)
@@ -380,35 +259,18 @@ def main():
     ap.add_argument("--warmup-epochs", type=int, default=0, help="선형 warmup (트랜스포머 안정화)")
     ap.add_argument("--grad-clip", type=float, default=0.0, help="grad norm 클리핑 (0=off, 트랜스포머 권장 1.0)")
     ap.add_argument("--no-amp", action="store_true", help="AMP 끄기 (트랜스포머 fp16 발산 회피)")
-    ap.add_argument("--blur-aug", type=float, default=0.0, help="랜덤 블러 최대 σ (텍스처 강건성, 0=off)")
-    ap.add_argument("--fda-beta", type=float, default=0.0, help="FDA 진폭교환 대역 비율 (0=off, 예: 0.01/0.1)")
-    # domain-randomization 강건성 증강 (test 분포 차이 대비 — point-매칭 대신 분포 확장)
-    ap.add_argument("--aug-brightness", type=float, default=0.0, help="밝기 ±비율 (예: 0.3)")
-    ap.add_argument("--aug-contrast", type=float, default=0.0, help="대비 ±비율")
-    ap.add_argument("--aug-gamma", type=float, default=0.0, help="감마 ±비율")
-    ap.add_argument("--aug-noise", type=float, default=0.0, help="가우시안 노이즈 σ(0-1 비율)")
-    ap.add_argument("--aug-vflip", action="store_true", help="수직 플립 (SEM/Depth 동기)")
-    ap.add_argument("--aug-rot180", action="store_true", help="180도 회전 (SEM/Depth 동기)")
-    ap.add_argument("--clamp-lo", type=float, default=0.0, help="추론 예측 clamp 하한 (EDA: 25)")
-    ap.add_argument("--clamp-hi", type=float, default=255.0, help="추론 예측 clamp 상한 (EDA: 170)")
-    ap.add_argument("--tta", action="store_true", help="추론 시 hflip/vflip TTA 평균")
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--train-subsample", type=int, default=0,
                     help="학습 표본 상한 (0=전체). 저비용 스크리닝용 데이터 축소")
-    ap.add_argument("--val-case", type=int, default=0,
-                    help="N(1~4): Case_N을 통째로 val로 격리(leave-one-case-out). 0=기존 랜덤분할")
     ap.add_argument("--val-subsample", type=int, default=0,
                     help="검증 표본 상한 (0=전체). 스크리닝 시 검증도 빠르게")
     ap.add_argument("--hflip", action="store_true")
-    ap.add_argument("--preproc", choices=["none", "standardize", "clahe", "histmatch"],
-                    default="none", help="SEM 입력 전처리 (E2 스크리닝)")
     ap.add_argument("--seed", type=int, default=41)
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--run-name", default=None)
-    ap.add_argument("--real-proxy", action="store_true",
-                    help="학습 후 실측 avg-depth 프록시 RMSE 계산·로깅 (도메인-갭 전처리 판정용)")
+    ap.add_argument("--real-avgdepth", action="store_true",
+                    help="학습 후 실측 SEM→average_depth RMSE도 계산 (real 도메인, 레벨만 측정)")
     ap.add_argument("--build-cache-only", action="store_true")
-    ap.add_argument("--skip-inference", action="store_true")
     args = ap.parse_args()
 
     data_dir, cache_dir = Path(args.data_dir), Path(args.cache_dir)
@@ -417,7 +279,7 @@ def main():
 
     if not (cache_dir / "sim_sem.npy").exists():
         build_cache(data_dir, cache_dir)
-    if args.real_proxy and not (cache_dir / "real_sem.npy").exists():
+    if args.real_avgdepth and not (cache_dir / "real_sem.npy").exists():
         build_realproxy_cache(data_dir, cache_dir)
     if args.build_cache_only:
         return
@@ -437,38 +299,11 @@ def main():
         rng = np.random.default_rng(args.seed)
         return np.sort(rng.choice(np.arange(lo, hi), size=cap, replace=False))
 
-    def subsample_pool(pool, cap):
-        """임의 인덱스 배열 pool에서 최대 cap개 무작위 추출(정렬)."""
-        if cap <= 0 or cap >= len(pool):
-            return np.sort(pool)
-        rng = np.random.default_rng(args.seed)
-        return np.sort(rng.choice(pool, size=cap, replace=False))
-
-    hm_ref = build_histmatch_ref(cache_dir) if args.preproc == "histmatch" else None
-    fda_ref = build_fda_ref(cache_dir) if args.fda_beta > 0 else None
-    robust = {"brightness": args.aug_brightness, "contrast": args.aug_contrast,
-              "gamma": args.aug_gamma, "noise": args.aug_noise,
-              "vflip": args.aug_vflip, "rot180": args.aug_rot180}
-    robust = robust if any(robust.values()) else None  # 하나라도 켜지면 활성
-
-    if args.val_case > 0:  # leave-one-case-out: Case_N 통째 격리 (train↔val 분포차 = 일반화 프록시)
-        if not (cache_dir / "sim_case.npy").exists():
-            build_sim_case_cache(data_dir, cache_dir)
-        case = np.load(cache_dir / "sim_case.npy")
-        tr_idx = subsample_pool(np.where(case != args.val_case)[0], args.train_subsample)
-        va_idx = subsample_pool(np.where(case == args.val_case)[0], args.val_subsample)
-        print(f"[val-case] Case_{args.val_case} 격리: train {len(tr_idx)} / val {len(va_idx)}", flush=True)
-    else:
-        tr_idx = subsample(0, n_train, args.train_subsample)
-        va_idx = subsample(n_train, len(sem), args.val_subsample)
+    tr_idx = subsample(0, n_train, args.train_subsample)
+    va_idx = subsample(n_train, len(sem), args.val_subsample)
     # mmap fancy-index는 메모리로 로드됨 — 스크리닝의 작은 cap에서만 쓰고, 전체(slice)는 mmap 유지
-    train_ds = AugmentDataset(sem[tr_idx], depth[tr_idx], hflip=args.hflip,
-                              preproc=args.preproc, histmatch_ref=hm_ref, blur_aug=args.blur_aug,
-                              fda_ref=fda_ref, fda_beta=args.fda_beta, robust=robust)
-    # val은 clean sim (FDA/블러 미적용) — sim-val을 무-FDA 챔피언과 공정 비교하기 위함.
-    # FDA를 '증강'으로 보고 clean sim-val을 낮추는 β를 찾는 스크리닝 (sim-val↔리더보드 상관 활용).
-    val_ds = AugmentDataset(sem[va_idx], depth[va_idx], hflip=False,
-                            preproc=args.preproc, histmatch_ref=hm_ref)
+    train_ds = AugmentDataset(sem[tr_idx], depth[tr_idx], hflip=args.hflip)
+    val_ds = AugmentDataset(sem[va_idx], depth[va_idx], hflip=False)
     print(f"train={len(train_ds)} val={len(val_ds)} "
           f"(subsample tr={args.train_subsample or 'full'} va={args.val_subsample or 'full'})", flush=True)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
@@ -488,9 +323,8 @@ def main():
         config={"arch": args.arch, "width": args.width, "lr": args.lr, "loss": args.loss,
                 "epochs": args.epochs, "batch_size": args.batch_size, "hflip": args.hflip,
                 "seed": args.seed, "train_subsample": args.train_subsample,
-                "val_subsample": args.val_subsample, "preproc": args.preproc,
-                "blur_aug": args.blur_aug, "warmup_epochs": args.warmup_epochs,
-                "grad_clip": args.grad_clip, "fda_beta": args.fda_beta, "robust": robust},
+                "val_subsample": args.val_subsample, "warmup_epochs": args.warmup_epochs,
+                "grad_clip": args.grad_clip},
         mode="online" if os.environ.get("WANDB_API_KEY") else "disabled",
     )
 
@@ -542,41 +376,24 @@ def main():
     wandb.summary["best_val_rmse"] = best_rmse
     print(f"best val_rmse: {best_rmse:.5f}")
 
-    proxy_rmse = None
-    if args.real_proxy:
+    manifest = {
+        "run_name": run_name,
+        "x_domain": "sim",              # 학습 입력 = 시뮬레이션 SEM
+        "y_source": "sim_depth_gt",     # 학습 정답 = 시뮬레이터 depth GT
+        "val": {"name": "sim_val_rmse", "value": best_rmse,
+                "x_domain": "sim", "y_source": "sim_depth_gt"},
+        "real_avgdepth": None,
+        "ckpt": str(best_path),
+    }
+    if args.real_avgdepth:
         model.load_state_dict(torch.load(best_path, map_location=device))
-        proxy_rmse = eval_realproxy(model, cache_dir, device, args.preproc, args.batch_size)
-        wandb.summary["real_proxy_rmse"] = proxy_rmse
-        print(f"real_proxy_rmse: {proxy_rmse:.5f}", flush=True)
-
-    if not args.skip_inference:
-        model.load_state_dict(torch.load(best_path, map_location=device))
-        model.eval()
-        test_sem = np.load(cache_dir / "test_sem.npy", mmap_mode="r")
-        names = json.loads((cache_dir / "test_names.json").read_text(encoding="utf-8"))
-        test_loader = DataLoader(
-            TensorDataset(torch.arange(len(test_sem))), batch_size=args.batch_size)
-        # histmatch는 sim→real 변환이므로 실측 test엔 적용 안 함(이미 real 도메인). 나머지는 동일 적용.
-        test_preproc = "none" if args.preproc == "histmatch" else args.preproc
-        sub_dir = output_dir / f"submission_{run_name}"
-        sub_dir.mkdir(parents=True, exist_ok=True)
-        zip_path = output_dir / f"submission_{run_name}.zip"
-        with torch.no_grad(), zipfile.ZipFile(zip_path, "w") as zf:
-            for (idx_b,) in tqdm(test_loader, desc="infer"):
-                imgs = np.asarray(test_sem[idx_b.numpy()])
-                batch = torch.from_numpy(np.stack(
-                    [apply_preproc(im, test_preproc) for im in imgs])).unsqueeze(1).to(device)
-                pred = predict_tta(model, batch, args.tta) * 255.0
-                pred = pred.round().clamp(args.clamp_lo, args.clamp_hi).cpu().numpy().astype(np.uint8)
-                for j, i in enumerate(idx_b.tolist()):
-                    img_path = sub_dir / names[i]
-                    cv2.imwrite(str(img_path), pred[j, 0])
-                    zf.write(img_path, arcname=names[i])
-        print(f"submission written to {zip_path}", flush=True)
+        value = validate_real_avgdepth(model, cache_dir, device, args.batch_size)
+        manifest["real_avgdepth"] = {"name": "real_avgdepth_rmse", "value": value,
+                                     "x_domain": "real", "y_source": "real_average_depth"}
+        print(f"real_avgdepth_rmse: {value:.5f}", flush=True)
 
     wandb.finish()
-    print(json.dumps({"best_val_rmse": best_rmse, "real_proxy_rmse": proxy_rmse,
-                      "run_name": run_name}))
+    print(json.dumps(manifest, ensure_ascii=False))
 
 
 if __name__ == "__main__":
