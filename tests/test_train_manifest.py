@@ -31,3 +31,15 @@ def test_void_experiment_features_are_gone():
     for gone in ("fda_transform", "blur_aug", "aug-brightness", "val-case",
                  "histmatch", "clahe", "predict_tta", "skip-inference"):
         assert gone not in source, f"폐기된 실험 기능이 남아있다: {gone}"
+
+
+def test_infer_submit_is_standalone():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "infer_submit.py"
+    assert "ai_co_scientist" not in path.read_text(encoding="utf-8")
+
+
+def test_infer_submit_has_no_void_postproc():
+    source = (Path(__file__).resolve().parents[1] / "scripts" / "infer_submit.py").read_text(
+        encoding="utf-8")
+    for gone in ("adabn", "tta", "clamp_lo"):
+        assert gone not in source.lower(), f"폐기된 후처리가 남아있다: {gone}"
