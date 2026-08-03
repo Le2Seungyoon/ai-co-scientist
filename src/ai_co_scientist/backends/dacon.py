@@ -8,7 +8,7 @@ import os
 
 import httpx
 
-from ai_co_scientist.core.config import load_dotenv
+from ai_co_scientist.config import load_dotenv
 
 API_URL = "https://openapi.dacon.io/submission"
 _TIMEOUT_S = 120.0

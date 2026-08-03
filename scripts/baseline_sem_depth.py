@@ -32,7 +32,7 @@ import wandb
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
-from ai_co_scientist.core.config import load_dotenv
+from ai_co_scientist.config import load_dotenv
 
 CFG = {
     "WIDTH": 48,

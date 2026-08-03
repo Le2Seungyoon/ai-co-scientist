@@ -12,7 +12,7 @@
 import argparse
 
 from ai_co_scientist.backends import lightning
-from ai_co_scientist.core.config import ensure_utf8_console
+from ai_co_scientist.config import ensure_utf8_console
 
 
 def main():

@@ -6,7 +6,7 @@ detached 실행(`nohup ... &`)이 기본 패턴이다: 로컬이 죽어도 원�
 """
 import os
 
-from ai_co_scientist.core.config import load_dotenv
+from ai_co_scientist.config import load_dotenv
 
 DEFAULT_STUDIO = "cosci-sem-depth"
 
