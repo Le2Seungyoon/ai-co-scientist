@@ -248,7 +248,7 @@ def validate(model, criterion, loader, device):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default="data")
-    ap.add_argument("--cache-dir", default="cache")
+    ap.add_argument("--cache-dir", default="runtime/cache")  # config.yaml paths.cache_dir와 동일
     ap.add_argument("--output-dir", default="runtime/ckpt")
     ap.add_argument("--arch", default="unet",
                     help="mlp | unet | pretrained:<encoder> (예: pretrained:resnet18)")

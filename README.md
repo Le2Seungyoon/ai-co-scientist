@@ -15,7 +15,7 @@ analyst·critic) → `scripts/` CLI → 데이터/GPU/제출. 별도 서버·프
 uv sync                                   # 의존성 설치
 cp .env.example .env                      # 실 백엔드(DACON/Lightning/wandb) 연동 시 채울 것
 uv run pytest -q                          # 전체 테스트 (오프라인, API 키 불필요)
-uv run ruff check src tests hooks scripts # lint
+uv run ruff check src tests scripts # lint
 ```
 
 ## 실험 실행 절차
@@ -117,7 +117,6 @@ DACON이 forum(https://dacon.io/forum/403557)에 공식 배포하는 `dacon_subm
 ├── docs/experiment-registry.md # 실험 기록소 렌더 문서 (scripts/exp.py render 산출물)
 ├── config.yaml            # 경로·타깃 도메인·학습 기본값
 ├── .claude/agents/        # research/experimenter/analyst/critic — sub-agent 역할 프롬프트
-├── hooks/                 # 결정적 가드레일 (import 경계·lint·제출 가드)
 ├── data/                  # 대회 데이터셋 (git 미추적, "베이스라인 재현" §1 참고해 직접 받아서 채울 것)
 ├── scripts/                # exp.py · train_sem_depth.py · infer_submit.py · dacon_submit.py ·
 │                           # lightning_studio.py · baseline_sem_depth.py
@@ -125,5 +124,5 @@ DACON이 forum(https://dacon.io/forum/403557)에 공식 배포하는 `dacon_subm
 │   ├── config.py           # config.yaml 단일 로더 + .env 로더 + UTF-8 콘솔 가드
 │   ├── registry.py         # 실험 기록소 (runtime/registry.jsonl 읽기/쓰기/렌더)
 │   └── backends/            # dacon.py(제출 API) · lightning.py(원격 GPU)
-└── tests/                 # config·registry·backends·train manifest·hooks 결정적 테스트
+└── tests/                 # config·registry·backends·train manifest 결정적 테스트
 ```
