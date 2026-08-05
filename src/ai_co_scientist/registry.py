@@ -14,8 +14,14 @@ from pathlib import Path
 from ai_co_scientist.config import load_config, project_root
 
 X_DOMAINS = ("sim", "real")
-Y_SOURCES = ("sim_depth_gt", "real_average_depth", "pseudo_label")
-_REAL_Y = ("real_average_depth",)  # 실측 GT에서 온 y (pseudo_label은 모델 산출물이라 제외)
+Y_SOURCES = ("sim_depth_gt", "real_average_depth", "real_group_label", "real_depth_gt",
+             "pseudo_label")
+# 실측 GT에서 온 y (pseudo_label은 모델 산출물이라 제외).
+# real_group_label = train/SEM/Depth_{110,120,130,140}/ 폴더명 — 주최측이 부여한 real 라벨이라
+#   average_depth와 동급의 실측 GT다. 배경 레벨 L을 결정하므로 depth map의 지배 성분이기도 하다.
+# real_depth_gt = 리더보드가 채점에 쓰는 **숨은 real depth map**. 우리가 볼 수 없지만 이것이
+#   진짜 타깃이다 — average_depth는 원본 전체 영상 기준이라 타깃이 아니다(docs/data-facts.md §4).
+_REAL_Y = ("real_average_depth", "real_group_label", "real_depth_gt")
 
 RESET_NOTICE = (
     "> **2026-07-29 리셋.** 이 날짜 이전의 ad-hoc 실험·결론은 모두 폐기(void) — "

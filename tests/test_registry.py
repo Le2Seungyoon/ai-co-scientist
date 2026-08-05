@@ -57,9 +57,34 @@ def test_real_avgdepth_metric_matches_target(tmp_path):
     assert rec["metric"]["warning"] == ""
 
 
+def test_real_group_label_metric_matches_target(tmp_path):
+    # 폴더명 Depth_110~140은 주최측 실측 라벨이므로 real 도메인 검증으로 인정한다
+    p = tmp_path / "reg.jsonl"
+    rec = registry.new_report(path=p, **{
+        **BASE, "x_domain": "real", "x_desc": "real train SEM hole crop",
+        "y_source": "real_group_label", "y_desc": "폴더명 4그룹",
+        "metric_name": "site_holdout_accuracy",
+        "metric_x_domain": "real", "metric_y_source": "real_group_label"})
+    assert rec["metric"]["matches_target"] is True
+    assert rec["metric"]["warning"] == ""
+
+
+def test_leaderboard_metric_declares_real_depth_gt(tmp_path):
+    # 리더보드의 y는 숨은 real depth map이다. average_depth(=원본 전체 영상 평균)는 타깃이 아니다
+    p = tmp_path / "reg.jsonl"
+    rec = registry.new_report(path=p, **{
+        **BASE, "metric_name": "leaderboard_rmse",
+        "metric_x_domain": "real", "metric_y_source": "real_depth_gt"})
+    assert rec["metric"]["matches_target"] is True
+    assert rec["metric"]["warning"] == ""
+
+
 def test_metric_matches_target_pure_function():
     assert registry.metric_matches_target("real", "real_average_depth") is True
+    assert registry.metric_matches_target("real", "real_group_label") is True
+    assert registry.metric_matches_target("real", "real_depth_gt") is True
     assert registry.metric_matches_target("sim", "sim_depth_gt") is False
+    assert registry.metric_matches_target("sim", "real_group_label") is False  # X가 sim
     assert registry.metric_matches_target("real", "pseudo_label") is False  # y가 real GT가 아님
 
 
@@ -67,12 +92,12 @@ def test_record_result_and_lb_roundtrip(tmp_path):
     p = tmp_path / "reg.jsonl"
     rid = registry.new_report(path=p, **BASE)["report_id"]
     registry.record_result(rid, {"sim_val_rmse": 2.57}, path=p)
-    registry.record_lb(rid, public=6.727, private=6.772, path=p)
-    registry.set_verdict(rid, "챔피언 기준선", path=p)
+    registry.record_lb(rid, public=7.35, private=7.34, path=p)
+    registry.set_verdict(rid, "기준선", path=p)
     rec = registry.get(rid, path=p)
     assert rec["val"] == {"sim_val_rmse": 2.57}
-    assert rec["lb"] == {"public": 6.727, "private": 6.772}
-    assert rec["verdict"] == "챔피언 기준선"
+    assert rec["lb"] == {"public": 7.35, "private": 7.34}
+    assert rec["verdict"] == "기준선"
 
 
 def test_record_result_unknown_id_raises(tmp_path):
