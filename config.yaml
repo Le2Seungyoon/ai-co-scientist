@@ -11,9 +11,6 @@ paths:
 target:
   x_domain: real          # test 입력 = 실측 SEM
   y_source: real_depth    # test 정답 = 실제 depth (우리에겐 없음 → 리더보드가 유일 판정)
-  leaderboard_best:
-    public: 6.727
-    private: 6.772
 
 train:
   epochs: 15

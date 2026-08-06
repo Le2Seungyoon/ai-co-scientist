@@ -4,8 +4,8 @@
              --y-source sim_depth_gt --y-desc "..." --model "..." --method "..." \
              --purpose "..." --metric-name sim_val_rmse --metric-x sim --metric-y sim_depth_gt
   결과:    python scripts/exp.py result EXP-001 --val '{"sim_val_rmse": 2.57}'
-  리더보드: python scripts/exp.py lb EXP-001 --public 6.727 --private 6.772
-  판정:    python scripts/exp.py verdict EXP-001 "챔피언 기준선"
+  리더보드: python scripts/exp.py lb EXP-001 --public 7.35 --private 7.34
+  판정:    python scripts/exp.py verdict EXP-001 "기준선"
   조회:    python scripts/exp.py list | show EXP-001 | render
 """
 import argparse

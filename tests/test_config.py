@@ -17,7 +17,6 @@ def test_target_is_real_domain():
     target = load_config()["target"]
     assert target["x_domain"] == "real"
     assert target["y_source"] == "real_depth"
-    assert target["leaderboard_best"]["public"] == 6.727
 
 
 def test_train_defaults():
