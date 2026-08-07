@@ -1,0 +1,333 @@
+"""뼈대 1/2 — 정규화 구조 회귀기 s: sim SEM → s. standalone (Lightning Studio 업로드 가능).
+
+    s = (L − d) / L        재구성  d = L·(1 − s)          [docs/data-facts.md §2]
+
+L은 배경 레벨 {140,150,160,170}이고 Case가 결정한다. `d ∈ [0,L]`이라 `s ∈ [0,1]`이 정확히
+성립하므로 sigmoid 출력이면 클램프가 필요 없다 — `(L−20)` 정규화를 쓰지 않는 이유가 이것이다
+(전역 min이 0이라 s>1이 1퍼센트 발생하고, 클램프 손실이 RMSE 2.0에 달한다).
+
+**레벨을 조건 입력이 아니라 타깃 변환으로 넣는 게 핵심이다.** 조건 입력은 출력을 구속하지
+못한다(EXP-002: avg 조건화에도 출력 max가 std 8.1로 연속 분포). 재매개화하면 ŝ=0인 배경이
+구조적으로 정확히 L̂이 된다.
+
+백본은 `--arch`로 갈아끼운다 (`train_sem_depth.py`의 make_model 규약과 동일):
+    mlp                     EXP-005 기준선. dense라 공간 귀납편향이 없다 — real 전이가 약하다
+    unet[--width N]         3단 U-Net. 72×48은 2회 다운샘플(18×12)까지 나누어떨어진다
+    smp:<arch>:<encoder>    예) smp:unet:efficientnet-b0 (`uv run --group baseline` 필요)
+아키텍처 정의를 train_sem_depth.py에서 import하지 않는 이유: 그 파일은 최상단에서 wandb를
+import하므로 추론 경로(infer_decomposed.py)까지 끌려온다.
+
+누수: depth map 1장 ↔ SEM 2장(itr0/itr1)이고 캐시에서 인접 쌍(2k, 2k+1)이다. 따라서 분할은
+**depth-map id 단위**여야 한다. 이미지 random split은 itr0/itr1을 갈라 중복 누수를 만든다.
+"""
+import argparse
+import json
+import os
+import random
+import sys
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+from tqdm.auto import tqdm
+
+H, W = 72, 48
+CASE_LEVEL = {1: 140.0, 2: 150.0, 3: 160.0, 4: 170.0}  # Case → 배경 레벨 L (예외 0건)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def ensure_utf8_console() -> None:
+    """Windows cp949 콘솔에서 유니코드 print가 UnicodeEncodeError로 죽는 걸 방지."""
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def seed_everything(seed: int) -> None:
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    # benchmark=True는 재현성을 조금 희생하지만 **빼면 안 된다**: False면 cuDNN이 호출마다
+    # 워크스페이스를 가변 요청해 PyTorch 할당자 밖에서 OOM이 난다 (smp 백본은 1.3GiB에서
+    # 200 step 근처 실패). train_sem_depth.py와 동일 설정이다.
+    torch.backends.cudnn.benchmark = True
+
+
+# ── 데이터 ──────────────────────────────────────────────────
+
+class StructureDataset(Dataset):
+    """SEM (1,H,W) → s (1,H,W). s는 depth GT와 Case에서 즉석 계산한다 (2.4GB 사전계산 회피).
+
+    level은 module global이 아니라 인스턴스 속성이어야 한다 — Windows spawn 워커는 globals를
+    상속하지 않는다 (coding-patterns.md).
+    """
+
+    def __init__(self, sem, depth, case):
+        self.sem, self.depth, self.case = sem, depth, case
+        self.level = CASE_LEVEL
+
+    def __len__(self) -> int:
+        return len(self.sem)
+
+    def __getitem__(self, i):
+        x = np.ascontiguousarray(self.sem[i]).astype(np.float32)[None] / 255.0
+        d = np.ascontiguousarray(self.depth[i]).astype(np.float32)[None]
+        lv = self.level[int(self.case[i])]
+        s = (lv - d) / lv  # d in [0, L] → s in [0, 1]
+        return torch.from_numpy(x), torch.from_numpy(s)
+
+
+def map_level_split(case: np.ndarray, val_frac: float, seed: int) -> np.ndarray:
+    """depth-map id(=idx//2) 단위로 Case별 층화 홀드아웃. 반환: 이미지 단위 val 마스크."""
+    n_maps = len(case) // 2
+    map_case = case[::2]
+    rng = np.random.default_rng(seed)
+    hold = np.zeros(n_maps, dtype=bool)
+    for c in np.unique(map_case):
+        ids = np.where(map_case == c)[0]
+        hold[rng.choice(ids, int(val_frac * len(ids)), replace=False)] = True
+    return np.repeat(hold, 2)
+
+
+# ── 백본 (모두 (B,1,H,W) → (B,1,H,W), 출력은 sigmoid로 s in [0,1]) ──
+
+class PlainMLP(nn.Module):
+    """EXP-003의 g와 동일 구조 + sigmoid. 파라미터 이름을 유지해 EXP-005 ckpt가 그대로 로드된다."""
+
+    def __init__(self):
+        super().__init__()
+        def block(i, o):
+            return [nn.Linear(i, o), nn.BatchNorm1d(o), nn.ReLU()]
+        self.encoder = nn.Sequential(*block(H * W, 1024), *block(1024, 512),
+                                     *block(512, 256), *block(256, 128))
+        self.decoder = nn.Sequential(*block(128, 256), *block(256, 512),
+                                     *block(512, 1024), nn.Linear(1024, H * W))
+        self.out = nn.Sigmoid()
+
+    def forward(self, x):
+        b = x.shape[0]
+        return self.out(self.decoder(self.encoder(x.view(b, -1)))).view(b, 1, H, W)
+
+
+def conv_block(i, o):
+    return nn.Sequential(
+        nn.Conv2d(i, o, 3, padding=1), nn.BatchNorm2d(o), nn.ReLU(inplace=True),
+        nn.Conv2d(o, o, 3, padding=1), nn.BatchNorm2d(o), nn.ReLU(inplace=True))
+
+
+class UNetSmall(nn.Module):
+    """3단 U-Net — 72×48은 2회 다운샘플(18×12)까지 나누어떨어진다."""
+
+    def __init__(self, width: int = 32):
+        super().__init__()
+        w = width
+        self.enc1, self.enc2 = conv_block(1, w), conv_block(w, w * 2)
+        self.enc3 = conv_block(w * 2, w * 4)
+        self.pool = nn.MaxPool2d(2)
+        self.up2 = nn.ConvTranspose2d(w * 4, w * 2, 2, stride=2)
+        self.dec2 = conv_block(w * 4, w * 2)
+        self.up1 = nn.ConvTranspose2d(w * 2, w, 2, stride=2)
+        self.dec1 = conv_block(w * 2, w)
+        self.head = nn.Conv2d(w, 1, 1)
+
+    def forward(self, x):
+        e1 = self.enc1(x)
+        e2 = self.enc2(self.pool(e1))
+        e3 = self.enc3(self.pool(e2))
+        d2 = self.dec2(torch.cat([self.up2(e3), e2], dim=1))
+        d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))
+        return torch.sigmoid(self.head(d1))
+
+
+class SmpModel(nn.Module):
+    """segmentation_models_pytorch dense-prediction 백본. 72×48 → 인코더 크기 → 72×48 원복."""
+
+    def __init__(self, arch: str, encoder: str, in_size: tuple[int, int]):
+        super().__init__()
+        import segmentation_models_pytorch as smp
+        archs = {"unet": smp.Unet, "segformer": smp.Segformer, "dpt": smp.DPT,
+                 "fpn": smp.FPN, "deeplabv3plus": smp.DeepLabV3Plus,
+                 "unetpp": smp.UnetPlusPlus, "manet": smp.MAnet}
+        self.net = archs[arch](encoder_name=encoder, encoder_weights="imagenet",
+                               in_channels=1, classes=1)
+        self._in = in_size
+
+    def forward(self, x):
+        h, w = x.shape[-2:]
+        z = nn.functional.interpolate(x, size=self._in, mode="bilinear", align_corners=False)
+        z = self.net(z)
+        z = nn.functional.interpolate(z, size=(h, w), mode="bilinear", align_corners=False)
+        return torch.sigmoid(z)
+
+
+def make_model(arch: str, width: int = 32) -> nn.Module:
+    """`train_sem_depth.py`의 make_model 규약과 동일 — 백본만 갈아끼운다."""
+    if arch == "mlp":
+        return PlainMLP()
+    if arch == "unet":
+        return UNetSmall(width)
+    if arch.startswith("smp:"):  # smp:<arch>:<encoder> (예: smp:unet:efficientnet-b0)
+        _, a, enc = arch.split(":", 2)
+        return SmpModel(a, enc, (224, 224) if a == "dpt" else (96, 64))
+    raise ValueError(f"unknown arch: {arch}")
+
+
+def load_model(ckpt_path: str, arch: str = "", width: int = 32) -> tuple[nn.Module, str]:
+    """체크포인트에 arch가 박혀 있으면 그것으로, 아니면 --arch로 만든다.
+
+    EXP-005는 bare state_dict로 저장돼 있어 하위호환이 필요하다 (그때는 mlp뿐이었다).
+    """
+    obj = torch.load(ckpt_path, map_location=DEVICE)
+    if isinstance(obj, dict) and "state_dict" in obj:
+        arch, width = obj.get("arch", arch), obj.get("width", width)
+        state = obj["state_dict"]
+    else:
+        arch, state = arch or "mlp", obj
+    model = make_model(arch, width).to(DEVICE)
+    model.load_state_dict(state)
+    return model, arch
+
+
+# ── 평가 ────────────────────────────────────────────────────
+
+@torch.no_grad()
+def evaluate(model, loader, levels: torch.Tensor, taus) -> dict:
+    """s RMSE + **참 L로 재구성한 depth RMSE**(=구조 성분 오차, LB와 같은 척도).
+
+    taus: 배경 클램프 임계 후보. ŝ<τ → 0 으로 눌러 배경을 정확히 L에 붙인다.
+    """
+    model.eval()
+    se_s = n = 0.0
+    se_d = {t: 0.0 for t in taus}
+    off = 0
+    for x, s in tqdm(loader, desc="eval", leave=False):
+        x, s = x.to(DEVICE), s.to(DEVICE)
+        lv = levels[off:off + len(x)].to(DEVICE).view(-1, 1, 1, 1)
+        off += len(x)
+        pred = model(x)
+        se_s += ((pred - s) ** 2).sum().item()
+        n += s.numel()
+        true_d = lv * (1.0 - s)
+        for t in taus:
+            p = torch.where(pred < t, torch.zeros_like(pred), pred)
+            rec = (lv * (1.0 - p)).round().clamp(0, 255)
+            se_d[t] += ((rec - true_d) ** 2).sum().item()
+    return {"s_rmse": (se_s / n) ** 0.5,
+            "depth_rmse_by_tau": {round(t, 4): (se_d[t] / n) ** 0.5 for t in taus}}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--arch", default="unet",
+                    help="mlp | unet | smp:<arch>:<encoder> (smp는 --group baseline 필요)")
+    ap.add_argument("--width", type=int, default=32, help="unet 채널 폭")
+    ap.add_argument("--cache-dir", default="runtime/cache")
+    ap.add_argument("--out", default="")
+    ap.add_argument("--val-frac", type=float, default=0.2, help="홀드아웃할 depth-map 비율")
+    ap.add_argument("--epochs", type=int, default=15)
+    ap.add_argument("--batch-size", type=int, default=128)
+    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--num-workers", type=int, default=0, help="Windows는 0 권장")
+    ap.add_argument("--amp", action="store_true",
+                    help="혼합정밀. 큰 백본(smp:*)은 bs128에서 8GB를 넘긴다 — 배치를 줄이면 "
+                         "BN 통계 조건이 달라져 교란이 생기므로 AMP로 메모리만 줄인다")
+    ap.add_argument("--resume", action="store_true",
+                    help="<out>.resume.pt가 있으면 그 다음 에폭부터 이어서 학습")
+    ap.add_argument("--seed", type=int, default=42)
+    args = ap.parse_args()
+
+    ensure_utf8_console()
+    seed_everything(args.seed)
+    out = args.out or f"runtime/ckpt/structure-{args.arch.replace(':', '_')}.pt"
+    cache = Path(args.cache_dir)
+    sem = np.load(cache / "sim_sem.npy", mmap_mode="r")
+    depth = np.load(cache / "sim_depth.npy", mmap_mode="r")
+    case = np.load(cache / "sim_case.npy")
+
+    model = make_model(args.arch, args.width).to(DEVICE)
+    n_par = sum(p.numel() for p in model.parameters())
+    print(f"device: {DEVICE} | arch={args.arch} params={n_par:,} | sim {len(sem)}장", flush=True)
+
+    va = map_level_split(case, args.val_frac, args.seed)
+    tr = ~va
+    print(f"split(depth-map 단위): train {tr.sum()} / val {va.sum()}", flush=True)
+
+    ds = StructureDataset(sem, depth, case)
+    tl = DataLoader(ds, batch_size=args.batch_size, num_workers=args.num_workers,
+                    sampler=torch.utils.data.SubsetRandomSampler(np.where(tr)[0].tolist()))
+    va_idx = np.where(va)[0]
+    vl = DataLoader(torch.utils.data.Subset(ds, va_idx.tolist()), batch_size=args.batch_size,
+                    shuffle=False, num_workers=args.num_workers)
+    va_levels = torch.tensor([CASE_LEVEL[int(c)] for c in case[va_idx]], dtype=torch.float32)
+
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
+    crit = nn.L1Loss().to(DEVICE)
+    taus = [0.0, 0.005, 0.01, 0.02, 0.03, 0.05, 0.08]
+    scaler = torch.amp.GradScaler("cuda", enabled=args.amp)
+
+    # 에폭별 재개점. best ckpt(`out`)와 **별도 파일**이어야 한다 — out은 추론이 읽는 계약
+    # (arch + state_dict)이고 여기에 optimizer/scaler를 섞으면 load_model 하위호환이 깨진다.
+    resume_path = Path(out).with_suffix(".resume.pt")
+    best, start_ep = None, 1
+    if args.resume and resume_path.exists():
+        ck = torch.load(resume_path, map_location=DEVICE, weights_only=False)
+        model.load_state_dict(ck["state_dict"])
+        opt.load_state_dict(ck["opt"])
+        sched.load_state_dict(ck["sched"])
+        scaler.load_state_dict(ck["scaler"])
+        best, start_ep = ck["best"], ck["epoch"] + 1
+        print(f"resume: {resume_path} → epoch {start_ep}부터 (best={best})", flush=True)
+
+    for ep in range(start_ep, args.epochs + 1):
+        model.train()
+        losses = []
+        for x, s in tqdm(tl, desc=f"epoch {ep}", leave=False):
+            x, s = x.to(DEVICE), s.to(DEVICE)
+            opt.zero_grad()
+            with torch.amp.autocast("cuda", enabled=args.amp):
+                loss = crit(model(x), s)
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+            losses.append(loss.item())
+        sched.step()
+        m = evaluate(model, vl, va_levels, taus)
+        bt = min(m["depth_rmse_by_tau"], key=m["depth_rmse_by_tau"].get)
+        print(f"epoch {ep}: train_l1={np.mean(losses):.5f} s_rmse={m['s_rmse']:.5f} "
+              f"depth_rmse={m['depth_rmse_by_tau'][bt]:.4f} (tau={bt})", flush=True)
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        if best is None or m["depth_rmse_by_tau"][bt] < best["depth_rmse"]:
+            best = {"epoch": ep, "s_rmse": m["s_rmse"], "tau": bt,
+                    "depth_rmse": m["depth_rmse_by_tau"][bt],
+                    "depth_rmse_by_tau": m["depth_rmse_by_tau"]}
+            torch.save({"arch": args.arch, "width": args.width,
+                        "state_dict": model.state_dict()}, out)
+        # 에폭마다 재개점을 덮어쓴다. 이 머신은 학습 중 0x10E(비디오 메모리 관리자) BSOD가
+        # 재발하므로 크래시 손실을 1에폭으로 묶는다. 샘플러 RNG는 복원하지 않으므로 재개 후
+        # 배치 순서는 달라진다 — 재현성이 필요한 실행은 처음부터 돌릴 것.
+        torch.save({"arch": args.arch, "width": args.width, "epoch": ep, "best": best,
+                    "state_dict": model.state_dict(), "opt": opt.state_dict(),
+                    "sched": sched.state_dict(), "scaler": scaler.state_dict()}, resume_path)
+
+    print(json.dumps({
+        "x_domain": "sim", "y_source": "sim_depth_gt",
+        "metric": {"name": "sim_holdout_s_rmse", "x_domain": "sim", "y_source": "sim_depth_gt"},
+        "target": "s = (L - d) / L", "levels": CASE_LEVEL,
+        "arch": args.arch, "width": args.width, "params": n_par,
+        "split": "depth-map id 단위", "val_frac": args.val_frac, "seed": args.seed,
+        "n_train": int(tr.sum()), "n_val": int(va.sum()),
+        "epochs": args.epochs, "lr": args.lr, "batch_size": args.batch_size, "amp": args.amp,
+        "ckpt": out, "best": best,
+        "note": "depth_rmse는 **참 L로 재구성**한 값 = 구조 성분 오차. 레벨 오차는 포함되지 않는다",
+    }, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
