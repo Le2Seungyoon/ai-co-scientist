@@ -100,6 +100,50 @@ def test_record_result_and_lb_roundtrip(tmp_path):
     assert rec["verdict"] == "기준선"
 
 
+def test_concurrent_new_report_keeps_both_and_assigns_distinct_ids(tmp_path):
+    """sub-agent 병렬 실행 회귀 — 락이 없으면 두 스레드가 같은 EXP-00N을 발급하고
+    나중 write가 앞 선보고를 통째로 덮어써 기록이 소실된다 (실측 확인)."""
+    import threading
+    p = tmp_path / "reg.jsonl"
+    errors: list[BaseException] = []
+
+    def register(title):
+        try:
+            registry.new_report(path=p, **{**BASE, "title": title})
+        except BaseException as e:  # noqa: BLE001 - 스레드 예외를 본 스레드로 옮긴다
+            errors.append(e)
+
+    threads = [threading.Thread(target=register, args=(f"에이전트{i}",)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    records = registry.load_all(p)
+    assert len(records) == 8, "선보고가 소실됐다"
+    ids = [r["report_id"] for r in records]
+    assert len(set(ids)) == 8, f"report_id가 중복됐다: {ids}"
+    assert sorted(ids) == [f"EXP-{i:03d}" for i in range(1, 9)]
+    assert {r["title"] for r in records} == {f"에이전트{i}" for i in range(8)}
+
+
+def test_lock_is_exclusive_and_released(tmp_path):
+    p = tmp_path / "reg.jsonl"
+    with registry.locked(p):
+        assert p.with_suffix(".lock").exists()
+    assert not p.with_suffix(".lock").exists(), "락이 해제되지 않았다"
+
+
+def test_lock_times_out_when_held(tmp_path, monkeypatch):
+    p = tmp_path / "reg.jsonl"
+    monkeypatch.setattr(registry, "LOCK_TIMEOUT", 0.2)
+    with registry.locked(p):
+        with pytest.raises(TimeoutError, match="락 대기 초과"):
+            with registry.locked(p):
+                pass
+
+
 def test_record_result_unknown_id_raises(tmp_path):
     p = tmp_path / "reg.jsonl"
     with pytest.raises(KeyError, match="EXP-999"):
