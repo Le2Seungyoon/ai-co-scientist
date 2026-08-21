@@ -4,7 +4,7 @@
 
 EXP-004의 무학습 QDA(픽셀 통계 13개, 사이트홀드아웃 89.83%)를 CNN으로 교체한다. QDA는 공간
 정보를 **전부 버린 하한**이므로 차이가 곧 공간 정보의 기여분이다. 데이터·split·seed·라벨은
-`probe_level.py`와 동일하게 재사용한다 — 분류기만 바뀌는 단일 축 변경이어야 비교가 성립한다.
+`ai_co_scientist.sem`의 것을 그대로 재사용한다 — 분류기만 바뀌는 단일 축 변경이어야 비교가 성립한다.
 
 **X도 y도 real이라 도메인 정합 검증이다.** 이 저장소에서 리더보드를 쓰지 않고 판정할 수 있는
 드문 실험이며(구조 회귀기는 전부 sim 학습이라 불가), 그래서 제출 전에 p를 확정할 수 있다.
@@ -16,7 +16,7 @@ intensity가 파괴돼 성능이 무너진다. 입력은 `train_structure.py`와
 BatchNorm은 배치 축 정규화라 이미지 간 상대차를 보존하므로 무해하다.
 
 누수: 사이트당 crop ~31장이 같은 라벨을 공유하므로 split은 **사이트 단위**여야 한다
-(`probe_level.site_split`). 이미지 random split은 정확도를 낙관 편향시킨다.
+(`sem.site_split`). 이미지 random split은 정확도를 낙관 편향시킨다.
 """
 import argparse
 import json
@@ -32,9 +32,9 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from probe_level import (  # noqa: E402
-    GROUPS, LEVELS, ensure_utf8_console, load_labels, score, site_split,
-)
+from ai_co_scientist.config import ensure_utf8_console
+from ai_co_scientist.sem import GROUPS, LEVELS, load_labels, site_split
+from ai_co_scientist.sem import score_classes as score
 
 H, W = 72, 48
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -101,6 +101,7 @@ def evaluate(model, loader) -> np.ndarray:
 
 
 def main():
+    ensure_utf8_console()  # argparse가 help를 찍기 **전**에 (cp949 콘솔)
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default="data")
     ap.add_argument("--cache-dir", default="runtime/cache")
@@ -117,7 +118,6 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
-    ensure_utf8_console()
     seed_everything(args.seed)
     cache = Path(args.cache_dir)
     sem = np.load(cache / "real_sem.npy", mmap_mode="r")
