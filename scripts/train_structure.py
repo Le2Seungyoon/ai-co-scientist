@@ -1,4 +1,4 @@
-"""뼈대 1/2 — 정규화 구조 회귀기 s: sim SEM → s. standalone (Lightning Studio 업로드 가능).
+"""뼈대 1/2 — 정규화 구조 회귀기 s: sim SEM → s. standalone.
 
     s = (L − d) / L        재구성  d = L·(1 − s)          [docs/data-facts.md §2]
 
@@ -10,11 +10,11 @@ L은 배경 레벨 {140,150,160,170}이고 Case가 결정한다. `d ∈ [0,L]`�
 못한다(EXP-002: avg 조건화에도 출력 max가 std 8.1로 연속 분포). 재매개화하면 ŝ=0인 배경이
 구조적으로 정확히 L̂이 된다.
 
-백본은 `--arch`로 갈아끼운다 (`train_sem_depth.py`의 make_model 규약과 동일):
+백본은 `--arch`로 갈아끼운다 (`scripts/legacy/train_sem_depth.py`의 make_model 규약과 동일):
     mlp                     EXP-005 기준선. dense라 공간 귀납편향이 없다 — real 전이가 약하다
     unet[--width N]         3단 U-Net. 72×48은 2회 다운샘플(18×12)까지 나누어떨어진다
     smp:<arch>:<encoder>    예) smp:unet:efficientnet-b0 (`uv run --group baseline` 필요)
-아키텍처 정의를 train_sem_depth.py에서 import하지 않는 이유: 그 파일은 최상단에서 wandb를
+아키텍처 정의를 legacy/train_sem_depth.py에서 import하지 않는 이유: 그 파일은 최상단에서 wandb를
 import하므로 추론 경로(infer_decomposed.py)까지 끌려온다.
 
 누수: depth map 1장 ↔ SEM 2장(itr0/itr1)이고 캐시에서 인접 쌍(2k, 2k+1)이다. 따라서 분할은
@@ -24,7 +24,6 @@ import argparse
 import json
 import os
 import random
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -33,17 +32,11 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
+from ai_co_scientist.config import ensure_utf8_console  # noqa: E402
+from ai_co_scientist.sem import CASE_LEVEL, depth_to_s, map_level_split  # noqa: E402
+
 H, W = 72, 48
-CASE_LEVEL = {1: 140.0, 2: 150.0, 3: 160.0, 4: 170.0}  # Case → 배경 레벨 L (예외 0건)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def ensure_utf8_console() -> None:
-    """Windows cp949 콘솔에서 유니코드 print가 UnicodeEncodeError로 죽는 걸 방지."""
-    for name in ("stdout", "stderr"):
-        stream = getattr(sys, name)
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def seed_everything(seed: int) -> None:
@@ -55,7 +48,7 @@ def seed_everything(seed: int) -> None:
     torch.backends.cudnn.deterministic = True
     # benchmark=True는 재현성을 조금 희생하지만 **빼면 안 된다**: False면 cuDNN이 호출마다
     # 워크스페이스를 가변 요청해 PyTorch 할당자 밖에서 OOM이 난다 (smp 백본은 1.3GiB에서
-    # 200 step 근처 실패). train_sem_depth.py와 동일 설정이다.
+    # 200 step 근처 실패).
     torch.backends.cudnn.benchmark = True
 
 
@@ -79,20 +72,8 @@ class StructureDataset(Dataset):
         x = np.ascontiguousarray(self.sem[i]).astype(np.float32)[None] / 255.0
         d = np.ascontiguousarray(self.depth[i]).astype(np.float32)[None]
         lv = self.level[int(self.case[i])]
-        s = (lv - d) / lv  # d in [0, L] → s in [0, 1]
+        s = depth_to_s(d, lv)  # d in [0, L] → s in [0, 1] (정확)
         return torch.from_numpy(x), torch.from_numpy(s)
-
-
-def map_level_split(case: np.ndarray, val_frac: float, seed: int) -> np.ndarray:
-    """depth-map id(=idx//2) 단위로 Case별 층화 홀드아웃. 반환: 이미지 단위 val 마스크."""
-    n_maps = len(case) // 2
-    map_case = case[::2]
-    rng = np.random.default_rng(seed)
-    hold = np.zeros(n_maps, dtype=bool)
-    for c in np.unique(map_case):
-        ids = np.where(map_case == c)[0]
-        hold[rng.choice(ids, int(val_frac * len(ids)), replace=False)] = True
-    return np.repeat(hold, 2)
 
 
 # ── 백본 (모두 (B,1,H,W) → (B,1,H,W), 출력은 sigmoid로 s in [0,1]) ──
@@ -167,7 +148,7 @@ class SmpModel(nn.Module):
 
 
 def make_model(arch: str, width: int = 32) -> nn.Module:
-    """`train_sem_depth.py`의 make_model 규약과 동일 — 백본만 갈아끼운다."""
+    """백본만 갈아끼우는 진입점. legacy/train_sem_depth.py의 make_model 규약과 동일."""
     if arch == "mlp":
         return PlainMLP()
     if arch == "unet":
@@ -223,6 +204,7 @@ def evaluate(model, loader, levels: torch.Tensor, taus) -> dict:
 
 
 def main():
+    ensure_utf8_console()  # argparse가 help를 찍기 **전**에 (cp949 콘솔)
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", default="unet",
                     help="mlp | unet | smp:<arch>:<encoder> (smp는 --group baseline 필요)")
@@ -242,7 +224,6 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
-    ensure_utf8_console()
     seed_everything(args.seed)
     out = args.out or f"runtime/ckpt/structure-{args.arch.replace(':', '_')}.pt"
     cache = Path(args.cache_dir)
