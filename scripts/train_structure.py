@@ -26,6 +26,7 @@ import os
 import random
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
@@ -37,6 +38,7 @@ from ai_co_scientist.sem import CASE_LEVEL, depth_to_s, map_level_split  # noqa:
 
 H, W = 72, 48
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 
 def seed_everything(seed: int) -> None:
@@ -57,23 +59,32 @@ def seed_everything(seed: int) -> None:
 class StructureDataset(Dataset):
     """SEM (1,H,W) → s (1,H,W). s는 depth GT와 Case에서 즉석 계산한다 (2.4GB 사전계산 회피).
 
-    level은 module global이 아니라 인스턴스 속성이어야 한다 — Windows spawn 워커는 globals를
-    상속하지 않는다 (coding-patterns.md).
+    level·blur_sigma는 module global이 아니라 인스턴스 속성이어야 한다 — Windows spawn 워커는
+    globals를 상속하지 않는다 (coding-patterns.md).
+
+    blur_sigma > 0이면 입력 SEM에 고정 시그마 가우시안 블러를 건다 (H4: sim→real 공간통계
+    격차, docs/data-facts.md §7). `/255` 스케일링 **전** float 이미지에 적용한다.
     """
 
-    def __init__(self, sem, depth, case):
+    def __init__(self, sem, depth, case, blur_sigma: float = 0.0):
         self.sem, self.depth, self.case = sem, depth, case
         self.level = CASE_LEVEL
+        self.blur_sigma = blur_sigma
 
     def __len__(self) -> int:
         return len(self.sem)
 
     def __getitem__(self, i):
-        x = np.ascontiguousarray(self.sem[i]).astype(np.float32)[None] / 255.0
+        x = np.ascontiguousarray(self.sem[i]).astype(np.float32)
+        if self.blur_sigma > 0:
+            x = cv2.GaussianBlur(x, (0, 0), sigmaX=self.blur_sigma, sigmaY=self.blur_sigma,
+                                 borderType=cv2.BORDER_REFLECT101)
+        x = x[None] / 255.0
         d = np.ascontiguousarray(self.depth[i]).astype(np.float32)[None]
         lv = self.level[int(self.case[i])]
         s = depth_to_s(d, lv)  # d in [0, L] → s in [0, 1] (정확)
         return torch.from_numpy(x), torch.from_numpy(s)
+
 
 
 # ── 백본 (모두 (B,1,H,W) → (B,1,H,W), 출력은 sigmoid로 s in [0,1]) ──
@@ -222,6 +233,11 @@ def main():
     ap.add_argument("--resume", action="store_true",
                     help="<out>.resume.pt가 있으면 그 다음 에폭부터 이어서 학습")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--blur-sigma", type=float, default=0.0,
+                    help="학습 입력에 거는 고정 가우시안 블러 시그마 (0=off). H4")
+    ap.add_argument("--save-epoch", type=int, default=0,
+                    help="0보다 크면 이 에폭의 체크포인트를 sim 홀드아웃 순위와 무관하게 "
+                         "--out에 강제 저장한다 (사전등록 체크포인트 선택, H4)")
     args = ap.parse_args()
 
     seed_everything(args.seed)
@@ -239,13 +255,21 @@ def main():
     tr = ~va
     print(f"split(depth-map 단위): train {tr.sum()} / val {va.sum()}", flush=True)
 
-    ds = StructureDataset(sem, depth, case)
+    ds = StructureDataset(sem, depth, case, blur_sigma=args.blur_sigma)
     tl = DataLoader(ds, batch_size=args.batch_size, num_workers=args.num_workers,
                     sampler=torch.utils.data.SubsetRandomSampler(np.where(tr)[0].tolist()))
     va_idx = np.where(va)[0]
     vl = DataLoader(torch.utils.data.Subset(ds, va_idx.tolist()), batch_size=args.batch_size,
                     shuffle=False, num_workers=args.num_workers)
     va_levels = torch.tensor([CASE_LEVEL[int(c)] for c in case[va_idx]], dtype=torch.float32)
+    # raw(무블러) sim 홀드아웃 — blur_sigma>0일 때만 별도 필요. 같은 va_idx, 별도 Dataset
+    # 인스턴스(blur_sigma=0)라 학습에는 관여하지 않고 평가 전용이다.
+    raw_vl = None
+    if args.blur_sigma > 0:
+        raw_ds = StructureDataset(sem, depth, case, blur_sigma=0.0)
+        raw_vl = DataLoader(torch.utils.data.Subset(raw_ds, va_idx.tolist()),
+                            batch_size=args.batch_size, shuffle=False,
+                            num_workers=args.num_workers)
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.epochs)
@@ -257,6 +281,7 @@ def main():
     # (arch + state_dict)이고 여기에 optimizer/scaler를 섞으면 load_model 하위호환이 깨진다.
     resume_path = Path(out).with_suffix(".resume.pt")
     best, start_ep = None, 1
+    saved_state = None  # --save-epoch가 강제 저장한 가중치 (사전등록 선택, holdout 무관)
     if args.resume and resume_path.exists():
         ck = torch.load(resume_path, map_location=DEVICE, weights_only=False)
         model.load_state_dict(ck["state_dict"])
@@ -284,18 +309,44 @@ def main():
         print(f"epoch {ep}: train_l1={np.mean(losses):.5f} s_rmse={m['s_rmse']:.5f} "
               f"depth_rmse={m['depth_rmse_by_tau'][bt]:.4f} (tau={bt})", flush=True)
         Path(out).parent.mkdir(parents=True, exist_ok=True)
-        if best is None or m["depth_rmse_by_tau"][bt] < best["depth_rmse"]:
+        if args.save_epoch:
+            # 사전등록 체크포인트 선택: sim 홀드아웃 순위와 무관하게 지정된 에폭만 저장한다.
+            # H4 가설상 이 선택기는 sim 단서를 보존하는 쪽으로 기운다 — best-by-holdout을
+            # 쓰지 않는다.
+            if ep == args.save_epoch:
+                saved_state = {k: v.clone() for k, v in model.state_dict().items()}
+                best = {"epoch": ep, "s_rmse": m["s_rmse"], "tau": 0.0,
+                        "depth_rmse": m["depth_rmse_by_tau"][0.0],
+                        "depth_rmse_by_tau": m["depth_rmse_by_tau"],
+                        "note": "pre-registered save-epoch, not holdout-selected"}
+                torch.save({"arch": args.arch, "width": args.width,
+                            "blur_sigma": args.blur_sigma,
+                            "state_dict": saved_state}, out)
+        elif best is None or m["depth_rmse_by_tau"][bt] < best["depth_rmse"]:
             best = {"epoch": ep, "s_rmse": m["s_rmse"], "tau": bt,
                     "depth_rmse": m["depth_rmse_by_tau"][bt],
                     "depth_rmse_by_tau": m["depth_rmse_by_tau"]}
             torch.save({"arch": args.arch, "width": args.width,
+                        "blur_sigma": args.blur_sigma,
                         "state_dict": model.state_dict()}, out)
         # 에폭마다 재개점을 덮어쓴다. 이 머신은 학습 중 0x10E(비디오 메모리 관리자) BSOD가
         # 재발하므로 크래시 손실을 1에폭으로 묶는다. 샘플러 RNG는 복원하지 않으므로 재개 후
         # 배치 순서는 달라진다 — 재현성이 필요한 실행은 처음부터 돌릴 것.
         torch.save({"arch": args.arch, "width": args.width, "epoch": ep, "best": best,
+                    "blur_sigma": args.blur_sigma,
                     "state_dict": model.state_dict(), "opt": opt.state_dict(),
                     "sched": sched.state_dict(), "scaler": scaler.state_dict()}, resume_path)
+
+    # --save-epoch 강제 저장이 학습 마지막 에폭보다 먼저 걸렸을 수 있으니(예: epochs>save-epoch),
+    # 이후 raw-sim 평가는 반드시 저장된 그 가중치로 한다 — 루프 종료 시점의 model이 아니라.
+    if args.save_epoch and saved_state is not None:
+        model.load_state_dict(saved_state)
+
+    raw_sim_holdout = None
+    if raw_vl is not None:
+        raw_sim_holdout = evaluate(model, raw_vl, va_levels, taus)
+        print(f"raw-sim(무블러) 홀드아웃: s_rmse={raw_sim_holdout['s_rmse']:.5f} "
+              f"depth_rmse(tau=0)={raw_sim_holdout['depth_rmse_by_tau'][0.0]:.4f}", flush=True)
 
     print(json.dumps({
         "x_domain": "sim", "y_source": "sim_depth_gt",
@@ -305,8 +356,12 @@ def main():
         "split": "depth-map id 단위", "val_frac": args.val_frac, "seed": args.seed,
         "n_train": int(tr.sum()), "n_val": int(va.sum()),
         "epochs": args.epochs, "lr": args.lr, "batch_size": args.batch_size, "amp": args.amp,
+        "blur_sigma": args.blur_sigma, "save_epoch": args.save_epoch or None,
         "ckpt": out, "best": best,
-        "note": "depth_rmse는 **참 L로 재구성**한 값 = 구조 성분 오차. 레벨 오차는 포함되지 않는다",
+        "raw_sim_holdout": raw_sim_holdout,
+        "note": "depth_rmse는 **참 L로 재구성**한 값 = 구조 성분 오차. 레벨 오차는 포함되지 않는다. "
+                "blur_sigma>0이면 best/depth_rmse는 **블러 입력** 기준이고 raw_sim_holdout이 "
+                "무블러 기준이다",
     }, ensure_ascii=False))
 
 
