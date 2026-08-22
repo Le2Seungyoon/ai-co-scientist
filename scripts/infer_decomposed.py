@@ -34,6 +34,10 @@ from ai_co_scientist.sem import (
 from train_level import LevelCNN  # noqa: E402
 from train_structure import DEVICE, H, W, load_model  # noqa: E402
 
+# AdaBN 통계를 뽑을 캐시 소스. realtest는 60,664 + 25,988 = 86,652장으로 표본을 최대화한다 —
+# EXP-010에서 test(25,988) → real(60,664)만으로 -0.522가 나와 표본 민감도가 확인됐다.
+SOURCES = {"test": ["test"], "real": ["real"], "realtest": ["real", "test"]}
+
 
 @torch.no_grad()
 def predict_levels_cnn(cache: Path, ckpt: str, batch: int = 512) -> np.ndarray:
@@ -109,7 +113,8 @@ def build_histmatch_lut(cache: Path) -> np.ndarray:
 
 
 @torch.no_grad()
-def adapt_bn(model, cache: Path, source: str, lut, batch: int = 512) -> int:
+def adapt_bn(model, cache: Path, source: str, lut, batch: int = 512,
+             drop_last: bool = False, shuffle_seed: int | None = None) -> int:
     """AdaBN — BatchNorm running stat을 타깃 도메인으로 재계산. 역전파도 라벨도 없다.
 
     모델은 sim 통계로 정규화하도록 학습됐는데 real 입력은 통계가 다르다(§7). momentum=None은
@@ -118,22 +123,42 @@ def adapt_bn(model, cache: Path, source: str, lut, batch: int = 512) -> int:
     위 `no_grad` 데코레이터를 **빼지 말 것**. running stat 갱신은 autograd와 무관한 버퍼
     연산이라 결과는 같은데, 빼면 batch=512짜리 그래프가 쌓인다 — effb0(BN 59층)에서 실측
     peak 8.30 GiB로 8GB 카드를 넘겨 공유메모리로 흘렀다(no_grad면 1.01 GiB, 8.2배).
-    MLP(BN 8층)에서는 작아서 드러나지 않으므로 큰 백본에서만 터진다.
+    MLP(BN 7층: 1024/512/256/128/256/512/1024)에서는 작아서 드러나지 않으므로 큰 백본에서만 터진다.
     """
     for m in model.modules():
         if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
             m.reset_running_stats()
             m.momentum = None
-    sem = np.load(cache / f"{source}_sem.npy", mmap_mode="r")
     model.train()
-    for s in range(0, len(sem), batch):
-        a = np.asarray(sem[s:s + batch])
-        if lut is not None:
-            a = lut[a]
-        x = a.astype(np.float32)[:, None] / 255.0
-        model(torch.from_numpy(x).to(DEVICE))
+    used = 0
+    for name in SOURCES[source]:
+        sem = np.load(cache / f"{name}_sem.npy", mmap_mode="r")
+        # momentum=None 누적평균은 배치 **크기와 무관하게** 배치마다 같은 가중을 준다. 따라서
+        # 마지막 부분배치가 제 몫보다 크게 반영된다 — 배치 수가 적을수록 왜곡이 크다
+        # (test 51배치 대 real 119배치). drop_last는 그 왜곡을 제거해 가설을 분리한다.
+        end = len(sem) - (len(sem) % batch) if drop_last else len(sem)
+        if shuffle_seed is not None:
+            # 배치 소속(어떤 인덱스들이 같은 배치에 묶이는지)을 섞으면 순차 누적평균에서
+            # 배치별 국소 통계가 바뀐다 — 배치 내부는 정렬해 순차 mmap 읽기를 유지한다
+            # (소속은 그대로, 읽기 순서만 최적화되므로 통계에는 영향이 없다).
+            order = np.random.default_rng(shuffle_seed).permutation(len(sem))
+            for s in range(0, end, batch):
+                idx = np.sort(order[s:s + batch])
+                a = np.asarray(sem[idx])
+                if lut is not None:
+                    a = lut[a]
+                x = a.astype(np.float32)[:, None] / 255.0
+                model(torch.from_numpy(x).to(DEVICE))
+        else:
+            for s in range(0, end, batch):
+                a = np.asarray(sem[s:s + batch])
+                if lut is not None:
+                    a = lut[a]
+                x = a.astype(np.float32)[:, None] / 255.0
+                model(torch.from_numpy(x).to(DEVICE))
+        used += end
     model.eval()
-    return len(sem)
+    return used
 
 
 @torch.no_grad()
@@ -180,8 +205,14 @@ def main():
     ap.add_argument("--tau", type=float, default=0.0, help="배경 클램프 임계 (sim 홀드아웃에서 결정)")
     ap.add_argument("--histmatch", action="store_true",
                     help="구조 모델 입력을 test→sim CDF 매칭 (레벨 분류기는 원본 유지)")
-    ap.add_argument("--adabn", default="none", choices=("none", "test", "real"),
+    ap.add_argument("--adabn", default="none", choices=("none", "test", "real", "realtest"),
                     help="BatchNorm running stat을 해당 도메인으로 재계산")
+    ap.add_argument("--adabn-drop-last", action="store_true",
+                    help="AdaBN에서 마지막 부분배치를 버린다 — momentum=None 누적평균이 배치마다 "
+                         "같은 가중을 주어 생기는 왜곡을 분리한다 (H3)")
+    ap.add_argument("--adabn-shuffle", type=int, default=None,
+                    help="AdaBN 소스의 배치 소속을 이 시드로 섞는다 (기본: 원본 순서 유지). "
+                         "순서가 점수에 영향을 주는지 보는 단일 변수 실험용")
     args = ap.parse_args()
 
     cache = Path(args.cache_dir)
@@ -195,8 +226,10 @@ def main():
         print(f"histmatch LUT: 이동량 평균 {shift.mean():+.1f} "
               f"범위 [{shift.min():+d},{shift.max():+d}]", flush=True)
     if args.adabn != "none":
-        n_bn = adapt_bn(model, cache, args.adabn, lut)
-        print(f"AdaBN: {args.adabn} {n_bn}장으로 BN 통계 재계산", flush=True)
+        n_bn = adapt_bn(model, cache, args.adabn, lut, drop_last=args.adabn_drop_last,
+                        shuffle_seed=args.adabn_shuffle)
+        shuffle_note = f", shuffle_seed={args.adabn_shuffle}" if args.adabn_shuffle is not None else ""
+        print(f"AdaBN: {args.adabn} {n_bn}장으로 BN 통계 재계산{shuffle_note}", flush=True)
 
     cls, diag = fit_predict_levels(Path(args.data_dir), cache, args.level_source, args.level_ckpt)
     print(f"레벨 분류({args.level_source}) test 분포: {diag['test_class_frac']}", flush=True)
@@ -211,6 +244,7 @@ def main():
         "ckpt": args.ckpt, "arch": arch, "level_source": args.level_source, "tau": args.tau,
         "level_ckpt": args.level_ckpt if args.level_source == "cnn" else None,
         "histmatch": bool(args.histmatch), "adabn": args.adabn,
+        "adabn_drop_last": bool(args.adabn_drop_last), "adabn_shuffle": args.adabn_shuffle,
         "reconstruct": "d = L * (1 - s)", "levels": list(LEVELS),
         "n": n, "zip": args.submit, "level_diag": diag,
     }, ensure_ascii=False))
