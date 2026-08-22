@@ -27,8 +27,9 @@ import torch
 import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from probe_level import (  # noqa: E402
-    GROUPS, LEVELS, ensure_utf8_console, load_labels, pixel_features, qda_log_posterior,
+from ai_co_scientist.config import ensure_utf8_console
+from ai_co_scientist.sem import (
+    GROUPS, LEVELS, load_labels, pixel_features, qda_log_posterior,
 )
 from train_level import LevelCNN  # noqa: E402
 from train_structure import DEVICE, H, W, load_model  # noqa: E402
@@ -165,6 +166,7 @@ def reconstruct_and_zip(model, cache: Path, cls: np.ndarray, tau: float, zip_pat
 
 
 def main():
+    ensure_utf8_console()  # argparse가 help를 찍기 **전**에 (cp949 콘솔)
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default="runtime/ckpt/EXP-005-structure.pt")
     ap.add_argument("--arch", default="", help="ckpt에 arch가 없을 때만 사용 (구 ckpt 하위호환)")
@@ -182,7 +184,6 @@ def main():
                     help="BatchNorm running stat을 해당 도메인으로 재계산")
     args = ap.parse_args()
 
-    ensure_utf8_console()
     cache = Path(args.cache_dir)
     model, arch = load_model(args.ckpt, args.arch, args.width)
     print(f"구조 모델: {args.ckpt} (arch={arch})", flush=True)
