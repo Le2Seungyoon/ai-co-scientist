@@ -169,7 +169,10 @@ def reconstruct_and_zip(model, cache: Path, cls: np.ndarray, tau: float, zip_pat
     sem = np.load(cache / "test_sem.npy", mmap_mode="r")
     names = json.loads((cache / "test_names.json").read_text(encoding="utf-8"))
     levels = np.array(LEVELS, dtype=np.float32)[cls]
-    work = cache.parent / "submission_work"
+    # 제출 zip마다 **다른** 작업 디렉터리를 쓴다. 공유하면 파일명이 test_names.json에서 오므로
+    # 모든 실행이 동일해, 두 추론이 병렬로 돌 때 서로의 PNG를 덮어써 zip에 다른 모델 출력이
+    # 섞인다 — 점수는 나오지만 그게 무엇의 점수인지 알 수 없게 되는 최악의 실패다.
+    work = cache.parent / "submission_work" / zip_path.stem
     work.mkdir(parents=True, exist_ok=True)
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "w") as zf:
