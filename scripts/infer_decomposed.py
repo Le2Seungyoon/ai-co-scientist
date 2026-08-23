@@ -29,7 +29,7 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ai_co_scientist.config import ensure_utf8_console
 from ai_co_scientist.sem import (
-    GROUPS, LEVELS, load_labels, pixel_features, qda_log_posterior,
+    GROUPS, LEVELS, load_labels, pixel_features, qda_log_posterior, smooth_levels,
 )
 from train_level import LevelCNN  # noqa: E402
 from train_structure import DEVICE, H, W, load_model  # noqa: E402
@@ -210,6 +210,8 @@ def main():
                     help="구조 모델 입력을 test→sim CDF 매칭 (레벨 분류기는 원본 유지)")
     ap.add_argument("--adabn", default="none", choices=("none", "test", "real", "realtest"),
                     help="BatchNorm running stat을 해당 도메인으로 재계산")
+    ap.add_argument("--level-smooth", type=int, default=0,
+                    help="파일 순서를 따라 레벨 예측을 최빈값 필터로 평활 (0=끕, 권장 9)")
     ap.add_argument("--adabn-drop-last", action="store_true",
                     help="AdaBN에서 마지막 부분배치를 버린다 — momentum=None 누적평균이 배치마다 "
                          "같은 가중을 주어 생기는 왜곡을 분리한다 (H3)")
@@ -235,6 +237,14 @@ def main():
         print(f"AdaBN: {args.adabn} {n_bn}장으로 BN 통계 재계산{shuffle_note}", flush=True)
 
     cls, diag = fit_predict_levels(Path(args.data_dir), cache, args.level_source, args.level_ckpt)
+    if args.level_smooth > 1:
+        before = cls.copy()
+        cls = smooth_levels(cls, args.level_smooth)
+        changed = int((before != cls).sum())
+        diag = {**_diag(args.level_source, cls), "smoothed": args.level_smooth,
+                "changed": changed, "changed_frac": round(changed / len(cls), 4)}
+        print(f"레벨 평활(k={args.level_smooth}): {changed}장 변경 "
+              f"({100 * changed / len(cls):.2f} percent)", flush=True)
     print(f"레벨 분류({args.level_source}) test 분포: {diag['test_class_frac']}", flush=True)
     print("  ↑ 4그룹이 균등(약 0.25)에서 크게 벗어나면 경고 신호", flush=True)
 
@@ -247,6 +257,7 @@ def main():
         "ckpt": args.ckpt, "arch": arch, "level_source": args.level_source, "tau": args.tau,
         "level_ckpt": args.level_ckpt if args.level_source == "cnn" else None,
         "histmatch": bool(args.histmatch), "adabn": args.adabn,
+        "level_smooth": args.level_smooth,
         "adabn_drop_last": bool(args.adabn_drop_last), "adabn_shuffle": args.adabn_shuffle,
         "reconstruct": "d = L * (1 - s)", "levels": list(LEVELS),
         "n": n, "zip": args.submit, "level_diag": diag,
