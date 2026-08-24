@@ -33,10 +33,7 @@ Thumbs.db
 # superpowers
 .superpowers
 
-# 설계 노트/참고 자료 — 로컬 전용.
-docs/*
-!docs/data-facts.md
-!docs/hypotheses.md
+# docs/는 전부 공개한다 (데이터 계약 · 가설 백로그 · 실험 기록소).
 
 # wandb 로그 - 로컬 전용
 wandb/

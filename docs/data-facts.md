@@ -177,7 +177,7 @@ SEM 픽셀 통계. **test는 real과 소수점까지 동일** — 같은 도메�
 | 히스토그램 매칭 (CDF) | 6.7486 | 6.248 | 5.890 | −0.23 |
 | **AdaBN** (test로 BN stat 재계산) | **4.6238** | **3.857** | **3.245** | **−2.35** |
 
-- **AdaBN이 갭을 47퍼센트 절감한다.** PlainMLP는 BatchNorm1d가 8개 층에 있고 추론 시 sim의
+- **AdaBN이 갭을 47퍼센트 절감한다.** PlainMLP는 BatchNorm1d가 7개 층에 있고 추론 시 sim의
   running stat을 쓰므로, 층을 지날수록 정규화 오차가 누적된다.
 - **히스토그램 매칭은 거의 무효(−3.3퍼센트).** LUT가 주변분포를 sim과 소수점까지 맞췄는데도
   (mean 100.50 / std 57.91) 효과가 없었다. 점별 LUT는 공간 상관을 못 바꿔 기울기가
@@ -193,4 +193,4 @@ uv run python scripts/probe_level.py          # 레벨 분류 가능성 (EXP-004
 ```
 
 1·2·3절의 sim 측정은 `runtime/cache/sim_depth.npy` + `sim_case.npy`에 대한 일회성 집계로,
-`scripts/train_avgcond.py`의 `compute_avg`와 동일한 정의를 쓴다.
+`scripts/legacy/train_avgcond.py`의 `compute_avg`와 동일한 정의를 쓴다.
