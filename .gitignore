@@ -12,8 +12,10 @@ runtime/
 *.sqlite3-shm
 
 # Harness Setting
-.claude/
-CLAUDE.md
+# CLAUDE.md와 .claude/(규칙·에이전트·훅·공유 settings)는 하네스 본체라 추적한다.
+# 예외 둘: settings.local.json은 개발자별 로컬 설정(Claude Code 관례),
+# .codex/·AGENTS.md는 다른 도구의 설정이라 공개 대상이 아니다.
+.claude/settings.local.json
 .codex/
 AGENTS.md
 
