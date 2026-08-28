@@ -1,0 +1,53 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv sync:*)",
+      "Bash(uv run:*)"
+    ],
+    "deny": [
+      "Bash(uv pip install:*)",
+      "Write(uv.lock)",
+      "Edit(uv.lock)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); printf '%s' \"$input\" | grep -q 'git push' || exit 0; git rev-parse --git-dir >/dev/null 2>&1 || exit 0; git fetch origin main -q 2>/dev/null || exit 0; git merge-base --is-ancestor origin/main HEAD 2>/dev/null && exit 0; printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"origin/main is not merged into the current branch. Run `git fetch origin main && git merge origin/main` before pushing (avoids conflicts at PR time). — .claude/settings.json PreToolUse hook\"}}'",
+            "if": "Bash(git push:*)",
+            "timeout": 30,
+            "statusMessage": "Checking origin/main is merged before push..."
+          },
+          {
+            "type": "command",
+            "command": "input=$(cat); printf '%s' \"$input\" | grep -qi 'git commit' || exit 0; printf '%s' \"$input\" | grep -qiE 'co-authored-by|generated with' || exit 0; printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Commit messages must not include AI attribution trailers (Co-Authored-By / Generated with ...). Remove them and retry. — .claude/settings.json PreToolUse hook\"}}'",
+            "if": "Bash(git commit:*)",
+            "timeout": 10,
+            "statusMessage": "Checking commit message for AI attribution trailers..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_rules_size.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking instruction-file size budget..."
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "claude-md-management@claude-plugins-official": true,
+    "harness@claude-harness-spine": true
+  }
+}
