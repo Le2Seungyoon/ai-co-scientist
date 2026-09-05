@@ -4,6 +4,8 @@
              --y-source sim_depth_gt --y-desc "..." --model "..." --method "..." \
              --purpose "..." --metric-name sim_val_rmse --metric-x sim --metric-y sim_depth_gt
   결과:    python scripts/exp.py result EXP-001 --val '{"sim_val_rmse": 2.57}'
+           (기본은 기존 val에 **병합** — 두 번째 호출이 첫 호출을 지우지 않는다.
+            값이 다른 키를 덮어쓰려면 --replace-key KEY, 통째 교체는 --replace)
   리더보드: python scripts/exp.py lb EXP-001 --public 7.35 --private 7.34
   판정:    python scripts/exp.py verdict EXP-001 "기준선"
   조회:    python scripts/exp.py list | show EXP-001 | render
@@ -33,9 +35,13 @@ def main():
     new.add_argument("--metric-x", required=True, choices=registry.X_DOMAINS)
     new.add_argument("--metric-y", required=True, choices=registry.Y_SOURCES)
 
-    res = sub.add_parser("result")
+    res = sub.add_parser("result", help="실행 결과 매니페스트 기록 (기본: 기존 val에 병합)")
     res.add_argument("report_id")
     res.add_argument("--val", required=True)
+    res.add_argument("--replace-key", action="append", default=[], metavar="KEY",
+                     help="값이 다른 이 키만 덮어쓰기 허용 (반복 가능)")
+    res.add_argument("--replace", action="store_true",
+                     help="기존 매니페스트를 버리고 통째 교체 - 버려진 키를 경고로 출력한다")
     lb = sub.add_parser("lb")
     lb.add_argument("report_id")
     lb.add_argument("--public", type=float, required=True)
@@ -59,7 +65,19 @@ def main():
         if rec["metric"]["warning"]:
             print("WARNING:", rec["metric"]["warning"])
     elif a.cmd == "result":
-        print(registry.record_result(a.report_id, json.loads(a.val))["report_id"], "결과 기록됨")
+        try:
+            up = registry.record_result(
+                a.report_id, json.loads(a.val),
+                replace=a.replace, replace_keys=a.replace_key)
+        except ValueError as e:
+            raise SystemExit(f"결과 기록 거부: {e}") from e
+        print(f"{up.report_id} 결과 기록됨 "
+              f"(추가 {len(up.added)} / 유지 {len(up.unchanged)} / 덮어씀 {len(up.overwritten)})")
+        for k, old in up.overwritten.items():
+            print(f"WARNING: 덮어씀 {k}: {json.dumps(old, ensure_ascii=False)} -> "
+                  f"{json.dumps(up.record['val'][k], ensure_ascii=False)}")
+        for k, old in up.dropped.items():
+            print(f"WARNING: 버려짐 {k}: {json.dumps(old, ensure_ascii=False)}")
     elif a.cmd == "lb":
         registry.record_lb(a.report_id, a.public, a.private)
         print(f"{a.report_id} LB 기록됨: {a.public} / {a.private}")

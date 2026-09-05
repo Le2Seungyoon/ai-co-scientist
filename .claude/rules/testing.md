@@ -1,18 +1,68 @@
 ---
 paths:
   - tests/**
+  - .claude/hooks/**
+  - .claude/scripts/**
 ---
 # Testing
 
-- Location & convention: `tests/test_*.py` (패키지 모듈은 `tests/<pkg>/test_*.py`).
-  Run: `uv run pytest -q` (all) · `uv run pytest tests/test_registry.py -q` (one file) ·
-  `-k <pattern>` (one test).
-- Deterministic, **no network access** — API 키 없이 전부 통과해야 한다. DACON 백엔드는
-  `COSCIENTIST_DACON_FAKE_HTTP`로 HTTP를 대체하고, 파일 상태는 `tmp_path`로 격리한다
-  (레지스트리 테스트는 항상 `path=tmp_path/...`를 넘긴다 — 실제 `runtime/registry.jsonl`을
-  건드리면 실험 기록이 오염된다).
-- 학습 스크립트는 GPU/데이터가 필요하므로 단위테스트로 돌리지 않는다. 대신 **계약**을 검사한다:
-  standalone 여부, 매니페스트의 X/y 도메인 선언, 폐기 기능 부재
-  (`tests/test_train_manifest.py`).
-- **No weak asserts**: 범위 검사만 하면 잘못된 구현이 통과한다. 정확한 값과 관계를 검증할 것.
-- 회귀 테스트는 **어떤 버그를 고정하는지 주석으로** 남긴다.
+## Conventions
+
+- Location: `tests/test_*.py`, and `tests/<pkg>/test_*.py` for package modules — mirroring
+  `src/ai_co_scientist/<pkg>/`. Run: `uv run pytest -q` (all) · `uv run pytest tests/test_registry.py -q`
+  (one file) · `-k <pattern>` (one test).
+- Deterministic, **no network access** — the whole suite must pass with no API keys and no `.env`.
+  The DACON backend swaps HTTP out through `COSCIENTIST_DACON_FAKE_HTTP`; file state is isolated with
+  `tmp_path`. Registry tests always pass `path=tmp_path/...` — touching the real
+  `runtime/registry.jsonl` corrupts the experiment record. Copy `tests/test_registry.py`.
+- **No weak asserts**: a range check lets a wrong implementation pass. Verify exact values and
+  relationships.
+- Regression tests come **with rationale** — a comment naming the bug they pin, so the assert is not
+  "mysteriously specific" to a future reader.
+
+## Invariant tests (the layer hooks cannot reach)
+
+A hook only sees edits made in a Claude session. Code written in an IDE, by a teammate, or by another
+agent never passes one. **A rule that must hold no matter who authored the code belongs here**, as a
+test over the tree itself (`enforcement.md` → Four layers).
+
+- Assert the property, not the sample: walk the source and fail with the offending paths listed.
+- Give every invariant test an escape hatch the source can carry (a marker comment with a reason), or
+  the first legitimate exception gets the test deleted.
+- **`tests/test_train_manifest.py`** — training scripts need GPU and data, so they are not unit-run;
+  what is pinned instead is the contract that survives only as source text: the manifest's (X, y)
+  domain declaration, `infer_decomposed`'s `cnn` level arm, AdaBN staying off the level classifier,
+  no per-image normalization in `train_level`, a swappable structure backbone, ckpt
+  backward-compatibility with EXP-005's bare `state_dict`, and no wandb import chain reaching
+  inference. **This is a stand-in that cannot check behavior** — as logic moves into `src/`, replace
+  each check with a real unit test (`architecture.md` → CLI / logic separation). `scripts/legacy/` is
+  not checked: frozen, reproduction-only, cannot regress.
+- **`.claude/scripts/check_rule_links.py`** pins that every file a rules file or an agent
+  definition points at still exists — the pointers `workflow.md` → File size budget tells you to
+  leave behind. Not yet wired into the
+  suite; run it by hand (`self-review.md` → Gates) until its false-positive rate here is measured.
+
+## Freshness tests for generated artifacts
+
+`docs/experiment-registry.md` is generated from `runtime/registry.jsonl` by `scripts/exp.py render`,
+and it is the file every agent actually reads. Nothing currently fails when the two drift apart —
+**the render is a step someone has to remember, which is the defect one level up.**
+
+- Regenerate in the test and compare; the failure message names the regeneration command.
+- **Prove it catches staleness by causing it**: delete one entry, delete a section, add a record
+  without rendering.
+- Distinguish three states — nothing registered yet · stale · unreadable. Collapsing them into one
+  silence means "no drift" and "never looked" read identically.
+
+## Verifying the defenses themselves
+
+- **Delete the defense and re-run.** A green suite proves nothing currently violates a guard, never
+  that the guard works. Remove the check, or feed it a violating input, and confirm something goes
+  red. An untested guard is indistinguishable from a comment.
+- Harness code ships with its test beside it: `.claude/hooks/test_check_rules_size.py`,
+  `.claude/scripts/test_check_rule_links.py`. Both halves matter — the must-block half proves it
+  fires, the must-pass half is what keeps false positives out. They are stdlib-only and run directly
+  (`python .claude/hooks/test_check_rules_size.py`), because a hook must be verifiable before
+  dev dependencies are installed.
+- **Fixtures must be distinguishable.** If two code paths coincidentally produce the same value, one
+  output collapses both and a broken path still passes.

@@ -59,6 +59,24 @@ always an intent decision, not a textual one.
    confirm it passes on the merged tree.
 3. Confirm a clean working tree (`git status`) before opening the PR.
 
+## Self-review before you push (required)
+
+Run `self-review.md` — ① the project's gates, on the merged state above, and ② the judgments no
+gate can make. Both halves go in the PR description. Red in ① is not a review comment; fix it
+before pushing.
+
+## Parallel branches have no "second arrival"
+
+`coding-patterns.md` → When to extract puts the obligation on whoever writes the second copy. Two
+branches cut from the same base are **both first**: neither can see the other's copy, so the rule
+silently applies to nobody and both land.
+
+- Before opening a PR, diff against the sibling branches in flight for the same feature.
+- Where the same structure appears in two of them, the extraction belongs to **whichever merges
+  first**; the later branch rebases onto the shared home instead of re-landing its copy.
+- Copies that drift apart before anyone compares them stop being detectable as copies at all —
+  compare early, while they still look alike.
+
 ## Pull Requests
 
 - **PR title/description: concise, no AI attribution**, no lengthy narrative — same reason as

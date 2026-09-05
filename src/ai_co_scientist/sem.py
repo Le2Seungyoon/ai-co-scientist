@@ -142,3 +142,52 @@ def score_classes(pred: np.ndarray, truth: np.ndarray) -> dict:
     return {"accuracy": round(float((pred == truth).mean()), 4),
             "adjacent_ok": round(float((np.abs(pred - truth) <= 1).mean()), 4),
             "confusion": cm.tolist()}
+
+
+def softmax(logits: np.ndarray, axis: int = -1) -> np.ndarray:
+    """수치적으로 안전한 softmax. 로그사후확률(QDA)이나 CNN 로짓을 사후확률로 바꾼다."""
+    z = np.asarray(logits, dtype=np.float64)
+    z = z - z.max(axis=axis, keepdims=True)
+    e = np.exp(z)
+    return e / e.sum(axis=axis, keepdims=True)
+
+
+def viterbi_levels(proba: np.ndarray, a: float = 0.974) -> np.ndarray:
+    """파일 순서를 1차 마르코프 사슬로 보고 레벨 열을 Viterbi 복호한다 (순수 numpy).
+
+    `smooth_levels`(고정폭 최빈값)의 대안이다. 최빈값 필터는 창 크기를 통해 "런은 최소
+    k/2보다 길다"를 **강제**하므로 경계에서 손해를 본다 (k=31이 k=9보다 나쁜 이유). Viterbi는
+    같은 사전지식을 **비용**으로 넣는다: 자기전이 a, 다른 상태로 (1−a)/(K−1). 증거가 충분히
+    강하면 경계는 그대로 서고, 긴 런 안의 고립된 한 장은 전이 비용에 눌려 흡수된다.
+
+    a의 기본값 0.974는 인접 파일이 같은 클래스일 확률 0.9598(`smooth_levels` 참조)보다 크게
+    잡은 값이다 — 실측이 아니라 **실험이 스윕할 하이퍼파라미터**이므로 플래그로 노출한다.
+
+    proba: (N, K) 사후확률 (행 합 1). 반환: (N,) 최적 상태열.
+    """
+    p = np.asarray(proba, dtype=np.float64)
+    if p.ndim != 2 or p.shape[1] < 2:
+        raise ValueError(f"사후확률 배열은 (N, K>=2)여야 한다 — 받은 형태 {p.shape}")
+    if not 0.0 < a < 1.0:
+        raise ValueError(f"자기전이 확률 a는 (0,1) 구간이어야 한다 — 받은 값 {a}")
+    n, k = p.shape
+    if n == 0:
+        return np.zeros(0, dtype=np.int64)
+
+    with np.errstate(divide="ignore"):
+        log_e = np.log(p)  # 확률 0은 -inf가 되어 그 상태가 배제된다 (의도된 동작)
+    trans = np.full((k, k), np.log((1.0 - a) / (k - 1)))
+    np.fill_diagonal(trans, np.log(a))
+
+    delta = log_e[0]
+    back = np.zeros((n, k), dtype=np.int64)
+    for t in range(1, n):
+        scores = delta[:, None] + trans          # (이전 상태, 현재 상태)
+        back[t] = scores.argmax(0)
+        delta = scores.max(0) + log_e[t]
+
+    path = np.zeros(n, dtype=np.int64)
+    path[-1] = int(delta.argmax())
+    for t in range(n - 1, 0, -1):
+        path[t - 1] = back[t, path[t]]
+    return path
