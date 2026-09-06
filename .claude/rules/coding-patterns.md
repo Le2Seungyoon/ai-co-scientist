@@ -14,7 +14,7 @@ invent — read a sibling file. Canonical analogs:
 - Reading config → `from ai_co_scientist.config import load_config` — the single loader;
   never open `config.yaml` directly.
 - New experiment CLI → mirror `scripts/exp.py`: argparse subcommands, `ensure_utf8_console()` first,
-  마지막 줄에 기계가 읽을 JSON 한 줄.
+  and a single machine-readable JSON line as the last thing printed.
 - Tests → `tests/<module>/test_*.py`, mirroring the source package (see `testing.md`).
 
 Prefer a proven library over a hand-rolled implementation. Don't borrow a library's metric/API name
@@ -26,14 +26,42 @@ and unit, so the counterpart's location is derivable without search (visibility 
 Adding one side of a pair without the other is a smell — wire both in the same change, and add a
 correspondence test when the mapping is enumerable.
 
-## Style & configuration
+## When to extract
+
+- **The second occurrence is the obligation point**, not the third. The first copy is cheap and
+  invisible; the second is where "fix it in N places" begins.
+- **The obligation falls on the second arrival** — whoever writes the copy, not whoever wrote the
+  original. They are the first person in a position to see both call sites.
+- **Promotion path**: script-local → `src/ai_co_scientist/` (the shared home; `architecture.md` →
+  Layers & dependency direction). **Read both call sites before designing the API** — an interface
+  shaped around one of them will be forked straight back into a copy by the second caller. This is
+  the migration the standalone strip left unfinished: `seed_everything` ×5 and `ensure_utf8_console`
+  ×3 are what "extract on the second copy" prevents.
+- **"It was never shared to begin with" is not a licence.** A structure with no canonical home is
+  exactly the case no gate can see, which makes placing it your job.
+- If extraction genuinely cannot happen in this change (scope, risk, an experiment in flight),
+  **don't copy silently**: copy and say so — what was duplicated, why, and what would make
+  extraction possible. A copy a reviewer can see is a decision; a silent one is a defect.
+- **Shadowing is a separate defect from copying, and counting cannot find it.** Re-declaring a name
+  `src/` already exports makes one name mean two things depending on the file you are in. It is
+  caught on the *name*, not the body.
+
+## Derive, don't restate
 
 - **Secrets** → `.env` (copy `.env.example`), read via `ai_co_scientist/config.py` `load_dotenv()`.
   Never hardcode or commit secrets.
 - **Tunable values** (paths · target values · train defaults) → `config.yaml`, not code.
-- Imports/ordering: stdlib → third-party → local, blank-line separated. Type hints on signatures.
-  Korean docstrings/comments are the norm in `src/` — match the file you're editing.
+- **Structure counts as hardcoding too.** Repeating a block of argparse wiring / model construction /
+  path defaults N times means fixing it in N places — the definition of hardcoding. The only
+  difference from a magic number is that nothing counts the repeats for you.
 - Don't couple logic to specific value names/counts — behave off the config lists / thresholds.
+- **Where a value genuinely cannot be derived, gate the drift instead of banning the copy.** The
+  training scripts' path defaults are the live example: they cannot import `load_config()` yet, so
+  the literal is unavoidable and the divergence from `config.yaml` `paths.*` is what must be caught
+  (`architecture.md` → CLI / logic separation).
+- Imports/ordering: stdlib → third-party → local, blank-line separated. Type hints on signatures.
+  Korean docstrings/comments are the norm in `src/` — match the file you're editing. (Instruction
+  files are English; source comments are not: `workflow.md` → Capturing Learnings → Format.)
 
 ## Gotchas (non-obvious — mirroring won't catch these)
 

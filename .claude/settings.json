@@ -34,7 +34,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": "Write|Edit|MultiEdit|Bash",
         "hooks": [
           {
             "type": "command",
@@ -48,6 +48,7 @@
   },
   "enabledPlugins": {
     "claude-md-management@claude-plugins-official": true,
-    "harness@claude-harness-spine": true
+    "harness-spine@claude-harness-spine": true,
+    "superpowers@claude-plugins-official": true
   }
 }
