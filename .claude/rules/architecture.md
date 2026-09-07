@@ -92,6 +92,17 @@ or its contract is prose alone.
   output — **while still scoring normally**, the worst kind of failure. → split into
   `submission_work/<zip stem>/`.
 
+### Extending the contract to a second Orca session
+
+A dispatched Orca session is a third execution class, and the contract above governs it unchanged:
+its file domain must be disjoint from every other writer, `executor` stays exclusive (Orca will
+dispatch two GPU tasks at once — nothing in its lifecycle knows about the 8 GB card), and a
+dispatched session is no exemption from the pre-report. `registry.locked()` already covers
+concurrent pre-report writes. Mechanics: `orca-parallel.md`.
+
+Panes in one worktree **share its branch** — a second session cannot be on a different one. Split
+the worktree, not the pane, when experiments need separate branches.
+
 ## Removed structure (2026-07-30)
 
 The A2A 7-server layout (`a2a/`, `agents/`), five MCP servers (`mcp_servers/`), the LLM router
