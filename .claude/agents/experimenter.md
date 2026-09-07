@@ -30,15 +30,21 @@ approved pre-report.
    Avoid `%` in argument text — the shell mangles it into `%%`.
 2. Train the component the pre-report names:
    - structure regressor `s`: `scripts/train_structure.py --arch {mlp|unet|smp:<a>:<enc>}`
-     (`smp:*` needs `uv run --group baseline` and, on the 8 GB card, `--amp --batch-size 64` plus
-     `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`)
+     (`smp:*` needs `uv run --group baseline` and, on the 8 GB card, `--amp --batch-size 64`)
+     **Never set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** — it is Linux-only and on
+     Windows/WDDM it triggers the 0x10E bugcheck that reboots the machine. It is never the fix
+     for an apparent OOM here; the two real causes are the `cudnn.benchmark` line and genuine
+     batch size (`.claude/rules/coding-patterns.md` -> Gotchas).
    - level classifier: `scripts/train_level.py`
    Long runs: launch in the background and capture **stderr** (`2>&1`) — redirecting it to
    `/dev/null` has twice hidden the actual traceback.
 3. Record the manifest: `uv run python scripts/exp.py result <report_id> --val '<json>'`
 4. Submission (only if the pre-report calls for it):
    `uv run python scripts/infer_decomposed.py --ckpt <structure.pt> --level-source cnn
-    --adabn real --submit runtime/submissions/<report_id>-<arm>.zip`
+    --level-ckpt <level-cnn.pt> --adabn real --adabn-shuffle 42 --tau 0.0 --level-smooth 9
+    --submit runtime/submissions/<report_id>-<arm>.zip`
+   Those flags are the current best arm (EXP-019, LB 3.0493); each was won by its own experiment,
+   so drop one only when the pre-report says to and record that you did.
    **Verify the zip before submitting**: 25,988 files and every image's max in {140,150,160,170}
    (0.00 % outside). A zip that fails this is not a result.
    Then `uv run python scripts/dacon_submit.py <zip> --report-id <report_id> --memo "<short>"`
