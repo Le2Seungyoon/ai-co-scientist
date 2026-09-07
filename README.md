@@ -13,7 +13,7 @@ analyst·critic) → `scripts/` CLI → 데이터/GPU/제출. 별도 서버·프
 
 ```bash
 uv sync                                   # 의존성 설치
-cp .env.example .env                      # 실 백엔드(DACON/Lightning/wandb) 연동 시 채울 것
+cp .env.example .env                      # 실 백엔드(DACON/wandb) 연동 시 채울 것
 uv run pytest -q                          # 전체 테스트 (오프라인, API 키 불필요)
 uv run ruff check src tests scripts # lint
 ```
@@ -26,9 +26,9 @@ uv run ruff check src tests scripts # lint
      --y-source sim_depth_gt --y-desc "..." --model "..." --method "..." --purpose "..." \
      --metric-name sim_val_rmse --metric-x sim --metric-y sim_depth_gt
    ```
-2. 학습 (로컬) 또는 Lightning Studio 원격 실행
+2. 학습 (로컬 GPU) → `scripts/train_level.py` / `scripts/train_structure.py`
 3. 결과 기입 → `scripts/exp.py result <report_id> --val '<json>'`
-4. 제출 → `infer_submit.py` → `dacon_submit.py --report-id <report_id>`
+4. 제출 → `scripts/infer_decomposed.py --submit ...` → `scripts/dacon_submit.py --report-id <report_id>`
 5. 리더보드 점수 확인 후 → `scripts/exp.py lb <report_id> --public ... --private ...`
 6. 문서 갱신 → `scripts/exp.py render`
 
@@ -58,18 +58,39 @@ data/
 
 ```bash
 uv sync --group baseline                              # torch(cuda12.4)/opencv/pandas/scikit-learn/tqdm 추가
-uv run --group baseline python scripts/baseline_sem_depth.py --output-dir runtime/baseline_output
+uv run --group baseline python scripts/legacy/baseline_sem_depth.py --output-dir runtime/baseline_output
 # → runtime/baseline_output/submission.zip (10 epoch, val RMSE 최저 시점 모델로 추론)
 ```
 
-원본은 `docs/[Baseline]_Simulation SEM 영상으로부터 Depth Map 생성 학습.ipynb`(대회 공식 baseline 노트북)를
-`scripts/baseline_sem_depth.py`로 포팅한 것 — Windows에서 깨지는 두 지점(`glob` 결과의 경로 구분자 때문에
+대회 공식 baseline 노트북을 `scripts/legacy/baseline_sem_depth.py`로 포팅한 것 — Windows에서 깨지는 두 지점(`glob` 결과의 경로 구분자 때문에
 `path.split('/')[-1]`이 파일명을 잘못 추출하는 문제, `DataLoader(num_workers>0)`에 필요한 `__main__` 가드)만
 고쳤고 학습 로직 자체는 동일하다. 시뮬레이션 데이터로만 학습해 실측 test에 그대로 추론하는 구조라 도메인 갭이
 점수에 그대로 반영된다 — baseline의 알려진 한계.
 
-정식 학습/제출 파이프라인은 `scripts/train_sem_depth.py`(Lightning Studio 업로드용 standalone 스크립트) +
-`scripts/infer_submit.py`(체크포인트 → 추론 → 제출 zip) 조합이다. 위 "실험 실행 절차" 참고.
+### 2-1. 현행 파이프라인 (baseline이 아니라 이쪽이 현역)
+
+depth = L(배경 레벨 4택1) × (1 − s(정규화 구조)) 분해 구조다 (`docs/data-facts.md` §2).
+
+```bash
+uv run python scripts/train_level.py                        # 레벨 분류기 (real→real)
+uv run python scripts/train_structure.py --arch mlp         # 구조 회귀기 (백본 교체 가능)
+```
+
+**최고 기록 LB 3.0493 / private 2.9961 (EXP-019) 재현** — 학습 불필요, 두 ckpt는 `runtime/ckpt/`에 있다:
+
+```bash
+uv run python scripts/infer_decomposed.py \
+    --ckpt runtime/ckpt/EXP-005-structure.pt \
+    --level-source cnn --level-ckpt runtime/ckpt/EXP-013-level-cnn.pt \
+    --adabn real --adabn-shuffle 42 --tau 0.0 --level-smooth 9 \
+    --submit runtime/submissions/<report_id>.zip
+```
+
+네 플래그가 전부 실험으로 얻은 것이라 하나라도 빼면 점수가 떨어진다. 제출 전 zip 검증 필수:
+25,988장 · 모든 이미지의 max가 {140,150,160,170} · 이탈 0.00%.
+
+분해 이전 스크립트(`train_sem_depth.py`, `infer_submit.py` 등)는 `scripts/legacy/`에 있다 —
+재현 전용으로 동결이며 현행 경로가 아니다 (`scripts/legacy/README.md`).
 
 ### 3. DACON 제출 API 활성화
 
@@ -87,42 +108,25 @@ DACON이 forum(https://dacon.io/forum/403557)에 공식 배포하는 `dacon_subm
    # --report-id를 주면 memo에 report_id가 붙어 리더보드 행 ↔ 기록소 항목이 이어진다.
    ```
 
-### 4. Lightning AI Studio GPU 활성화
-
-`src/ai_co_scientist/backends/lightning.py`가 `lightning-sdk`로 원격 Studio(GPU)를 제어하고,
-`scripts/lightning_studio.py`가 그 CLI 진입점이다. detached 실행(`nohup ... &`)이 기본 패턴이라 로컬
-세션이 끊겨도 원격 학습은 살아남고, 재접속해 로그/산출물만 회수하면 된다.
-
-1. https://lightning.ai → Settings → API Key 발급, `.env`의 `LIGHTNING_API_KEY`/
-   `LIGHTNING_USER_ID`/`LIGHTNING_TEAMSPACE` 채움
-2. `uv sync --group lightning`으로 `lightning-sdk` 설치
-3. 사용:
-   ```bash
-   uv run --group lightning python scripts/lightning_studio.py credits
-   uv run --group lightning python scripts/lightning_studio.py up --machine T4
-   uv run --group lightning python scripts/lightning_studio.py push scripts/train_sem_depth.py train_sem_depth.py
-   uv run --group lightning python scripts/lightning_studio.py run "nohup python train_sem_depth.py ... > run.log 2>&1 &"
-   uv run --group lightning python scripts/lightning_studio.py pull out/model.pt runtime/ckpt/model.pt
-   uv run --group lightning python scripts/lightning_studio.py down   # GPU 켜둔 채 잊는 크레딧 사고 방지
-   ```
-4. 크레딧은 teamspace 잔액을 그대로 조회한다 — 리필 주기는 미확인(스펙 §7-②)이라 소진 시
-   "시간으로 해결" 대기 로직은 아직 배선돼 있지 않다. `credits`로 직접 확인할 것.
-
 ## 프로젝트 구조
 
 ```
 ├── README.md              # 이 파일
-├── docs/SPEC.md           # 설계 스펙 (심사기준 해석·실험 플로우, A2A 서술은 히스토리)
-├── docs/PLAN.md           # 스캐폴딩 계획·마일스톤(M0~M6, 경로는 stale)
+├── CLAUDE.md              # 하네스 라우터 (에이전트가 먼저 읽는 파일)
+├── docs/data-facts.md     # 데이터 구조 확정 사실 — 실험 설계 전 필독
+├── docs/hypotheses.md     # 가설 백로그 + 오차 예산
 ├── docs/experiment-registry.md # 실험 기록소 렌더 문서 (scripts/exp.py render 산출물)
 ├── config.yaml            # 경로·타깃 도메인·학습 기본값
 ├── .claude/agents/        # research/experimenter/analyst/critic — sub-agent 역할 프롬프트
+├── .claude/rules/         # 이 저장소에서 일하는 규칙 (agents/와 다른 층)
 ├── data/                  # 대회 데이터셋 (git 미추적, "베이스라인 재현" §1 참고해 직접 받아서 채울 것)
-├── scripts/                # exp.py · train_sem_depth.py · infer_submit.py · dacon_submit.py ·
-│                           # lightning_studio.py · baseline_sem_depth.py
+├── scripts/               # exp.py · train_level.py · train_structure.py · infer_decomposed.py ·
+│   │                      # probe_level.py · dacon_submit.py
+│   └── legacy/            # 분해 이전 스크립트 — 재현 전용 동결
 ├── src/ai_co_scientist/
-│   ├── config.py           # config.yaml 단일 로더 + .env 로더 + UTF-8 콘솔 가드
-│   ├── registry.py         # 실험 기록소 (runtime/registry.jsonl 읽기/쓰기/렌더)
-│   └── backends/            # dacon.py(제출 API) · lightning.py(원격 GPU)
-└── tests/                 # config·registry·backends·train manifest 결정적 테스트
+│   ├── config.py          # config.yaml 단일 로더 + .env 로더 + UTF-8 콘솔 가드
+│   ├── registry.py        # 실험 기록소 (runtime/registry.jsonl 읽기/쓰기/렌더)
+│   ├── sem.py             # 분할·재매개화·평활·QDA 등 순수 로직
+│   └── backends/          # dacon.py (제출 API)
+└── tests/                 # config·registry·sem·backends·train manifest 결정적 테스트
 ```
