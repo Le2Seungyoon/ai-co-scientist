@@ -1,9 +1,3 @@
----
-paths:
-  - tests/**
-  - .claude/hooks/**
-  - .claude/scripts/**
----
 # Testing
 
 ## Conventions
@@ -37,16 +31,24 @@ test over the tree itself (`enforcement.md` → Four layers).
   inference. **This is a stand-in that cannot check behavior** — as logic moves into `src/`, replace
   each check with a real unit test (`architecture.md` → CLI / logic separation). `scripts/legacy/` is
   not checked: frozen, reproduction-only, cannot regress.
-- **`.claude/scripts/check_rule_links.py`** pins that every file a rules file or an agent
-  definition points at still exists — the pointers `workflow.md` → File size budget tells you to
-  leave behind. Not yet wired into the
-  suite; run it by hand (`self-review.md` → Gates) until its false-positive rate here is measured.
+- **`.agent-hooks/check_rule_links.py`** pins that every file a rules file or a lane definition
+  points at still exists — the pointers `workflow.md` → File size budget tells you to leave behind.
+  Wired into the suite via `tests/test_harness_generated.py`. It governs markdown under the harness
+  roots only: a stale rule citation inside a hook script — a docstring, or a **deny message** — is
+  invisible to it, and widening it was measured and rejected at a 100 % false-positive rate
+  (that file's docstring carries the numbers). Grep the source for those.
 
 ## Freshness tests for generated artifacts
 
-`docs/experiment-registry.md` is generated from `runtime/registry.jsonl` by `scripts/exp.py render`,
-and it is the file every agent actually reads. Nothing currently fails when the two drift apart —
-**the render is a step someone has to remember, which is the defect one level up.**
+Two generated artifacts, one covered and one not.
+
+**Covered** — the per-harness lanes and skills under `.claude/` and `.codex/`:
+`tests/test_harness_generated.py` runs `build-agents.py --check` and fails on drift. Copy its
+shape.
+
+**Not covered** — `docs/experiment-registry.md`, generated from `runtime/registry.jsonl` by
+`scripts/exp.py render`, and the file every agent actually reads. Nothing fails when the two drift
+apart, so **the render is still a step someone has to remember, which is the defect one level up.**
 
 - Regenerate in the test and compare; the failure message names the regeneration command.
 - **Prove it catches staleness by causing it**: delete one entry, delete a section, add a record
@@ -59,10 +61,16 @@ and it is the file every agent actually reads. Nothing currently fails when the 
 - **Delete the defense and re-run.** A green suite proves nothing currently violates a guard, never
   that the guard works. Remove the check, or feed it a violating input, and confirm something goes
   red. An untested guard is indistinguishable from a comment.
-- Harness code ships with its test beside it: `.claude/hooks/test_check_rules_size.py`,
-  `.claude/scripts/test_check_rule_links.py`. Both halves matter — the must-block half proves it
-  fires, the must-pass half is what keeps false positives out. They are stdlib-only and run directly
-  (`python .claude/hooks/test_check_rules_size.py`), because a hook must be verifiable before
-  dev dependencies are installed.
+- Harness code ships with its test beside it — five today: `test_check_rules_size.py`,
+  `test_check_rule_links.py`, `test_block_runtime_commands.py`, `test-build-agents.py`,
+  `test_harness_parity.py`. Both halves matter — the must-block half proves it fires, the must-pass
+  half is what keeps false positives out. They are `__main__` scripts, not pytest cases, and they
+  sit in a dot-directory, so `uv run pytest -q` reaches them only through
+  `tests/test_harness_generated.py`, which lists them **by name**: a glob that stopped matching
+  would go green in silence. Add a new one to that list in the same change.
+- **Hook scripts must stay runnable on the bare interpreter** (3.8 here) — a hook must be
+  verifiable before dev dependencies exist. Their *tests* may use the project venv, and
+  `test_harness_parity.py` does: it needs `tomllib` (3.11+) and will fail to import on 3.8. Run
+  the harness tests with `uv run python`, not `python`.
 - **Fixtures must be distinguishable.** If two code paths coincidentally produce the same value, one
   output collapses both and a broken path still passes.

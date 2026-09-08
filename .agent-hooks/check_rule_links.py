@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Scanner: every file a rules file or agent definition points at must exist.
 
-Run: python3 .claude/scripts/check_rule_links.py     (exit 1 on findings)
+Run: uv run python .agent-hooks/check_rule_links.py     (exit 1 on findings)
 
 The CLAUDE.md rules table and the cross-references between rules files are the only delivery
 mechanism the harness has, so **a stale path there is a rule nobody is told to read**. Nothing
@@ -35,9 +35,20 @@ expected to differ and is NOT drift — `harness-spine:update` reconciles around
 Everything else: do not hand-edit here; reconcile with that skill so the copies do not drift. If
 this project diverges anywhere beyond the source roots, say why in this docstring.
 
-DIVERGENCE (2026-09-04): `GOVERNED` widened to add `.claude/agents` — this project's agent
+MEASURED AND REJECTED (2026-09-08): widening GOVERNED to `.agent-hooks` and scanning `.py`
+as well as `.md`. Rationale was real -- the hook scripts cite rule files in their docstrings
+and in one DENY MESSAGE, and the cross-agent move left three of those pointing at
+`.claude/rules/`, which nothing here noticed. But the measurement was 12 findings, 12 of
+them false: test fixture path literals, `%s` format strings, and an `@import` example.
+A 100% false-positive rate is the case `enforcement.md` -> Before promoting a check calls
+fatal. So this stays UNCOVERED: a stale rule citation inside `.agent-hooks/*.py` is found by
+grepping the source, not by this scanner. Do not re-widen without first teaching `candidates`
+to skip string literals inside code.
+
+DIVERGENCE (2026-09-04, SUPERSEDED by the 2026-09-08 entry below -- the paths named here are
+the pre-port ones and no longer exist): `GOVERNED` widened to add `.claude/agents` — this project's agent
 definitions (`.claude/agents/*.md`) carry backticked pointers into `.claude/rules/` and
-`.claude/hooks/` (e.g. `harness-manager.md`) the same way rules files do, and those pointers were
+`.agent-hooks/` (e.g. `harness-manager.md`) the same way rules files do, and those pointers were
 previously unchecked (`.claude/agents` sat outside every governed root). At the time of widening
 this passed clean (a snapshot, not a re-checked invariant — re-run the scanner for the current
 count rather than trust a number written here).
@@ -45,12 +56,18 @@ OPEN ITEM, not yet reconciled with the shipped skeleton: this repo has not check
 skeleton ships agent definitions with harness-internal pointers of its own. Until that is checked,
 treat this widening as project-local — `harness-spine:update` should decide whether to adopt it
 upstream, not assume either way.
+DIVERGENCE (2026-09-08, cross-agent port): the governed roots and SEARCH_DIRS moved with the
+port -- `AGENTS.md`, `.agents/rules`, `.agents/agents`, `.agent-hooks` in place of their
+`.claude/` predecessors, with `.codex` added so Codex registration paths resolve. `CLAUDE.md`
+stays governed although it is one line: it is still a file rules may point at. The LOGIC is
+untouched. `harness-spine:update` must reconcile AROUND these roots, never onto them.
+
 """
 import os
 import re
 import sys
 
-GOVERNED = ("CLAUDE.md", ".claude/rules", ".claude/agents")
+GOVERNED = ("AGENTS.md", "CLAUDE.md", ".agents/rules", ".agents/agents")
 EXTENSIONS = (".md", ".py", ".json", ".sh")
 # Where a bare filename is allowed to live: the harness dirs, plus this project's SOURCE ROOTS.
 # Source roots, filled for this project. Rules files name modules the way the code imports them
@@ -59,7 +76,7 @@ EXTENSIONS = (".md", ".py", ".json", ".sh")
 # findings were real files under an unlisted `include/custflow`, a 95% false-positive rate — and
 # `enforcement.md` -> Before promoting a check to deny is exactly about that being fatal.
 SEARCH_DIRS = (
-    "", ".claude", ".claude/rules", ".claude/hooks", ".claude/scripts",
+    "", ".claude", ".codex", ".agents", ".agents/rules", ".agents/agents", ".agent-hooks",
     "src", "src/ai_co_scientist", "scripts", "scripts/legacy", "tests", "docs",
 )
 # A token carrying any of these describes a shape, not a file.
@@ -99,7 +116,7 @@ def governed_files(root):
 
 def main():
     root = os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        os.path.dirname(os.path.abspath(__file__))
     )
     files = list(governed_files(root))
 

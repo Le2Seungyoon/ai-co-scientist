@@ -3,7 +3,7 @@
 여기 있는 스크립트는 **기록소에 남은 실험을 재현하기 위해서만** 보관한다. 새 실험에 쓰지 말고,
 새 코드를 여기서 복사하지도 말 것 — 대부분 폐기된 전제 위에 서 있다.
 
-지우지 않는 이유: `CLAUDE.md`의 "기록소가 단일 진실" 불변식 때문이다. EXP-001~003이 기록소에
+지우지 않는 이유: `AGENTS.md`의 "기록소가 단일 진실" 불변식 때문이다. EXP-001~003이 기록소에
 있는 한 그 재현 수단도 남아 있어야 한다.
 
 | 파일 | 무엇을 재현하나 | 상태 |
@@ -54,5 +54,5 @@ fda_transform · blur_aug · aug-brightness · val-case · histmatch · clahe ·
   낱개로 옮기면 깨진다.
 - `train_sem_depth.py`·`baseline_sem_depth.py`는 `wandb`를 최상단에서 import한다. 현행 경로가
   이 파일들을 import하지 않는 이유 중 하나다.
-- standalone 제약은 2026-08-17 폐기됐지만(`.claude/rules/architecture.md`) 이 파일들은 그
+- standalone 제약은 2026-08-17 폐기됐지만(`.agents/rules/architecture.md`) 이 파일들은 그
   제약 아래 쓰였다. `src/`로 이행하지 않는다 — 재현 대상이므로 **그대로 얼려 둔다**.

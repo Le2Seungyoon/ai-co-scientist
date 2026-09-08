@@ -1,8 +1,3 @@
----
-paths:
-  - src/**
-  - scripts/**
----
 # Coding Patterns
 
 ## Before writing new code (the rule that generates the rest)
@@ -108,7 +103,8 @@ correspondence test when the mapping is enumerable.
 - **Don't set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` on Windows.** It's Linux-only
   (PyTorch routes allocation through the CUDA VMM API), and on WDDM that path goes straight through
   the video memory manager that throws 0x10E. It is never the fix for an apparent OOM here — the
-  two real causes are the `cudnn.benchmark` line above and genuine batch size.
+  two real causes are the `cudnn.benchmark` line above and genuine batch size. **Check the NVIDIA
+  driver too** — this machine crashed 5 times in 24 days on 566.07 (2024-10), never updated.
 - **Long training on Windows needs a per-epoch resume checkpoint** (`train_structure.py --resume`).
   Keep it in a **separate file** from the best ckpt: `out` is the inference contract
   (`arch` + `state_dict`, read by `load_model`) and mixing optimizer/scaler state into it breaks

@@ -1,10 +1,8 @@
----
-name: engineer
-description: Make an experiment possible — write additive pipeline code in src/ and scripts/ with offline tests, and hand back a runnable recipe. Use when an approved pre-report needs code that does not exist yet, or to prepare a queued candidate ahead of its turn. Never runs training, inference or submission.
-tools: Read, Write, Edit, Bash, Grep, Glob
-model: sonnet
----
+name = "engineer"
+description = "Make an experiment possible — write additive pipeline code in src/ and scripts/ with offline tests, and hand back a runnable recipe. Use when an approved pre-report needs code that does not exist yet, or to prepare a queued candidate ahead of its turn. Never runs training, inference or submission."
+model = "gpt-5.6-sol"
 
+developer_instructions = """
 <!-- **Claude Code —** model: sonnet — the design arrives decided (an approved pre-report, or a queued candidate
      the orchestrator scoped), so there is no new judgment here. The work is additive code plus
      offline tests, and it is judged by a test run rather than by a leaderboard slot. Unlike
@@ -55,3 +53,4 @@ Three things, together:
 - State what the green suite does NOT prove: no GPU path was exercised, no real data was read,
   and the recipe has never been run.
 - Quote the execution recipe on its own line so it can be copied verbatim.
+"""

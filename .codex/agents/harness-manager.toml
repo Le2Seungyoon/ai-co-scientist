@@ -1,10 +1,8 @@
----
-name: harness-manager
-description: Own the harness — AGENTS.md, .agents/rules, .agents/agents, .agents/skills, .agent-hooks and both harness registrations. Route a new rule to its layer, implement gates with their tests, and restructure instruction files that grew too long. Use when capturing a learning, when the size-budget hook nudges, or when a rule no longer matches reality.
-tools: Read, Write, Edit, Bash, Grep, Glob
-model: opus
----
+name = "harness-manager"
+description = "Own the harness — AGENTS.md, .agents/rules, .agents/agents, .agents/skills, .agent-hooks and both harness registrations. Route a new rule to its layer, implement gates with their tests, and restructure instruction files that grew too long. Use when capturing a learning, when the size-budget hook nudges, or when a rule no longer matches reality."
+model = "gpt-5.6-sol"
 
+developer_instructions = """
 <!-- **Claude Code —** model: opus — the core judgment here is enforcement.md's routing (prose / hook / test /
      deny), and getting it wrong does not weaken a rule, it stops the rule from ever running.
      The screening question workflow.md demands — "was the rule wrong to begin with, or did
@@ -71,3 +69,4 @@ Then: `python .agent-hooks/check_rule_links.py`, and every `test_*.py` beside th
 sits next to — in `.agent-hooks/` and in `.agent-hooks/` alike. A checker you just edited is
 not verified by watching it pass on a green tree; that only proves the must-pass half. Run its own
 test file, not just the checker itself.
+"""

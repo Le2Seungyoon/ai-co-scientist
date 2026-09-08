@@ -70,8 +70,10 @@ At the end of every task, before declaring done: **did anything reusable/recurri
 session?** If so, don't leave it in chat — capture it.
 
 Route first — the layer decides whether the rule ever runs (`enforcement.md` → Four layers):
-- Anyone touching this repo (convention · contract · gotcha) → a committed `.claude/rules/` file.
-- This machine/session only (local path, personal taste, one-off setup) → auto memory.
+- Anyone touching this repo (convention · contract · gotcha) → a committed `.agents/rules/` file.
+- **Not auto-memory — this repo does not use it.** The harness is what is being measured here;
+  a rule arriving from memory makes it impossible to tell whether the harness delivered it.
+  A machine-local fact goes in the rules file that owns the topic, marked as one.
 - Deterministic, and checkable on this session's edits → a **hook** (+ its test).
 - Must hold on every authoring path (IDE · teammate · another agent) → a **test/CI invariant**;
   absolute in every context → `permissions.deny`. Contracts and gate promotion: `enforcement.md`.
@@ -84,8 +86,8 @@ Do not capture: one-off facts specific to this task (already in code/tests/commi
 code/git already makes self-evident.
 
 Format:
-- Write instruction files (CLAUDE.md, `.claude/rules/*`) in **English** — clarity + tokens. Domain
-  string literals (column names, error constants) stay in their original language: they are data.
+- Language and lifetime are `docs.md`'s: instruction files English, `docs/` Korean, quoted domain
+  literals unchanged.
 - Pick the file by topic; **read the target file first** and match its existing style/format —
   update the relevant section, don't blindly append a duplicate.
 - Keep it terse and actionable — rules, not prose narrative. Stage it with the code change.
@@ -96,8 +98,8 @@ Format:
 ## File size budget (keep each instruction file dense)
 
 Gotchas accumulate; a bloated rules file loads in full every session and dilutes signal. Soft
-budget: **~150 lines per file** (CLAUDE.md and each `.claude/rules/*.md`). A PostToolUse hook
-(`.claude/hooks/check_rules_size.py`) scans the governed set and nudges.
+budget: **~150 lines per file** (`AGENTS.md` and each `.agents/rules/*.md`). A PostToolUse hook
+(`.agent-hooks/check_rules_size.py`) scans the governed set and nudges.
 
 Detection is deterministic; the response is judgment. **Invoke the `refactor-agent-rules`
 skill** — it holds the four remedies (relocate / split / abstract / compress, in that order),
@@ -112,7 +114,7 @@ A tight single-topic file slightly over budget is fine — these are levers, not
 
 ## Rule Conflicts & Harness Improvement
 
-The harness (CLAUDE.md · `.claude/rules/` · settings) is not a static document — it's a device
+The harness (`AGENTS.md` · `.agents/rules/` · both registrations) is not a static document — it's a device
 that keeps growing and getting corrected.
 
 - **Rule ↔ request conflict**: don't silently follow the rule and ignore the request, and don't
@@ -127,7 +129,7 @@ that keeps growing and getting corrected.
   that asserts it — no test, no generated artifact, no command that re-checks it — mark it as an
   assumption or delete it.
 - **Improving the harness itself**: a missing trigger, a dead rule, a wrong path-gate, a bloated
-  CLAUDE.md — refine the harness alongside Capturing Learnings. Reconciling against the shared
+  `AGENTS.md` — refine the harness alongside Capturing Learnings. Reconciling against the shared
   skeleton is the `harness-spine:update` skill's job, not a hand-diff.
 
 ## Verification Commands
@@ -135,5 +137,5 @@ that keeps growing and getting corrected.
 ```bash
 uv run pytest -q                       # must pass before declaring done (offline, no API keys)
 uv run ruff check src tests scripts    # lint (line-length 100)
-python .claude/scripts/check_rule_links.py   # every path a rules file / agent names exists
+python .agent-hooks/check_rule_links.py   # every path a rules file / agent names exists
 ```

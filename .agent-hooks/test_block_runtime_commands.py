@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for block_runtime_commands.py — run: python .claude/hooks/test_block_runtime_commands.py
+"""Tests for block_runtime_commands.py — run: uv run python .agent-hooks/test_block_runtime_commands.py
 
 A hook is code, so it ships with a test (`enforcement.md` -> Hook contracts). The must-block
 half proves the deny fires; the must-pass half is what keeps false positives from creeping in.
@@ -161,7 +161,7 @@ def main():
     hook_mod = load_hook_module()
     guarded = hook_mod.GUARDED
     check("GUARDED is non-empty", bool(guarded), "GUARDED is empty")
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(HOOK))))
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(HOOK)))
     for script in guarded:
         path = os.path.join(repo_root, *script.split("/"))
         check(f"GUARDED entry exists on disk: {script}", os.path.isfile(path), path)

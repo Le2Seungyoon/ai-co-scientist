@@ -2,10 +2,10 @@
 """PostToolUse nudge: warn when a governed instruction file exceeds the soft line budget.
 
 Contract — this hook is the template every other hook in this project follows.
-See `.claude/rules/enforcement.md` -> Hook contracts.
+See `.agents/rules/enforcement.md` -> Hook contracts.
 
   Event     PostToolUse only. It ADVISES and never denies; denial belongs to PreToolUse.
-  Governed  `.claude/rules/*.md` and the root `CLAUDE.md` (see GOVERNED).
+  Governed  `.agents/rules/*.md` and the root `AGENTS.md` (see GOVERNED).
   Input     None. It SCANS the governed set and never reads the payload — see below.
   Silence   Means exactly one thing: every governed file was read and is within budget.
             Anything that stopped the check from running says so in one line instead of
@@ -46,6 +46,19 @@ DELIBERATE DIVERGENCE (2026-09-04, AUTHORED_ADVICE): the skeleton's advice enume
 DELIBERATE DIVERGENCE (settings.json, not this file): this project wires the hook with
     `python`, not the skeleton's `python3` — Windows ships no `python3` on PATH. The
     interpreter that resolves here is 3.8, so keep this file free of 3.9+ syntax.
+DIVERGENCE (2026-09-08, cross-agent port): GOVERNED moved from (".claude/rules/*.md",
+"CLAUDE.md") to (".agents/rules/*.md", "AGENTS.md"). This project serves Claude Code and Codex
+from one set of instructions, so the governed prose no longer lives under `.claude/`; `CLAUDE.md`
+is now a one-line import of AGENTS.md and has nothing to budget. `harness-spine:update` must
+reconcile AROUND this target set, never onto it.
+
+DIVERGENCE (2026-09-08, DEAD_PATTERN): scan() now reports GOVERNED patterns that matched nothing,
+in addition to a wholly empty set. The move exposed the hole: `.claude/rules/*.md` went to zero
+while `CLAUDE.md` still matched, so the union stayed non-empty, the EMPTY guard never fired, and
+eight governed files left the budget in total silence. "An empty target set is a failure" has to
+mean each pattern, not their union. Covered by the must-block and must-pass halves in
+test_check_rules_size.py.
+
 """
 import glob
 import json
@@ -53,7 +66,7 @@ import os
 import sys
 
 BUDGET = 150  # soft line budget per instruction file
-GOVERNED = (".claude/rules/*.md", "CLAUDE.md")
+GOVERNED = (".agents/rules/*.md", "AGENTS.md")
 
 # A generated file is not hand-edited, so the four options below do not apply to it.
 GENERATED_MARKERS = ("<!-- generated", "<!--generated")
@@ -90,11 +103,11 @@ def emit(message: str) -> None:
 
 
 def project_root() -> str:
-    """`__file__`-based, not cwd: this file is `<root>/.claude/hooks/`, so the root is derivable
+    """`__file__`-based, not cwd: this file is `<root>/.agent-hooks/`, so the root is derivable
     wherever the hook is invoked from. cwd is wrong from any subdirectory."""
     if os.environ.get("CLAUDE_PROJECT_DIR"):
         return os.environ["CLAUDE_PROJECT_DIR"]
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def is_generated(head: "list[str]") -> bool:
@@ -103,9 +116,12 @@ def is_generated(head: "list[str]") -> bool:
 
 def scan(root: str):
     """Return (over_budget, unreadable, n_examined). Every governed file is accounted for."""
-    paths = set()
+    paths, dead_patterns = set(), []
     for pattern in GOVERNED:
-        paths.update(glob.glob(os.path.join(root, pattern)))
+        hits = glob.glob(os.path.join(root, pattern))
+        if not hits:
+            dead_patterns.append(pattern)
+        paths.update(hits)
 
     over, unreadable = [], []
     for path in sorted(paths):
@@ -122,7 +138,7 @@ def scan(root: str):
             continue
         if n_lines > BUDGET:
             over.append((rel, n_lines, is_generated(head)))
-    return over, unreadable, len(paths)
+    return over, unreadable, len(paths), dead_patterns
 
 
 def main() -> None:
@@ -134,7 +150,7 @@ def main() -> None:
         pass
 
     root = project_root()
-    over, unreadable, n_examined = scan(root)
+    over, unreadable, n_examined, dead_patterns = scan(root)
 
     if n_examined == 0:
         emit(
@@ -145,6 +161,16 @@ def main() -> None:
         return
 
     notes = []
+    if dead_patterns:
+        # One pattern going to zero while another still matches leaves the union non-empty, so
+        # the EMPTY guard above never fires and whole directories drop out of the budget in
+        # silence. Measured 2026-09-08: the cross-agent move took `.claude/rules/*.md` to zero
+        # while `CLAUDE.md` still matched, and this check said nothing.
+        notes.append(
+            "governed pattern(s) matched NOTHING: {0} -- those files were NOT checked. A glob "
+            "that stopped matching (moved or renamed directory) looks exactly like a clean "
+            "tree.".format(", ".join(dead_patterns))
+        )
     if unreadable:
         listed = ", ".join(f"{rel} ({why})" for rel, why in unreadable)
         notes.append(f"could not read {listed} -- those were NOT checked.")

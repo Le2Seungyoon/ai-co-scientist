@@ -1,8 +1,9 @@
 ---
 name: engineer
 description: Make an experiment possible — write additive pipeline code in src/ and scripts/ with offline tests, and hand back a runnable recipe. Use when an approved pre-report needs code that does not exist yet, or to prepare a queued candidate ahead of its turn. Never runs training, inference or submission.
-tools: Read, Write, Edit, Bash, Grep, Glob
-model: sonnet
+tools.claude: Read, Write, Edit, Bash, Grep, Glob
+model.claude: sonnet
+model.codex: gpt-5.6-sol
 ---
 
 <!-- **Claude Code —** model: sonnet — the design arrives decided (an approved pre-report, or a queued candidate

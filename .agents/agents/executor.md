@@ -1,8 +1,9 @@
 ---
 name: executor
 description: Execute ONE approved experiment exactly as specified and record what actually happened — register the pre-report, train, infer, submit, and write the result to the registry. Use after a pre-report is approved. Exclusive: never run two at once.
-tools: Read, Write, Edit, Bash, Grep, Glob
-model: sonnet
+tools.claude: Read, Write, Edit, Bash, Grep, Glob
+model.claude: sonnet
+model.codex: gpt-5.6-sol
 ---
 
 <!-- **Claude Code —** model: sonnet — 설계는 이미 승인된 선보고로 도착하므로 새 판단이 필요 없다. 대신 도구 호출이

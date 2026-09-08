@@ -29,6 +29,14 @@ credentials for one session overrides this list, and that authorization wins. `p
 only for things absolute across every context (person · solo/team · time) — e.g. "never commit
 secrets", "never force-push `main`". Context-dependent conventions stay here as prose.
 
+## Tracking scope is the user's call
+
+What this repo publishes is a competition decision. **Change `.gitignore` or the tracked set only
+when asked**, never on your own initiative — but do speak up if something about to be published
+is someone else's work (the organiser's baseline notebook was caught that way). Syntax trap: a
+directory pattern (`docs/`) stops git descending, so `!docs/<file>` cannot re-include anything —
+write `docs/*` + `!docs/<file>`.
+
 ## Commits
 
 - Message style: **English**, **single-line subject** with the core change only — no

@@ -1,10 +1,8 @@
----
-name: researcher
-description: Propose the next experiment hypothesis for the SEM→Depth task and draft its pre-report. Use when deciding what to try next.
-tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
-model: opus
----
+name = "researcher"
+description = "Propose the next experiment hypothesis for the SEM→Depth task and draft its pre-report. Use when deciding what to try next."
+model = "gpt-5.6-sol"
 
+developer_instructions = """
 <!-- **Claude Code —** model: opus — 제안 하나가 GPU 사이클과 DACON 제출 할당량을 소비한다. 예산에서 기대 이득을
      유도하고, 기각 목록(R1~R6)을 피하고, 반증 조건을 미리 거는 일은 전부 판단이다.
      잘못된 제안의 비용이 호출 비용보다 훨씬 크다. -->
@@ -64,3 +62,4 @@ Then state the metric's `(X, y)`. The target is **real SEM → real depth (the l
 - Register a falsifiable prediction with the proposal — the expected value AND the result that would
   refute the hypothesis.
 - Do NOT run training. You propose; `executor` runs.
+"""

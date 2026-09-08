@@ -9,8 +9,8 @@ weaker rule, it is a rule that never runs.
 
 | Layer | Use when | How it fails |
 |-------|----------|--------------|
-| **Prose** (`.claude/rules/*.md`) | context-dependent advice; the *why* behind a ban | quietly ignored under deadline |
-| **Hook** (`.claude/hooks/*.py`) | deterministic check, fast feedback, this session's edits | one false positive and it gets switched off |
+| **Prose** (`.agents/rules/*.md`) | context-dependent advice; the *why* behind a ban | quietly ignored under deadline |
+| **Hook** (`.agent-hooks/*.py`) | deterministic check, fast feedback, this session's edits | one false positive and it gets switched off |
 | **Test / CI invariant** | must hold no matter who authored the code | slow feedback; needs a real assertion |
 | **`permissions.deny`** | absolute in every context (person · solo/team · time) | blocks legitimate work with no escape |
 
@@ -114,9 +114,14 @@ stayed green. Green means "not in scope", never "not there".
 
 ## Where harness code lives
 
-- `.claude/hooks/` — event-driven, invoked by `settings.json`.
-- `.claude/scripts/` — generators and repo-wide scanners. Not event-driven: a person runs them,
-  and so does the freshness/invariant test that covers the paths hooks cannot see.
+`.agent-hooks/` — one directory, one copy of every hook and scanner, because more than one
+harness runs them and a per-harness home would fork the logic. What kind of script it is stays
+visible in **who calls it**, never in a directory name:
+
+- **Event-driven** — registered in `.claude/settings.json` and `.codex/config.toml`, whose
+  schemas are unrelated. Registered on one and not the other = that harness is unprotected.
+- **Generators and repo-wide scanners** — not event-driven: a person runs them, and so does the
+  freshness/invariant test that covers the paths hooks cannot see.
 
 Both ship with `test_<name>.py` beside them. The dividing line is **not** "is it agent-only" —
 both get referenced from rules files and both may be run by hand. It is **would this exist if
@@ -131,7 +136,10 @@ says who *owns* a script, never who may run it.
 | Commit-attribution gate | PreToolUse hook | no `Co-Authored-By` / `Generated with` trailer in `git commit` | none — deny |
 | Runtime-command gate | PreToolUse hook (`block_runtime_commands.py`) | the six experiment scripts run only where `runtime/registry.jsonl` exists | `ACS_RUNTIME_EXEMPT="<reason>"` |
 | File-size budget | PostToolUse hook (`check_rules_size.py`) | instruction files stay under the ~150-line soft budget | advisory, never blocks |
-| Rule-link scan | script (`check_rule_links.py`) | every path a rules file or agent definition names still exists | advisory; run it by hand until its false-positive rate on this tree is measured |
+| Rule-link scan | test (`tests/test_harness_generated.py` → `check_rule_links.py`) | every path a rules file or lane definition names still exists | none |
+| Generated-lane freshness | test (`tests/test_harness_generated.py` → `build-agents.py --check`) | `.claude/**` and `.codex/**` lanes and skills match their `.agents/` sources | none — regenerate |
+| Harness parity | test (`tests/test_harness_generated.py` → `test_harness_parity.py`) | both registrations wire the same hooks, every Codex lane is registered, every skill lives on both under one name | none |
+| Generated-lane rebuild | PostToolUse hook (`build-agents.py --hook`) | regenerates after a lane or skill **source** is edited | advisory, never blocks |
 | Registry write lock | code (`registry.locked()`) | concurrent pre-report writes cannot drop an entry | none — the lock wraps read+write |
 | Manifest contract | test (`tests/test_train_manifest.py`) | training scripts keep declaring the (X, y) domains | none |
 | Dependency management | `permissions.deny` | `uv pip install` and hand-edits to `uv.lock` | none — absolute |

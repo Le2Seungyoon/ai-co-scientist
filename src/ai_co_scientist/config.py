@@ -30,7 +30,7 @@ def load_config() -> dict:
 def load_dotenv() -> None:
     """.env → os.environ. 이미 설정된 키는 덮어쓰지 않음.
 
-    실 백엔드(DACON/Lightning)만 호출한다 — 테스트는 .env 없이도 전부 통과해야 한다."""
+    실 백엔드(DACON)만 호출한다 — 테스트는 .env 없이도 전부 통과해야 한다."""
     env_path = project_root() / ".env"
     if not env_path.exists():
         return

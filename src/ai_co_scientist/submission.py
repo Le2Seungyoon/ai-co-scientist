@@ -44,7 +44,7 @@ def decode_png_gray8(data: bytes) -> np.ndarray:
     """8-bit 그레이스케일 non-interlaced PNG → (H, W) uint8 배열.
 
     제출본은 `cv2.imwrite`가 쓴 8bit 1채널이다. 다른 형식이면 조용히 넘기지 않고 예외를 던진다 —
-    읽지 못한 파일을 통과로 세면 검사기가 무력해진다 (`.claude/rules/enforcement.md`).
+    읽지 못한 파일을 통과로 세면 검사기가 무력해진다 (`.agents/rules/enforcement.md`).
     """
     header, idat = None, bytearray()
     for ctype, payload in _png_chunks(data):

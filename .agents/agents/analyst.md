@@ -1,8 +1,9 @@
 ---
 name: analyst
 description: Interpret recorded results and keep docs/ current — relate validation metrics to leaderboard scores, recompute the error budget, and write the hypothesis backlog and data facts. Use after leaderboard scores are recorded.
-tools: Read, Write, Edit, Bash, Grep, Glob
-model: sonnet
+tools.claude: Read, Write, Edit, Bash, Grep, Glob
+model.claude: sonnet
+model.codex: gpt-5.6-sol
 ---
 
 <!-- **Claude Code —** model: sonnet — 표준 작업(예산 3분할 역산)이 프롬프트에 공식으로 박혀 있어 산술은 기계적이고

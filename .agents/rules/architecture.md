@@ -1,45 +1,31 @@
----
-paths:
-  - src/**
-  - scripts/**
-  - .claude/agents/**
----
 # Architecture
 
 Human (project lead) → main Claude (PM) → sub-agent (execution) → `scripts/` CLI → data / GPU /
 submission. No servers, no protocols. The agents share exactly one piece of state: the experiment
 registry.
 
-The `paths:` gate above covers `scripts/**` and `.claude/agents/**` on purpose — the parallel
-contract below governs sessions that *orchestrate* agents and run CLIs, not just sessions editing
-`src/`. A gate set to where a rule is stored, instead of where it executes, is a rule nobody reads.
-
 ## Layers & dependency direction
 
 | Layer | Location | Rule |
 |---|---|---|
-| Agent definitions | `.claude/agents/*.md` | Role prompts only. No code |
+| Lane definitions | `.agents/agents/*.md` (source) → `.claude/agents/*.md` · `.codex/agents/*.toml` (**generated**) | Role prompts only. No code. Edit the source, never a generated copy |
 | Harness package | `src/ai_co_scientist/` | `config.py` (settings) · `registry.py` (registry) · `sem.py` (pure SEM/depth logic: split, reparameterization, smoothing, QDA) · `backends/` (external I/O). This is what tests cover |
 | Execution CLI | `scripts/*.py` | Sub-agent entry points. Keep them thin |
-| State | `runtime/registry.jsonl` → `docs/experiment-registry.md` | The single truth of every experiment |
+| State | `runtime/registry.jsonl` → `docs/experiment-registry.md` | The single truth of every experiment. **`runtime/` is gitignored: the jsonl exists on this machine only, with no backup** — the rendered doc is the only copy in git |
 
 **Two layers of markdown, never mixed** (relocated here from `workflow.md`, 2026-09-01): the
-co-scientist's own agents are the role prompts in `.claude/agents/*.md`; `.claude/rules/*.md` are the
+co-scientist's own agents are the role prompts in `.agents/agents/*.md`; `.agents/rules/*.md` are the
 rules for whoever works *on* this repo. A runtime instruction belongs in the first, a working
-convention in the second. The old top-level `rules/` directory went away in the 2026-07-30 A2A strip.
+convention in the second.
 
 ## CLI / logic separation (migration in progress)
 
-The standalone-script boundary was **abolished on 2026-08-17**, together with the provisional
-Lightning Studio plan. Its premise — "upload one file and run it remotely" — was never once
-realized: every recorded experiment ran on the local GPU, and the registry mentions lightning zero
-times. The cost was real: `seed_everything` ×5, `ensure_utf8_console` ×3, `PlainMLP` / `UNetSmall` /
-`SmpModel` ×2 each, and, because scripts could not be imported, a `tests/` suite stuck on
-source-text contract checks.
+The standalone-script boundary was abolished on 2026-08-17: nothing ever ran remotely, and the
+cost was duplication no gate could see (`coding-patterns.md` → When to extract carries what it
+left behind).
 
 - **Restore it only if** remote GPU becomes a real need (training beyond the local 8 GB). The
-  deletion commit still holds the Lightning Studio CLI and its backend module; neither is in the
-  current tree, so look them up in git history rather than by path.
+  Lightning Studio CLI and its backend are in git history, not at any path in the tree.
 - **Migration is unfinished**: move logic into `src/` and keep `scripts/` a thin CLI. New code goes
   in `src/`; do not grow logic in a script. The one known remaining item: the smp model zoo still
   lives only in the frozen legacy trainer and has not been absorbed into `src/`.
@@ -64,7 +50,7 @@ source-text contract checks.
 | Class | Agents | Domain | Why it is safe |
 |---|---|---|---|
 | **Parallel (read)** | `researcher` · `reviewer` | — | read-only by contract; Bash is not withheld |
-| **Parallel (write)** | `engineer` · `harness-manager` · `analyst` | `src/scripts/tests` · `CLAUDE.md` + `.claude/**` · `docs/` | disjoint file domains by contract; the hook covers the worktree case only |
+| **Parallel (write)** | `engineer` · `harness-manager` · `analyst` | `src/scripts/tests` · `AGENTS.md` + `.agents/**` + `.agent-hooks/**` + both registrations · `docs/` | disjoint file domains by contract; the hook covers the worktree case only |
 | **Exclusive (one)** | `executor` | `runtime/` | one 8 GB GPU · DACON quota · checkpoint writes |
 
 `README.md` is human-facing and owned by no agent — it is outside every domain above, not folded
@@ -76,7 +62,7 @@ training, so the parallel gain is in analysis, criticism, proposals, and prepari
 experiments still queued.
 
 `engineer` and `executor` hold the SAME tools. What separates them is
-`.claude/hooks/block_runtime_commands.py`, which denies the six experiment scripts wherever
+`.agent-hooks/block_runtime_commands.py`, which denies the six experiment scripts wherever
 `runtime/registry.jsonl` is absent. That hook cannot see which sub-agent issued a command, so
 it only makes the boundary real in a worktree — **the engineer lane must run in a worktree**,
 or its contract is prose alone.
@@ -103,8 +89,8 @@ concurrent pre-report writes. Mechanics: `orca-parallel.md`.
 Panes in one worktree **share its branch** — a second session cannot be on a different one. Split
 the worktree, not the pane, when experiments need separate branches.
 
-## Removed structure (2026-07-30)
+## No protocol layer
 
-The A2A 7-server layout (`a2a/`, `agents/`), five MCP servers (`mcp_servers/`), the LLM router
-(`llm/`) and the toy task. They are in git history. Do not revive them — the competition asks for
-autonomous collaboration, not a protocol.
+The A2A / MCP-server layout was stripped on 2026-07-30 and stays out: the competition asks for
+autonomous collaboration, not a protocol. `tests/test_config.py::test_no_a2a_leftovers` holds the
+config half; the rest is judgment about what to build next.

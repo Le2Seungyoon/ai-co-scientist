@@ -1,6 +1,6 @@
 """실험 기록소 — 모든 실험의 단일 진실 소스.
 
-`.claude/rules/workflow.md` → Experiment Pre-Report의 기계적 집행 지점이다.
+`.agents/rules/workflow.md` → Experiment Pre-Report의 기계적 집행 지점이다.
 선보고 5항목(X / y / 모델·하이퍼 / 방법론 / 목적)과 **판정지표의 (X, y)** 를 받지 않으면
 실험을 등록할 수 없다. 지표 도메인이 타깃(real→real)과 다르면 경고를 박아둔다 —
 sim SEM→sim depth 지표를 real validation으로 착각해 여러 실험을 헛돌린 실패의 재발 방지선.

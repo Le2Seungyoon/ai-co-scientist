@@ -1,8 +1,9 @@
 ---
 name: harness-manager
 description: Own the harness — AGENTS.md, .agents/rules, .agents/agents, .agents/skills, .agent-hooks and both harness registrations. Route a new rule to its layer, implement gates with their tests, and restructure instruction files that grew too long. Use when capturing a learning, when the size-budget hook nudges, or when a rule no longer matches reality.
-tools: Read, Write, Edit, Bash, Grep, Glob
-model: opus
+tools.claude: Read, Write, Edit, Bash, Grep, Glob
+model.claude: opus
+model.codex: gpt-5.6-sol
 ---
 
 <!-- **Claude Code —** model: opus — the core judgment here is enforcement.md's routing (prose / hook / test /
