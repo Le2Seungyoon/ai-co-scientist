@@ -28,6 +28,12 @@
             "if": "Bash(git commit:*)",
             "timeout": 10,
             "statusMessage": "Checking commit message for AI attribution trailers..."
+          },
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block_runtime_commands.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking the experiment command runs where the registry lives..."
           }
         ]
       }
