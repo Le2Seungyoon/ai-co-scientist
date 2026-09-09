@@ -10,6 +10,7 @@ Each scenario needs its own tree because the verdict turns on whether
 
 Stdlib only, no test runner: pytest does not collect this file (`testpaths = ["tests"]`).
 """
+import importlib.util
 import json
 import os
 import subprocess
@@ -27,6 +28,23 @@ def run(root, command, env_extra=None, raw=None):
     if env_extra:
         env.update(env_extra)
     payload = raw if raw is not None else json.dumps(
+        {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+         "tool_input": {"command": command}}
+    )
+    proc = subprocess.run(
+        [sys.executable, HOOK], input=payload, capture_output=True, text=True, env=env
+    )
+    return proc.stdout, proc.returncode
+
+
+def run_no_project_dir(command, env_extra=None):
+    """Same as run(), but with CLAUDE_PROJECT_DIR unset -- exercises the __file__ fallback in
+    project_root(). Falls back to the real repo root, which HAS runtime/registry.jsonl."""
+    env = dict(os.environ)
+    env.pop("CLAUDE_PROJECT_DIR", None)
+    if env_extra:
+        env.update(env_extra)
+    payload = json.dumps(
         {"hook_event_name": "PreToolUse", "tool_name": "Bash",
          "tool_input": {"command": command}}
     )
@@ -59,6 +77,13 @@ def make_tree(with_registry):
         with open(os.path.join(root, "runtime", "registry.jsonl"), "w") as f:
             f.write("{}\n")
     return root
+
+
+def load_hook_module():
+    spec = importlib.util.spec_from_file_location("block_runtime_commands", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def main():
@@ -107,6 +132,39 @@ def main():
     check("garbage payload does not deny", not denied(out), out[:120])
     out, rc = run(worktree, None, raw="")
     check("empty payload exits 0", rc == 0, f"rc={rc}")
+
+    print("ruling 4 -- invocation must start a command segment (fix round 1)")
+    # Finding 1: `uv run <script>` with no `python` token is a real invocation and must deny.
+    out, _ = run(worktree, "uv run scripts/exp.py new")
+    check("denies: uv run with no python token", denied(out), out[:120] or "silent")
+    out, _ = run(worktree, "uv run ./scripts/exp.py new")
+    check("denies: uv run ./relative-path with no python token", denied(out), out[:120] or "silent")
+    # Finding 2: a MENTION of the invocation (inside another command's arguments) must pass.
+    out, _ = run(worktree, 'echo "run python scripts/exp.py later"')
+    check("passes: echo merely quoting the invocation", not denied(out), out[:120])
+    # Finding 5b: a ";"-separated segment still gets caught when the token opens ITS segment.
+    out, _ = run(worktree, "cd /tmp; uv run python scripts/train_level.py")
+    check("denies: guarded invocation in the second ;-separated segment", denied(out),
+          out[:120] or "silent")
+    # Known-gap class (declared, not fixed): token and guarded path in different segments.
+    out, _ = run(worktree, "python -V; sh scripts/train_level.py")
+    check("passes: token and guarded path split across segments (declared known gap)",
+          not denied(out), out[:120])
+
+    print("finding 5a -- project_root() __file__ fallback")
+    out, rc = run_no_project_dir("uv run python scripts/train_structure.py --arch mlp")
+    check("no CLAUDE_PROJECT_DIR: falls back to real repo root (has registry) -> passes",
+          not denied(out), out[:120])
+    check("no CLAUDE_PROJECT_DIR: exits 0", rc == 0, f"rc={rc}")
+
+    print("finding 3 -- GUARDED stays tied to reality")
+    hook_mod = load_hook_module()
+    guarded = hook_mod.GUARDED
+    check("GUARDED is non-empty", bool(guarded), "GUARDED is empty")
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(HOOK))))
+    for script in guarded:
+        path = os.path.join(repo_root, *script.split("/"))
+        check(f"GUARDED entry exists on disk: {script}", os.path.isfile(path), path)
 
     print()
     if failures:
