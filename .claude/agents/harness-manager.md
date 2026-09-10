@@ -62,4 +62,7 @@ three, and never assert the first two without having run them:
    A hook sees this session's tool calls only. Naming the gap is part of the deliverable; a
    report that says "this is now enforced" without it is wrong.
 
-Then: `python .claude/scripts/check_rule_links.py` and every hook test in `.claude/hooks/`.
+Then: `python .claude/scripts/check_rule_links.py`, and every `test_*.py` beside the checks it
+sits next to — in `.claude/hooks/` and in `.claude/scripts/` alike. A checker you just edited is
+not verified by watching it pass on a green tree; that only proves the must-pass half. Run its own
+test file, not just the checker itself.

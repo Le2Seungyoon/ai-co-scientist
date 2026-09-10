@@ -36,13 +36,15 @@ Everything else: do not hand-edit here; reconcile with that skill so the copies 
 this project diverges anywhere beyond the source roots, say why in this docstring.
 
 DIVERGENCE (2026-09-04): `GOVERNED` widened to add `.claude/agents` — this project's agent
-definitions (`.claude/agents/*.md`) now carry backticked pointers into `.claude/rules/` and
+definitions (`.claude/agents/*.md`) carry backticked pointers into `.claude/rules/` and
 `.claude/hooks/` (e.g. `harness-manager.md`) the same way rules files do, and those pointers were
-previously unchecked (`.claude/agents` sat outside every governed root). Re-measured on this
-project's tree after widening: 96 references across 13 files, 0 findings. If the shipped skeleton
-does not yet ship agent definitions with harness-internal pointers, this line is this project's own
-addition, not a reconciliation target — `harness-spine:update` should adopt it upstream only if the
-same pattern shows up generally, not silently drop it as drift.
+previously unchecked (`.claude/agents` sat outside every governed root). At the time of widening
+this passed clean (a snapshot, not a re-checked invariant — re-run the scanner for the current
+count rather than trust a number written here).
+OPEN ITEM, not yet reconciled with the shipped skeleton: this repo has not checked whether the
+skeleton ships agent definitions with harness-internal pointers of its own. Until that is checked,
+treat this widening as project-local — `harness-spine:update` should decide whether to adopt it
+upstream, not assume either way.
 """
 import os
 import re
