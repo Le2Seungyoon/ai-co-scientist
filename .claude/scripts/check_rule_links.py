@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scanner: every file a rules file points at must exist.
+"""Scanner: every file a rules file or agent definition points at must exist.
 
 Run: python3 .claude/scripts/check_rule_links.py     (exit 1 on findings)
 
@@ -34,12 +34,21 @@ deliberate exception: the source roots in `SEARCH_DIRS` are filled per project. 
 expected to differ and is NOT drift — `harness-spine:update` reconciles around it, never onto it.
 Everything else: do not hand-edit here; reconcile with that skill so the copies do not drift. If
 this project diverges anywhere beyond the source roots, say why in this docstring.
+
+DIVERGENCE (2026-09-04): `GOVERNED` widened to add `.claude/agents` — this project's agent
+definitions (`.claude/agents/*.md`) now carry backticked pointers into `.claude/rules/` and
+`.claude/hooks/` (e.g. `harness-manager.md`) the same way rules files do, and those pointers were
+previously unchecked (`.claude/agents` sat outside every governed root). Re-measured on this
+project's tree after widening: 96 references across 13 files, 0 findings. If the shipped skeleton
+does not yet ship agent definitions with harness-internal pointers, this line is this project's own
+addition, not a reconciliation target — `harness-spine:update` should adopt it upstream only if the
+same pattern shows up generally, not silently drop it as drift.
 """
 import os
 import re
 import sys
 
-GOVERNED = ("CLAUDE.md", ".claude/rules")
+GOVERNED = ("CLAUDE.md", ".claude/rules", ".claude/agents")
 EXTENSIONS = (".md", ".py", ".json", ".sh")
 # Where a bare filename is allowed to live: the harness dirs, plus this project's SOURCE ROOTS.
 # Source roots, filled for this project. Rules files name modules the way the code imports them

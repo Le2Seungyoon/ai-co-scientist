@@ -66,6 +66,15 @@ def main():
         build(root, claude_md="| `nope.md` | when to read |\n")
         check("broken pointer in CLAUDE.md is caught", "RULE_LINKS_BROKEN" in run(root)[0])
 
+    with tempfile.TemporaryDirectory() as root:
+        build(root)
+        os.makedirs(os.path.join(root, ".claude", "agents"), exist_ok=True)
+        with open(os.path.join(root, ".claude", "agents", "gardener.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: gardener\n---\nSee `.claude/hooks/gone.py` for the guard.\n")
+        out, rc = run(root)
+        check("broken pointer in .claude/agents/*.md is caught", "RULE_LINKS_BROKEN" in out, out[:70])
+        check(".claude/agents finding names its file", "gardener.md:4" in out, out[:70])
+
     # --- must-pass half: none of these is a broken path ---
     with tempfile.TemporaryDirectory() as root:
         build(
@@ -93,6 +102,15 @@ def main():
         check("clean tree reports clean", "RULE_LINKS_CLEAN" in out, out[:90])
         check("clean tree exits 0", rc == 0, f"rc={rc}")
         check("clean tree says how many it examined", "references across" in out, out[:90])
+
+    with tempfile.TemporaryDirectory() as root:
+        build(root, rules={"a.md": "# A\n"})
+        os.makedirs(os.path.join(root, ".claude", "agents"), exist_ok=True)
+        with open(os.path.join(root, ".claude", "agents", "gardener.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: gardener\n---\nRead `.claude/rules/a.md` first.\n")
+        out, rc = run(root)
+        check(".claude/agents is in the governed scope", "RULE_LINKS_CLEAN" in out, out[:90])
+        check(".claude/agents reference is counted", "1 references across 3 files" in out, out)
 
     # --- an empty target set is a failure, not a pass ---
     with tempfile.TemporaryDirectory() as root:
