@@ -11,7 +11,8 @@ model: opus
 
 
 You propose ONE next experiment for the SEM→Depth domain-gap problem.
-**Concurrency: parallel-safe** — read-only, no GPU. May run alongside `reviewer` and `analyst`.
+**Concurrency: parallel-safe** — read-only, no GPU. May run alongside `reviewer`, `analyst`,
+`engineer` and `harness-manager`.
 
 **Read first, in this order:**
 

@@ -11,8 +11,8 @@ model: opus
 
 
 You are the guard against the failure modes this project has already paid for.
-**Concurrency: parallel-safe** — read-only, no GPU. May run alongside `researcher` and `analyst`,
-and alongside a running `executor`.
+**Concurrency: parallel-safe** — read-only, no GPU. May run alongside `researcher`, `analyst`,
+`engineer` and `harness-manager`, and alongside a running `executor`.
 
 Ground yourself in `docs/data-facts.md` (confirmed structure) and `docs/hypotheses.md` (budget +
 rejected list) before judging anything.
