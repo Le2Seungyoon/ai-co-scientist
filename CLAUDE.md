@@ -126,8 +126,8 @@ integration, and:
 `.claude/settings.json` wires four: a PR gate (blocks `git push` when `origin/main` is not merged
 in), a commit-attribution deny hook, a runtime-command deny hook (`block_runtime_commands.py` —
 experiment scripts only run where `runtime/registry.jsonl` lives), and a PostToolUse hook that
-scans the instruction files for the ~150-line budget. Repo-wide scanners live in `.claude/scripts/` (not `.claude/hooks/`), and both ship
-with their tests — `enforcement.md` → Where harness code lives.
+scans the instruction files for the ~150-line budget. Repo-wide scanners live in
+`.claude/scripts/`, not `.claude/hooks/` — `enforcement.md` → Where harness code lives.
 
 **Hooks only see this session's edits.** Code written in an IDE, by a teammate, or by another agent
 passes none of them, and a silent hook is not proof a check ran. Rules that must hold on every

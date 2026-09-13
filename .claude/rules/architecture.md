@@ -63,8 +63,8 @@ source-text contract checks.
 
 | Class | Agents | Domain | Why it is safe |
 |---|---|---|---|
-| **Parallel (read)** | `researcher` · `reviewer` | — | no write tool |
-| **Parallel (write)** | `engineer` · `harness-manager` · `analyst` | `src/scripts/tests` · `.claude/**` · `docs/` | domains do not overlap; `runtime/` denied by hook |
+| **Parallel (read)** | `researcher` · `reviewer` | — | read-only by contract; Bash is not withheld |
+| **Parallel (write)** | `engineer` · `harness-manager` · `analyst` | `src/scripts/tests` · `CLAUDE.md` + `.claude/**` · `docs/` | disjoint file domains by contract; the hook covers the worktree case only |
 | **Exclusive (one)** | `executor` | `runtime/` | one 8 GB GPU · DACON quota · checkpoint writes |
 
 Five agents may run alongside one `executor`. With a single GPU there is no way to parallelize
