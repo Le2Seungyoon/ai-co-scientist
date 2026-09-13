@@ -61,13 +61,21 @@ source-text contract checks.
 
 ## Parallel execution contract (sub-agents)
 
-| Class | Agents | Why |
-|---|---|---|
-| **Parallel-safe** | `research` · `critic` · `analyst` | read-only. No GPU, no submission, no writes |
-| **Exclusive (one at a time)** | `experimenter` | one 8 GB GPU · DACON quota · checkpoint writes |
+| Class | Agents | Domain | Why it is safe |
+|---|---|---|---|
+| **Parallel (read)** | `researcher` · `reviewer` | — | no write tool |
+| **Parallel (write)** | `engineer` · `harness-manager` · `analyst` | `src/scripts/tests` · `.claude/**` · `docs/` | domains do not overlap; `runtime/` denied by hook |
+| **Exclusive (one)** | `executor` | `runtime/` | one 8 GB GPU · DACON quota · checkpoint writes |
 
-Three read-only agents may run alongside one `experimenter` — the parallel gain is in analysis,
-criticism and proposals, not in execution. With a single GPU there is no way to parallelize training.
+Five agents may run alongside one `executor`. With a single GPU there is no way to parallelize
+training, so the parallel gain is in analysis, criticism, proposals, and preparing the code for
+experiments still queued.
+
+`engineer` and `executor` hold the SAME tools. What separates them is
+`.claude/hooks/block_runtime_commands.py`, which denies the six experiment scripts wherever
+`runtime/registry.jsonl` is absent. That hook cannot see which sub-agent issued a command, so
+it only makes the boundary real in a worktree — **the engineer lane must run in a worktree**,
+or its contract is prose alone.
 
 **Shared-state race conditions** — both were measured and fixed:
 

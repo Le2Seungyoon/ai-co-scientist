@@ -129,6 +129,7 @@ says who *owns* a script, never who may run it.
 |---|---|---|---|
 | PR gate | PreToolUse hook (`settings.json`) | `origin/main` is merged into the branch before `git push` | none — deny |
 | Commit-attribution gate | PreToolUse hook | no `Co-Authored-By` / `Generated with` trailer in `git commit` | none — deny |
+| Runtime-command gate | PreToolUse hook (`block_runtime_commands.py`) | the six experiment scripts run only where `runtime/registry.jsonl` exists | `ACS_RUNTIME_EXEMPT="<reason>"` |
 | File-size budget | PostToolUse hook (`check_rules_size.py`) | instruction files stay under the ~150-line soft budget | advisory, never blocks |
 | Rule-link scan | script (`check_rule_links.py`) | every path a rules file names still exists | advisory; run it by hand until its false-positive rate on this tree is measured |
 | Registry write lock | code (`registry.locked()`) | concurrent pre-report writes cannot drop an entry | none — the lock wraps read+write |

@@ -97,27 +97,16 @@ Format:
 
 Gotchas accumulate; a bloated rules file loads in full every session and dilutes signal. Soft
 budget: **~150 lines per file** (CLAUDE.md and each `.claude/rules/*.md`). A PostToolUse hook
-(`.claude/hooks/check_rules_size.py`, wired in `settings.json`) scans the governed set and nudges.
-Detection is deterministic; the response is a **four-option judgment, in priority order** — review
-the whole file, never just shave the line you added:
+(`.claude/hooks/check_rules_size.py`) scans the governed set and nudges.
 
-- **① Relocate — you decide.** If a section is really another rules file's topic, move it to the
-  file that owns it and leave a one-line pointer. Content ownership beats file convenience.
-  Precedent: the "agent prompts vs repo rules" layer note moved `workflow.md` → `architecture.md`
-  (2026-09-01).
-- **② Split — you decide (the plugin can't).** If the overflow is a distinct sub-topic a `paths:`
-  glob can gate, move it into its own path-scoped rules file and cross-reference from the parent.
-  Don't split just to hit the number.
-- **③ Abstract — you decide (highest leverage).** If several concrete items are instances of one
-  generative principle, state the principle and delete the examples it regenerates. Keep only
-  examples with a non-derivable why (a gotcha).
-- **④ Compress / dedupe / currency — delegate to the plugin.** `AskUserQuestion` whether to clean
-  up, then invoke `claude-md-management:claude-md-improver` via `Skill`, **naming the over-budget
-  file** (its discovery only scans `CLAUDE.md`).
+Detection is deterministic; the response is judgment. **Invoke the `refactor-agent-rules`
+skill** — it holds the four remedies (relocate / split / abstract / compress, in that order),
+the parallel prune-what-enforcement-covers check, and the two deletion tests. Do not improvise
+a shortening pass: compression is the weakest of the four and the untrained reflex.
 
-**A generated file takes none of the four** — `docs/experiment-registry.md` above all. Hand-edits and
-compression skills are both discarded by the next `scripts/exp.py render`; the only lever is the
-generator (`enforcement.md` → Keeping a generated artifact alive).
+**A generated file takes none of the four** — `docs/experiment-registry.md` above all. Hand
+edits and compression are both discarded by the next `scripts/exp.py render`; the only lever is
+the generator (`enforcement.md` -> Keeping a generated artifact alive).
 
 A tight single-topic file slightly over budget is fine — these are levers, not a mandate.
 

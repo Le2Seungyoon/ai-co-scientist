@@ -25,8 +25,8 @@ now call the `scripts/` CLI directly.
 - **Logic in `src/`, `scripts/` thin** — the standalone constraint was abolished on 2026-08-17.
   The migration is unfinished, so **write new code in `src/` and do not grow logic in a script**.
   `.claude/rules/architecture.md`.
-- **Only `experimenter` is exclusive** — when running sub-agents concurrently, one `experimenter`
-  (GPU + submissions), while `research` / `critic` / `analyst` may run in parallel.
+- **Only `executor` is exclusive** — one `executor` at a time (GPU + submissions). The other
+  five run in parallel; the three that write are kept apart by file domain, not by luck.
   `.claude/rules/architecture.md` → Parallel execution contract.
 
 ## Commands
@@ -99,11 +99,34 @@ a whole-PC reboot is a driver bugcheck, not an OOM. `.claude/rules/coding-patter
 | `.claude/rules/enforcement.md` | turning a rule into a hook / test / deny — and before promoting any check |
 | `.claude/rules/self-review.md` | at the end of every task, before declaring done |
 
+## Sub-agent roster
+
+| Agent | Owns | Class |
+|---|---|---|
+| `researcher` | hypotheses, pre-report drafts | parallel (read) |
+| `reviewer` | audits of designs and conclusions | parallel (read) |
+| `engineer` | `src/` `scripts/` `tests/` | parallel (write) |
+| `harness-manager` | `CLAUDE.md` `.claude/**` | parallel (write) |
+| `analyst` | `docs/` (not the generated registry) | parallel (write) |
+| `executor` | `runtime/` — runs and records | **exclusive** |
+
+The orchestrator (main session) owns the queue, the assignment, the ranking and the
+integration, and:
+
+- **does not execute experiments** — that bypasses the exclusivity contract and the registry path;
+- **escalates irreversible actions to the human** — submission, `git push`/`checkout`/`branch`,
+  registry corrections;
+- **does not skip `reviewer`** — judging a pre-report sound is not the same as auditing it;
+- **does not invent conclusions** — only what `analyst` and `reviewer` support;
+- **does not rank without stated criteria** — write the criteria and their application down
+  (`docs/hypotheses.md` -> ranking criteria).
+
 ## Enforcement hooks
 
-`.claude/settings.json` wires three: a PR gate (blocks `git push` when `origin/main` is not merged
-in), a commit-attribution deny hook, and a PostToolUse hook that scans the instruction files for the
-~150-line budget. Repo-wide scanners live in `.claude/scripts/` (not `.claude/hooks/`), and both ship
+`.claude/settings.json` wires four: a PR gate (blocks `git push` when `origin/main` is not merged
+in), a commit-attribution deny hook, a runtime-command deny hook (`block_runtime_commands.py` —
+experiment scripts only run where `runtime/registry.jsonl` lives), and a PostToolUse hook that
+scans the instruction files for the ~150-line budget. Repo-wide scanners live in `.claude/scripts/` (not `.claude/hooks/`), and both ship
 with their tests — `enforcement.md` → Where harness code lives.
 
 **Hooks only see this session's edits.** Code written in an IDE, by a teammate, or by another agent
@@ -118,6 +141,9 @@ authoring path need a test instead.
 - `docs/hypotheses.md` — hypothesis backlog + **error budget**. Pick the next experiment here and
   compute its expected gain; rejected entries carry their reasons, so check before re-proposing.
   The three budget components are nearly flat (4.3 / 2.5 / 2.4), so there is no dominant lever —
-  and three of the four large gains so far came with **zero training**, which is why the cheap axes
-  are swept first.
+  and **all four** submissions that improved the leaderboard by 0.4 or more came with **zero
+  training** (EXP-009 −2.353 · EXP-010 armC −0.522 · EXP-016 −0.513 · EXP-014 −0.469; the only
+  training-bearing improvement is EXP-003, −0.396), which is why the cheap axes are swept first.
+  Deltas are re-derivable from `runtime/registry.jsonl`; `docs/hypotheses.md` → 순위 기준 holds
+  the same claim — fix both or neither.
 - README — data preparation / baseline reproduction / enabling the real backends.

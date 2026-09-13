@@ -4,9 +4,9 @@
 
 ## 아키텍처 요약
 
-사람(프로젝트 리더) → 메인 Claude(PM) → `.claude/agents/`의 sub-agent(research·experimenter·
-analyst·critic) → `scripts/` CLI → 데이터/GPU/제출. 별도 서버·프로토콜 없이 메인 Claude 세션
-안에서 sub-agent를 호출하는 구조이고, 에이전트 간 상태 공유는 실험 기록소
+사람(프로젝트 리더) → 메인 Claude(PM) → `.claude/agents/`의 sub-agent(researcher·reviewer·
+engineer·harness-manager·analyst·executor) → `scripts/` CLI → 데이터/GPU/제출. 별도 서버·
+프로토콜 없이 메인 Claude 세션 안에서 sub-agent를 호출하는 구조이고, 에이전트 간 상태 공유는 실험 기록소
 (`runtime/registry.jsonl` → `docs/experiment-registry.md`) 하나로 한다.
 
 ## 빠른 시작
@@ -117,8 +117,9 @@ DACON이 forum(https://dacon.io/forum/403557)에 공식 배포하는 `dacon_subm
 ├── docs/hypotheses.md     # 가설 백로그 + 오차 예산
 ├── docs/experiment-registry.md # 실험 기록소 렌더 문서 (scripts/exp.py render 산출물)
 ├── config.yaml            # 경로·타깃 도메인·학습 기본값
-├── .claude/agents/        # research/experimenter/analyst/critic — sub-agent 역할 프롬프트
+├── .claude/agents/        # researcher/reviewer/engineer/harness-manager/analyst/executor — 역할 프롬프트
 ├── .claude/rules/         # 이 저장소에서 일하는 규칙 (agents/와 다른 층)
+├── .claude/skills/        # refactor-agent-rules — 지시 파일 재구조화 판단 방법
 ├── data/                  # 대회 데이터셋 (git 미추적, "베이스라인 재현" §1 참고해 직접 받아서 채울 것)
 ├── scripts/               # exp.py · train_level.py · train_structure.py · infer_decomposed.py ·
 │   │                      # probe_level.py · dacon_submit.py
