@@ -37,8 +37,9 @@ test over the tree itself (`enforcement.md` → Four layers).
   inference. **This is a stand-in that cannot check behavior** — as logic moves into `src/`, replace
   each check with a real unit test (`architecture.md` → CLI / logic separation). `scripts/legacy/` is
   not checked: frozen, reproduction-only, cannot regress.
-- **`.claude/scripts/check_rule_links.py`** pins that every file a rules file points at still exists —
-  the pointers `workflow.md` → File size budget tells you to leave behind. Not yet wired into the
+- **`.claude/scripts/check_rule_links.py`** pins that every file a rules file or an agent
+  definition points at still exists — the pointers `workflow.md` → File size budget tells you to
+  leave behind. Not yet wired into the
   suite; run it by hand (`self-review.md` → Gates) until its false-positive rate here is measured.
 
 ## Freshness tests for generated artifacts

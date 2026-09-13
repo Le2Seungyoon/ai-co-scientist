@@ -83,7 +83,8 @@ def main():
         check("over-budget rules file nudges", bool(msg), "silent")
         check("nudge reports the real line count", str(BUDGET + 50) in msg, msg[:60])
         check("nudge names the file", "over.md" in msg, msg[:60])
-        check("nudge names the four options", all(w in msg for w in ("RELOCATE", "SPLIT", "ABSTRACT", "COMPRESS")), msg[:60])
+        check("nudge routes to the refactor skill", "refactor-agent-rules" in msg, msg[:60])
+        check("nudge warns against improvising a shortening pass", "compression is the weakest" in msg, msg[:60])
         check("nudge cites the rule file it enforces", "workflow.md" in msg, msg[:60])
         check("advisory: exit code stays 0", rc == 0, f"rc={rc}")
 
@@ -104,14 +105,14 @@ def main():
         msg, _ = run(root, payload())
         check("over-budget generated file nudges", bool(msg), "silent")
         check("generated file gets the generator advice", "GENERATED" in msg and "generator" in msg, msg[:80])
-        check("generated file is NOT told to run the compression skill", "claude-md-improver" not in msg, msg[:80])
+        check("generated file is NOT routed to the refactor skill", "refactor-agent-rules" not in msg, msg[:80])
 
     with tree(**{
         ".claude__rules__ledger.md": (BUDGET + 50, GENERATED_HEADER),
         ".claude__rules__workflow.md": BUDGET + 10,
     }) as root:
         msg, _ = run(root, payload())
-        check("mixed over-budget set gets both advices", "claude-md-improver" in msg and "generator" in msg, msg[:80])
+        check("mixed over-budget set gets both advices", "refactor-agent-rules" in msg and "generator" in msg, msg[:80])
 
     # --- must-pass half: everything below is legitimate work and must stay silent ---
     with tree(**{

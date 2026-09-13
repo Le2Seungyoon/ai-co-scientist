@@ -33,6 +33,16 @@ Do not hand-edit it here — reconcile with the `harness-spine:update` skill so 
 drift. If this project deliberately diverges, say why in this docstring.
 Tune BUDGET below if a project wants a different soft cap.
 
+DELIBERATE DIVERGENCE (2026-09-04, AUTHORED_ADVICE): the skeleton's advice enumerates the four
+    remedies inline and routes the compress option to `claude-md-management:claude-md-improver`.
+    This project moved the method into its own local skill, `refactor-agent-rules` (it holds the
+    four remedies in priority order plus the deletion tests), and `workflow.md` -> File size
+    budget now routes there; leaving the old text here would make the nudge -- the only advice an
+    author actually sees -- contradict the rule it cites. OPEN ITEM, not reconciled upstream:
+    `refactor-agent-rules` is local to this repo, so the skeleton cannot adopt this wording until
+    the skill ships with it. `harness-spine:update` should decide that, not assume either way;
+    until then treat the advice string as project-local and the rest of this file as shared.
+
 DELIBERATE DIVERGENCE (settings.json, not this file): this project wires the hook with
     `python`, not the skeleton's `python3` — Windows ships no `python3` on PATH. The
     interpreter that resolves here is 3.8, so keep this file free of 3.9+ syntax.
@@ -50,16 +60,11 @@ GENERATED_MARKERS = ("<!-- generated", "<!--generated")
 HEAD_LINES = 5  # how far into a file to look for the marker
 
 AUTHORED_ADVICE = (
-    "REVIEW THE WHOLE FILE -- never just shave the line you added. Apply "
-    "workflow.md -> 'File size budget', in order: (1) RELOCATE -- a section that's really "
-    "another rules file's topic belongs there; move it and leave a one-line pointer. "
-    "(2) SPLIT is your judgment -- if a distinct sub-topic can be gated by a paths: glob, "
-    "move it to its own rules file (may drop this file under budget). (3) ABSTRACT -- if "
-    "several concrete items are instances of one generative principle, state the principle "
-    "and delete the examples it regenerates; keep only examples with a non-derivable why. "
-    "(4) COMPRESS/dedupe/currency -- delegate: AskUserQuestion then invoke the "
-    "claude-md-management:claude-md-improver skill on this file. Advisory: a tight "
-    "single-topic file slightly over is fine."
+    "REVIEW THE WHOLE FILE -- never just shave the line you added. Invoke the "
+    "refactor-agent-rules skill on this file: it holds the remedies and their priority order. "
+    "Do not improvise a shortening pass -- compression is the weakest of them and the "
+    "untrained reflex. See workflow.md -> 'File size budget'. Advisory: a tight single-topic "
+    "file slightly over is fine."
 )
 
 GENERATED_ADVICE = (

@@ -11,8 +11,11 @@ model: opus
 
 
 You propose ONE next experiment for the SEM→Depth domain-gap problem.
-**Concurrency: parallel-safe** — read-only, no GPU. May run alongside `reviewer`, `analyst`,
-`engineer` and `harness-manager`.
+**Concurrency: parallel-safe** — read-only *by contract*, no GPU; `Bash` is not withheld, so
+nothing mechanically stops a write or an experiment command (`block_runtime_commands.py` denies
+nothing in the main worktree). The contract is the only thing holding — do not lean on the hook.
+May run alongside `reviewer`, `analyst`, `engineer` and `harness-manager`, and alongside a
+running `executor`.
 
 **Read first, in this order:**
 

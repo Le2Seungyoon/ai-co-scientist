@@ -131,7 +131,7 @@ says who *owns* a script, never who may run it.
 | Commit-attribution gate | PreToolUse hook | no `Co-Authored-By` / `Generated with` trailer in `git commit` | none — deny |
 | Runtime-command gate | PreToolUse hook (`block_runtime_commands.py`) | the six experiment scripts run only where `runtime/registry.jsonl` exists | `ACS_RUNTIME_EXEMPT="<reason>"` |
 | File-size budget | PostToolUse hook (`check_rules_size.py`) | instruction files stay under the ~150-line soft budget | advisory, never blocks |
-| Rule-link scan | script (`check_rule_links.py`) | every path a rules file names still exists | advisory; run it by hand until its false-positive rate on this tree is measured |
+| Rule-link scan | script (`check_rule_links.py`) | every path a rules file or agent definition names still exists | advisory; run it by hand until its false-positive rate on this tree is measured |
 | Registry write lock | code (`registry.locked()`) | concurrent pre-report writes cannot drop an entry | none — the lock wraps read+write |
 | Manifest contract | test (`tests/test_train_manifest.py`) | training scripts keep declaring the (X, y) domains | none |
 | Dependency management | `permissions.deny` | `uv pip install` and hand-edits to `uv.lock` | none — absolute |

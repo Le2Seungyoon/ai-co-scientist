@@ -106,7 +106,7 @@ a whole-PC reboot is a driver bugcheck, not an OOM. `.claude/rules/coding-patter
 | `researcher` | hypotheses, pre-report drafts | parallel (read) |
 | `reviewer` | audits of designs and conclusions | parallel (read) |
 | `engineer` | `src/` `scripts/` `tests/` | parallel (write) |
-| `harness-manager` | `CLAUDE.md` `.claude/**` | parallel (write) |
+| `harness-manager` | `CLAUDE.md` `README.md` `.claude/**` | parallel (write) |
 | `analyst` | `docs/` (not the generated registry) | parallel (write) |
 | `executor` | `runtime/` — runs and records | **exclusive** |
 
@@ -119,7 +119,7 @@ integration, and:
 - **does not skip `reviewer`** — judging a pre-report sound is not the same as auditing it;
 - **does not invent conclusions** — only what `analyst` and `reviewer` support;
 - **does not rank without stated criteria** — write the criteria and their application down
-  (`docs/hypotheses.md` -> ranking criteria).
+  (`docs/hypotheses.md` → 순위 기준).
 
 ## Enforcement hooks
 

@@ -135,5 +135,5 @@ that keeps growing and getting corrected.
 ```bash
 uv run pytest -q                       # must pass before declaring done (offline, no API keys)
 uv run ruff check src tests scripts    # lint (line-length 100)
-python .claude/scripts/check_rule_links.py   # every path a rules file names exists
+python .claude/scripts/check_rule_links.py   # every path a rules file / agent names exists
 ```
