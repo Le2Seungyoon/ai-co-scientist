@@ -67,6 +67,10 @@ source-text contract checks.
 | **Parallel (write)** | `engineer` · `harness-manager` · `analyst` | `src/scripts/tests` · `CLAUDE.md` + `.claude/**` · `docs/` | disjoint file domains by contract; the hook covers the worktree case only |
 | **Exclusive (one)** | `executor` | `runtime/` | one 8 GB GPU · DACON quota · checkpoint writes |
 
+`README.md` is human-facing and owned by no agent — it is outside every domain above, not folded
+into `harness-manager`'s. An agent may still edit it on an explicit instruction; that is not the
+same as it being anyone's standing domain.
+
 Five agents may run alongside one `executor`. With a single GPU there is no way to parallelize
 training, so the parallel gain is in analysis, criticism, proposals, and preparing the code for
 experiments still queued.

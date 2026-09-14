@@ -106,9 +106,11 @@ a whole-PC reboot is a driver bugcheck, not an OOM. `.claude/rules/coding-patter
 | `researcher` | hypotheses, pre-report drafts | parallel (read) |
 | `reviewer` | audits of designs and conclusions | parallel (read) |
 | `engineer` | `src/` `scripts/` `tests/` | parallel (write) |
-| `harness-manager` | `CLAUDE.md` `README.md` `.claude/**` | parallel (write) |
+| `harness-manager` | `CLAUDE.md` `.claude/**` | parallel (write) |
 | `analyst` | `docs/` (not the generated registry) | parallel (write) |
 | `executor` | `runtime/` — runs and records | **exclusive** |
+
+`README.md` ownership: `.claude/rules/architecture.md` → Parallel execution contract.
 
 The orchestrator (main session) owns the queue, the assignment, the ranking and the
 integration, and:
@@ -129,9 +131,8 @@ experiment scripts only run where `runtime/registry.jsonl` lives), and a PostToo
 scans the instruction files for the ~150-line budget. Repo-wide scanners live in
 `.claude/scripts/`, not `.claude/hooks/` — `enforcement.md` → Where harness code lives.
 
-**Hooks only see this session's edits.** Code written in an IDE, by a teammate, or by another agent
-passes none of them, and a silent hook is not proof a check ran. Rules that must hold on every
-authoring path need a test instead.
+**Hooks only see this session's edits** — `.claude/rules/enforcement.md` → Hooks only see this
+session's edits.
 
 ## References
 
