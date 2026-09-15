@@ -27,6 +27,7 @@ import torch
 import torch.nn as nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ai_co_scientist.adabn import adapt_bn_exact, iter_cache_batches, save_bn_stats
 from ai_co_scientist.config import ensure_utf8_console
 from ai_co_scientist.sem import (
     GROUPS, LEVELS, load_labels, pixel_features, qda_log_posterior, smooth_levels,
@@ -218,6 +219,13 @@ def main():
     ap.add_argument("--adabn-shuffle", type=int, default=None,
                     help="AdaBN 소스의 배치 소속을 이 시드로 섞는다 (기본: 원본 순서 유지). "
                          "순서가 점수에 영향을 주는지 보는 단일 변수 실험용")
+    ap.add_argument("--adabn-stats", default="batch", choices=("batch", "exact"),
+                    help="BN 통계 추정기. batch=기존(한 번 훑어 배치 통계로 누적, 기본) · "
+                         "exact=층별 순차 전역 통계 (앞 층을 확정 통계로 고정하고 전체 집합의 "
+                         "정확한 평균/분산을 누적). BN 층 수만큼 순전파한다")
+    ap.add_argument("--adabn-dump", default="",
+                    help="재계산된 BN 층별 통계를 이 경로에 덤프 (.npz면 배열, 그 외 JSON). "
+                         "batch 방식 통계와 층별로 비교하려면 필요하다")
     args = ap.parse_args()
 
     cache = Path(args.cache_dir)
@@ -231,10 +239,18 @@ def main():
         print(f"histmatch LUT: 이동량 평균 {shift.mean():+.1f} "
               f"범위 [{shift.min():+d},{shift.max():+d}]", flush=True)
     if args.adabn != "none":
-        n_bn = adapt_bn(model, cache, args.adabn, lut, drop_last=args.adabn_drop_last,
-                        shuffle_seed=args.adabn_shuffle)
+        if args.adabn_stats == "exact":
+            n_bn = adapt_bn_exact(model, lambda: iter_cache_batches(
+                cache, SOURCES[args.adabn], lut, drop_last=args.adabn_drop_last,
+                shuffle_seed=args.adabn_shuffle), device=DEVICE)
+        else:  # 기존 경로 — 지금까지의 레시피가 비트 단위로 재현되어야 한다
+            n_bn = adapt_bn(model, cache, args.adabn, lut, drop_last=args.adabn_drop_last,
+                            shuffle_seed=args.adabn_shuffle)
         shuffle_note = f", shuffle_seed={args.adabn_shuffle}" if args.adabn_shuffle is not None else ""
-        print(f"AdaBN: {args.adabn} {n_bn}장으로 BN 통계 재계산{shuffle_note}", flush=True)
+        print(f"AdaBN({args.adabn_stats}): {args.adabn} {n_bn}장으로 BN 통계 재계산{shuffle_note}",
+              flush=True)
+        if args.adabn_dump:
+            print(f"BN 통계 덤프 → {save_bn_stats(model, args.adabn_dump)}", flush=True)
 
     cls, diag = fit_predict_levels(Path(args.data_dir), cache, args.level_source, args.level_ckpt)
     if args.level_smooth > 1:
@@ -259,6 +275,7 @@ def main():
         "histmatch": bool(args.histmatch), "adabn": args.adabn,
         "level_smooth": args.level_smooth,
         "adabn_drop_last": bool(args.adabn_drop_last), "adabn_shuffle": args.adabn_shuffle,
+        "adabn_stats": args.adabn_stats, "adabn_dump": args.adabn_dump or None,
         "reconstruct": "d = L * (1 - s)", "levels": list(LEVELS),
         "n": n, "zip": args.submit, "level_diag": diag,
     }, ensure_ascii=False))
