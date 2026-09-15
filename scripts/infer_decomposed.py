@@ -30,7 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ai_co_scientist.adabn import adapt_bn_exact, iter_cache_batches, save_bn_stats
 from ai_co_scientist.config import ensure_utf8_console
 from ai_co_scientist.sem import (
-    GROUPS, LEVELS, load_labels, pixel_features, qda_log_posterior, smooth_levels,
+    GROUPS, LEVELS, load_labels, pixel_features, qda_log_posterior, smooth_levels, softmax,
+    viterbi_levels,
 )
 from train_level import LevelCNN  # noqa: E402
 from train_structure import DEVICE, H, W, load_model  # noqa: E402
@@ -41,8 +42,12 @@ SOURCES = {"test": ["test"], "real": ["real"], "realtest": ["real", "test"]}
 
 
 @torch.no_grad()
-def predict_levels_cnn(cache: Path, ckpt: str, batch: int = 512) -> np.ndarray:
+def predict_levels_cnn(cache: Path, ckpt: str, batch: int = 512,
+                       return_proba: bool = False) -> np.ndarray | tuple:
     """EXP-013 CNN으로 test 클래스를 예측한다 (적합 불필요 — 이미 학습된 모델이다).
+
+    return_proba=True면 (클래스, 사후확률 (N,4))를 준다 — Viterbi 복호(`--level-hmm`)에는
+    argmax가 아니라 방출확률이 필요하다. 기본값은 기존 호출부를 위해 argmax 배열 그대로다.
 
     구조 회귀기와 달리 **AdaBN을 걸지 않는다.** 이 분류기는 real로 학습해 real에 적용하므로
     sim→real 전이가 없다. real train ↔ test 간 잔여 이동에 AdaBN을 거는 것은 별개 축이며,
@@ -56,8 +61,10 @@ def predict_levels_cnn(cache: Path, ckpt: str, batch: int = 512) -> np.ndarray:
     out = []
     for s in range(0, len(sem), batch):
         x = np.asarray(sem[s:s + batch]).astype(np.float32)[:, None] / 255.0
-        out.append(model(torch.from_numpy(x).to(DEVICE)).argmax(1).cpu().numpy())
-    return np.concatenate(out)
+        out.append(model(torch.from_numpy(x).to(DEVICE)).cpu().numpy())
+    logits = np.concatenate(out)
+    pred = logits.argmax(1)
+    return (pred, softmax(logits)) if return_proba else pred
 
 
 def _diag(source: str, pred: np.ndarray) -> dict:
@@ -68,10 +75,17 @@ def _diag(source: str, pred: np.ndarray) -> dict:
                                 for c in range(len(GROUPS))}}
 
 
-def fit_predict_levels(data_dir: Path, cache: Path, source: str,
-                       level_ckpt: str = "") -> tuple[np.ndarray, dict]:
-    """real train 전량으로 분류기를 적합해 test 클래스를 예측한다. 반환: (클래스, 진단)."""
+def fit_predict_levels(data_dir: Path, cache: Path, source: str, level_ckpt: str = "",
+                       return_proba: bool = False) -> tuple:
+    """real train 전량으로 분류기를 적합해 test 클래스를 예측한다. 반환: (클래스, 진단).
+
+    return_proba=True면 (클래스, 진단, 사후확률)을 준다 (기본 False — 기존 호출부 유지).
+    mean_only는 사후확률이 정의되지 않으므로 거부한다.
+    """
     if source == "cnn":  # 픽셀 통계가 필요 없으므로 먼저 분기한다 (60,664장 계산 회피)
+        if return_proba:
+            pred, proba = predict_levels_cnn(cache, level_ckpt, return_proba=True)
+            return pred, _diag(source, pred), proba
         pred = predict_levels_cnn(cache, level_ckpt)
         return pred, _diag(source, pred)
 
@@ -82,14 +96,21 @@ def fit_predict_levels(data_dir: Path, cache: Path, source: str,
     mu, sd = x_tr.mean(0), x_tr.std(0) + 1e-8
     x_tr, x_te = (x_tr - mu) / sd, (x_te - mu) / sd
 
+    proba = None
     if source == "qda":
-        pred = qda_log_posterior(x_tr, y, x_te).argmax(1)
+        logp = qda_log_posterior(x_tr, y, x_te)
+        pred, proba = logp.argmax(1), softmax(logp)
     elif source == "mean_only":  # 평균 intensity 1개 → 최근접 클래스 중심
         cent = np.array([x_tr[y == c][:, 0].mean() for c in range(len(GROUPS))])
         pred = np.abs(x_te[:, [0]] - cent).argmin(1)
     else:
         raise ValueError(f"unknown level source: {source}")
 
+    if return_proba:
+        if proba is None:
+            raise ValueError(f"--level-source {source}는 사후확률을 내지 않는다 — "
+                             "--level-hmm은 cnn 또는 qda에서만 쓸 수 있다")
+        return pred, _diag(source, pred), proba
     return pred, _diag(source, pred)
 
 
@@ -223,10 +244,17 @@ def main():
                     help="BN 통계 추정기. batch=기존(한 번 훑어 배치 통계로 누적, 기본) · "
                          "exact=층별 순차 전역 통계 (앞 층을 확정 통계로 고정하고 전체 집합의 "
                          "정확한 평균/분산을 누적). BN 층 수만큼 순전파한다")
+    ap.add_argument("--level-hmm", action="store_true",
+                    help="레벨 예측을 4상태 Viterbi로 복호한다 (--level-smooth의 대안, 동시 사용 불가)")
+    ap.add_argument("--level-hmm-a", type=float, default=0.974,
+                    help="Viterbi 자기전이 확률 a (다른 상태는 (1-a)/3씩). 기본 0.974")
     ap.add_argument("--adabn-dump", default="",
                     help="재계산된 BN 층별 통계를 이 경로에 덤프 (.npz면 배열, 그 외 JSON). "
                          "batch 방식 통계와 층별로 비교하려면 필요하다")
     args = ap.parse_args()
+    if args.level_hmm and args.level_smooth > 1:
+        ap.error("--level-hmm과 --level-smooth는 함께 쓸 수 없다 — 평활기를 두 번 겹치면 "
+                 "어느 쪽이 점수를 움직였는지 분리되지 않는다. 하나만 고를 것")
 
     cache = Path(args.cache_dir)
     model, arch = load_model(args.ckpt, args.arch, args.width)
@@ -252,7 +280,19 @@ def main():
         if args.adabn_dump:
             print(f"BN 통계 덤프 → {save_bn_stats(model, args.adabn_dump)}", flush=True)
 
-    cls, diag = fit_predict_levels(Path(args.data_dir), cache, args.level_source, args.level_ckpt)
+    if args.level_hmm:
+        cls, diag, proba = fit_predict_levels(Path(args.data_dir), cache, args.level_source,
+                                              args.level_ckpt, return_proba=True)
+        before = cls.copy()
+        cls = viterbi_levels(proba, a=args.level_hmm_a)
+        changed = int((before != cls).sum())
+        diag = {**_diag(args.level_source, cls), "hmm_a": args.level_hmm_a,
+                "changed": changed, "changed_frac": round(changed / len(cls), 4)}
+        print(f"레벨 Viterbi(a={args.level_hmm_a}): {changed}장 변경 "
+              f"({100 * changed / len(cls):.2f} percent)", flush=True)
+    else:
+        cls, diag = fit_predict_levels(Path(args.data_dir), cache, args.level_source,
+                                       args.level_ckpt)
     if args.level_smooth > 1:
         before = cls.copy()
         cls = smooth_levels(cls, args.level_smooth)
@@ -273,7 +313,8 @@ def main():
         "ckpt": args.ckpt, "arch": arch, "level_source": args.level_source, "tau": args.tau,
         "level_ckpt": args.level_ckpt if args.level_source == "cnn" else None,
         "histmatch": bool(args.histmatch), "adabn": args.adabn,
-        "level_smooth": args.level_smooth,
+        "level_smooth": args.level_smooth, "level_hmm": bool(args.level_hmm),
+        "level_hmm_a": args.level_hmm_a if args.level_hmm else None,
         "adabn_drop_last": bool(args.adabn_drop_last), "adabn_shuffle": args.adabn_shuffle,
         "adabn_stats": args.adabn_stats, "adabn_dump": args.adabn_dump or None,
         "reconstruct": "d = L * (1 - s)", "levels": list(LEVELS),
