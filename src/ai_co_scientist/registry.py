@@ -168,8 +168,110 @@ def _update(report_id: str, mutate, path=None) -> dict:
     raise KeyError(f"기록소에 없는 report_id: {report_id}")
 
 
-def record_result(report_id: str, val: dict, path=None) -> dict:
-    return _update(report_id, lambda r: r.__setitem__("val", val), path)
+class ResultUpdate:
+    """`record_result`의 결과 — 갱신된 기록 + **무엇이 바뀌었는지**.
+
+    반환값이 기록만이면 파괴적 동작(덮어쓰기·통째 교체)이 호출자에게 보이지 않는다.
+    소실될 수 있는 값은 여기에 담아 CLI가 반드시 출력하게 한다.
+    """
+
+    __slots__ = ("record", "added", "unchanged", "overwritten", "dropped")
+
+    def __init__(self, record: dict, added: list[str], unchanged: list[str],
+                 overwritten: dict, dropped: dict):
+        self.record = record
+        self.added = added
+        self.unchanged = unchanged
+        self.overwritten = overwritten  # {키: 이전 값} — --replace-key로 명시 허용된 덮어쓰기
+        self.dropped = dropped  # {키: 이전 값} — replace=True로 통째 교체하며 버린 키
+
+    @property
+    def report_id(self) -> str:
+        return self.record["report_id"]
+
+    def __getitem__(self, key):
+        # 기존 호출부(`record_result(...)["report_id"]`) 호환.
+        return self.record[key]
+
+
+def merge_val(existing, new: dict, *, replace_keys=()) -> tuple[dict, list, list, dict]:
+    """실행 중 누적되는 `val` 매니페스트를 합친다 — **얕은(top-level) 병합**.
+
+    깊은 병합은 하지 않는다. 같은 결함을 한 단계 아래로 옮길 뿐이고, 중첩 dict가 통째로
+    바뀌었는지 일부만 바뀌었는지 호출자가 구분할 수 없게 된다.
+
+    충돌 규칙: 같은 키가 이미 있고
+      - 값이 **같으면** 통과(재실행 멱등성).
+      - 값이 **다르면** 예외 — `replace_keys`에 그 키를 명시해야만 덮어쓴다.
+    조용한 덮어쓰기는 통째 교체와 같은 결함이라 기본 경로에서 배제한다.
+
+    반환: (합쳐진 dict, 추가된 키, 값이 같아 유지된 키, {덮어쓴 키: 이전 값})
+    """
+    if not isinstance(new, dict):
+        raise ValueError(f"val은 dict여야 한다: {type(new).__name__}")
+    if existing is None:
+        existing = {}
+    if not isinstance(existing, dict):
+        raise ValueError(
+            "기존 val이 dict가 아니라 병합할 수 없다 "
+            f"({type(existing).__name__}) — 의도적 교체라면 replace=True를 쓸 것")
+
+    allowed = set(replace_keys)
+    conflicts = [k for k, v in new.items()
+                 if k in existing and existing[k] != v and k not in allowed]
+    if conflicts:
+        raise ValueError(
+            f"val 키 충돌: {sorted(conflicts)} — 기존 값과 다르다. "
+            "덮어쓰려면 해당 키를 replace_keys(CLI: --replace-key)로 명시하거나, "
+            "매니페스트 전체를 버릴 의도라면 replace=True(CLI: --replace)를 쓸 것")
+
+    merged = dict(existing)
+    added, unchanged, overwritten = [], [], {}
+    for k, v in new.items():
+        if k not in existing:
+            added.append(k)
+        elif existing[k] == v:
+            unchanged.append(k)
+            continue
+        else:
+            overwritten[k] = existing[k]
+        merged[k] = v
+    return merged, added, unchanged, overwritten
+
+
+def record_result(report_id: str, val: dict, *, replace: bool = False, replace_keys=(),
+                  path=None) -> ResultUpdate:
+    """실행 결과 매니페스트를 기록한다 — **기본은 병합, 교체는 명시적으로만**.
+
+    `val`은 한 실험의 생애 동안 누적되는 유일한 필드다(예: 학습 직후 `wall_clock`/`run`,
+    제출 직후 `verify_only`). 통째 교체가 기본이었을 때 두 번째 `result` 호출이 첫 호출의
+    기록을 조용히 지웠다 — EXP-020에서 제출 zip 검증 근거가 사라질 뻔했다.
+
+    `replace=True`는 기존 매니페스트를 버린다. 버려진 키는 `ResultUpdate.dropped`로 돌려주니
+    호출자는 반드시 그것을 드러내야 한다.
+
+    락: 읽기·병합·쓰기가 모두 `_update` 안의 `locked()` 하나에 들어간다. 병합 대상을 락 밖에서
+    읽으면 8건 중 2건만 살아남았던 그 경쟁 조건이 그대로 재현된다.
+    """
+    box: dict = {}
+
+    def mutate(rec: dict) -> None:
+        if replace:
+            old = rec.get("val") or {}
+            if isinstance(old, dict):
+                box["dropped"] = {k: v for k, v in old.items() if k not in val}
+            else:
+                box["dropped"] = {"(이전 val)": old}
+            box["added"], box["unchanged"], box["overwritten"] = list(val), [], {}
+            rec["val"] = dict(val)
+            return
+        merged, added, unchanged, overwritten = merge_val(
+            rec.get("val"), val, replace_keys=replace_keys)
+        box.update(added=added, unchanged=unchanged, overwritten=overwritten, dropped={})
+        rec["val"] = merged
+
+    rec = _update(report_id, mutate, path)
+    return ResultUpdate(rec, box["added"], box["unchanged"], box["overwritten"], box["dropped"])
 
 
 def record_lb(report_id: str, public: float, private: float, path=None) -> dict:

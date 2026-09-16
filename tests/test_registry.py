@@ -158,3 +158,142 @@ def test_render_markdown_contains_ids_and_reset_notice(tmp_path):
     assert "EXP-001" in md
     assert "6.7" in md
     assert "2026-07-29 리셋" in md  # 이전 실험 폐기 고지가 항상 상단에 남는다
+
+
+def test_second_result_call_preserves_first_calls_keys(tmp_path):
+    """EXP-020 회귀 — `record_result`가 val을 통째로 교체하던 시절, 제출 후의 두 번째
+    호출이 학습 직후 기록한 wall_clock/run/verify_only를 조용히 지웠다."""
+    p = tmp_path / "reg.jsonl"
+    rid = registry.new_report(path=p, **BASE)["report_id"]
+    registry.record_result(rid, {"wall_clock": "1h02m", "run": "EXP-020-a"}, path=p)
+    up = registry.record_result(rid, {"verify_only": {"files": 25988}}, path=p)
+    assert registry.get(rid, path=p)["val"] == {
+        "wall_clock": "1h02m", "run": "EXP-020-a", "verify_only": {"files": 25988}}
+    assert up.added == ["verify_only"]
+    assert up.overwritten == {}
+    assert up.dropped == {}
+
+
+def test_result_merge_is_idempotent_for_equal_values(tmp_path):
+    p = tmp_path / "reg.jsonl"
+    rid = registry.new_report(path=p, **BASE)["report_id"]
+    registry.record_result(rid, {"wall_clock": "1h02m"}, path=p)
+    up = registry.record_result(rid, {"wall_clock": "1h02m"}, path=p)
+    assert up.unchanged == ["wall_clock"]
+    assert up.added == []
+    assert registry.get(rid, path=p)["val"] == {"wall_clock": "1h02m"}
+
+
+def test_result_key_collision_with_different_value_raises(tmp_path):
+    # 조용한 덮어쓰기는 통째 교체와 같은 결함이라 기본 경로에서 막는다
+    p = tmp_path / "reg.jsonl"
+    rid = registry.new_report(path=p, **BASE)["report_id"]
+    registry.record_result(rid, {"wall_clock": "1h02m"}, path=p)
+    with pytest.raises(ValueError, match="wall_clock"):
+        registry.record_result(rid, {"wall_clock": "2h30m"}, path=p)
+    assert registry.get(rid, path=p)["val"] == {"wall_clock": "1h02m"}, "거부됐는데 기록이 변했다"
+
+
+def test_result_collision_overwrites_only_with_explicit_replace_key(tmp_path):
+    p = tmp_path / "reg.jsonl"
+    rid = registry.new_report(path=p, **BASE)["report_id"]
+    registry.record_result(rid, {"wall_clock": "1h02m", "run": "a"}, path=p)
+    up = registry.record_result(rid, {"wall_clock": "2h30m"}, replace_keys=["wall_clock"], path=p)
+    assert up.overwritten == {"wall_clock": "1h02m"}  # 이전 값이 호출자에게 그대로 보인다
+    assert registry.get(rid, path=p)["val"] == {"wall_clock": "2h30m", "run": "a"}
+
+
+def test_result_replace_reports_every_dropped_key(tmp_path):
+    p = tmp_path / "reg.jsonl"
+    rid = registry.new_report(path=p, **BASE)["report_id"]
+    registry.record_result(rid, {"wall_clock": "1h02m", "run": "a"}, path=p)
+    up = registry.record_result(rid, {"run": "a"}, replace=True, path=p)
+    assert up.dropped == {"wall_clock": "1h02m"}
+    assert registry.get(rid, path=p)["val"] == {"run": "a"}
+
+
+def test_result_rejects_non_dict_val(tmp_path):
+    p = tmp_path / "reg.jsonl"
+    rid = registry.new_report(path=p, **BASE)["report_id"]
+    with pytest.raises(ValueError, match="dict"):
+        registry.record_result(rid, [1, 2], path=p)
+
+
+def test_merge_val_pure_function():
+    merged, added, unchanged, overwritten = registry.merge_val(None, {"a": 1})
+    assert (merged, added, unchanged, overwritten) == ({"a": 1}, ["a"], [], {})
+    merged, added, unchanged, overwritten = registry.merge_val({"a": 1}, {"a": 1, "b": 2})
+    assert (merged, added, unchanged, overwritten) == ({"a": 1, "b": 2}, ["b"], ["a"], {})
+    with pytest.raises(ValueError, match="키 충돌"):
+        registry.merge_val({"a": 1}, {"a": 2})
+    # 얕은 병합: 중첩 dict는 합치지 않고 충돌로 본다 (같은 결함을 한 단계 아래로 옮기지 않기 위해)
+    with pytest.raises(ValueError, match="키 충돌"):
+        registry.merge_val({"v": {"files": 1}}, {"v": {"files": 1, "max": 4}})
+
+
+def test_concurrent_result_calls_keep_every_key(tmp_path):
+    """병합은 read-modify-write다 — 락 밖에서 읽으면 선보고 8건 중 2건만 살아남았던
+    그 경쟁 조건이 val 안에서 그대로 재현된다."""
+    import threading
+    p = tmp_path / "reg.jsonl"
+    rid = registry.new_report(path=p, **BASE)["report_id"]
+    errors: list[BaseException] = []
+
+    def add(i):
+        try:
+            registry.record_result(rid, {f"k{i}": i}, path=p)
+        except BaseException as e:  # noqa: BLE001 - 스레드 예외를 본 스레드로 옮긴다
+            errors.append(e)
+
+    threads = [threading.Thread(target=add, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert registry.get(rid, path=p)["val"] == {f"k{i}": i for i in range(8)}
+
+
+def _load_exp_cli():
+    """scripts/exp.py를 서브프로세스가 아니라 모듈로 적재한다.
+
+    executor가 실제로 쓰는 유일한 경로가 CLI라서 소스 텍스트 검사로는 부족하다. 다만
+    실행이 진짜 기록소를 건드리면 안 되므로 호출부에서 `_default_path`를 tmp로 돌린다.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "scripts" / "exp.py"
+    spec = importlib.util.spec_from_file_location("exp_cli_under_test", src)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_cli_result_merges_by_default_and_refuses_silent_overwrite(tmp_path, monkeypatch, capsys):
+    """`.claude/agents/executor.md` 3단계를 그대로 두 번 따라 해도 매니페스트가 죽지 않아야 한다."""
+    p = tmp_path / "reg.jsonl"
+    monkeypatch.setattr(registry, "_default_path", lambda: p)
+    cli = _load_exp_cli()
+    rid = registry.new_report(path=p, **BASE)["report_id"]
+
+    def run(*argv):
+        monkeypatch.setattr("sys.argv", ["exp.py", *argv])
+        cli.main()
+        return capsys.readouterr().out
+
+    run("result", rid, "--val", '{"wall_clock": "1h02m", "run": "a"}')
+    run("result", rid, "--val", '{"verify_only": {"files": 25988}}')
+    assert registry.get(rid, path=p)["val"] == {
+        "wall_clock": "1h02m", "run": "a", "verify_only": {"files": 25988}}
+
+    with pytest.raises(SystemExit, match="wall_clock"):  # 조용히 덮어쓰지 않는다
+        run("result", rid, "--val", '{"wall_clock": "2h30m"}')
+
+    out = run("result", rid, "--val", '{"wall_clock": "2h30m"}', "--replace-key", "wall_clock")
+    assert "WARNING: 덮어씀 wall_clock" in out and '"1h02m"' in out
+
+    out = run("result", rid, "--val", '{"run": "a"}', "--replace")
+    assert "WARNING: 버려짐 wall_clock" in out
+    assert registry.get(rid, path=p)["val"] == {"run": "a"}
