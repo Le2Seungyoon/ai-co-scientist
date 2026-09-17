@@ -95,7 +95,6 @@ def main():
         "uv run python scripts/exp.py new --title x",
         "uv run python scripts/infer_decomposed.py --submit runtime/submissions/a.zip",
         "uv run python scripts/dacon_submit.py runtime/submissions/a.zip",
-        "uv run python scripts/probe_level.py",
     ):
         out, rc = run(worktree, cmd)
         check(f"denies: {cmd.split()[3]}", denied(out), out[:120] or "silent")
@@ -103,7 +102,14 @@ def main():
 
     out, _ = run(worktree, "uv run python scripts/exp.py new --title x")
     check("deny names the rule file", "architecture.md" in out, out[:120])
-    check("deny names the escape hatch", "ACS_RUNTIME_EXEMPT" in out, out[:120])
+    check("registry deny does NOT name the escape hatch -- there is none for it",
+          "ACS_RUNTIME_EXEMPT" not in out, out[:120])
+    check("registry deny names the bootstrap path (fresh clone / re-imaged / lost runtime/)",
+          "bootstrap" in out and "mkdir -p runtime" in out, out[:300])
+
+    out, _ = run(worktree, "uv run python scripts/train_level.py")
+    check("exclusive deny names the rule file", "architecture.md" in out, out[:120])
+    check("exclusive deny names the escape hatch", "ACS_RUNTIME_EXEMPT" in out, out[:120])
 
     out, _ = run(worktree, "uv run python scripts/train_level.py",
                  env_extra={"ACS_RUNTIME_EXEMPT": "   "})
@@ -114,6 +120,11 @@ def main():
     out, rc = run(main_tree, "uv run python scripts/train_structure.py --arch mlp")
     check("main worktree: experiment command passes", not denied(out), out[:120])
     check("main worktree: exits 0", rc == 0, f"rc={rc}")
+
+    out, rc = run(main_tree, "uv run python scripts/exp.py new --title x")
+    check("main worktree: registry-tier command (exp.py) passes -- sentinel covers both tiers",
+          not denied(out), out[:120])
+    check("main worktree: exp.py exits 0", rc == 0, f"rc={rc}")
 
     out, _ = run(worktree, "uv run pytest -q")
     check("worktree: unrelated command passes", not denied(out), out[:120])
@@ -165,6 +176,38 @@ def main():
     for script in guarded:
         path = os.path.join(repo_root, *script.split("/"))
         check(f"GUARDED entry exists on disk: {script}", os.path.isfile(path), path)
+
+    print("grade split -- what unlocks in a registry-less tree, and what stays guarded")
+    with tempfile.TemporaryDirectory() as root:  # no registry.jsonl = a worktree
+        out, _ = run(root, "uv run python scripts/probe_level.py --cache-dir ../../x/runtime/cache")
+        if out.strip():
+            failures.append("probe_level is still denied -- it is read-only and should be released")
+
+        out, _ = run(root, "uv run python scripts/assemble_submission.py --submit a.zip")
+        if out.strip():
+            failures.append("assemble_submission is denied -- it is not a GUARDED target")
+
+        out, _ = run(root, "uv run python scripts/exp.py new --title x")
+        if not out.strip():
+            failures.append("exp.py passed -- it must fork the registry and be denied")
+
+        out, _ = run(root, "uv run python scripts/exp.py new --title x",
+                     env_extra={"ACS_RUNTIME_EXEMPT": "because I said so"})
+        if not out.strip():
+            failures.append(
+                "exp.py was let through by the escape hatch -- that would create the sentinel "
+                "and permanently unlock the gate in this tree"
+            )
+
+        for script in ("train_level.py", "train_structure.py", "infer_decomposed.py",
+                       "dacon_submit.py"):
+            out, _ = run(root, "uv run python scripts/{0} --submit a.zip".format(script),
+                         env_extra={"ACS_RUNTIME_EXEMPT": "measured one-off"})
+            if out.strip():
+                failures.append(
+                    "{0} was still denied with the escape hatch set -- narrowing spread too "
+                    "far".format(script)
+                )
 
     print()
     if failures:

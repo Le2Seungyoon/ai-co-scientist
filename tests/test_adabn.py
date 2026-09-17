@@ -10,8 +10,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
-import torch.nn as nn
+
+# 워크트리는 dev 그룹만 sync하므로 torch가 없다 -- collection 단계에서 ImportError로 죽는
+# 대신 스킵으로 넘겨 `uv run pytest -q`가 거기서도 끝까지 돈다.
+pytest.importorskip("torch")
+import torch  # noqa: E402
+import torch.nn as nn  # noqa: E402
 
 from ai_co_scientist.adabn import (
     adapt_bn_exact, bn_modules, collect_bn_stats, iter_cache_batches, save_bn_stats,

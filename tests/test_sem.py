@@ -111,3 +111,51 @@ def test_score_counts_adjacent_separately_from_exact():
     assert r["accuracy"] == 0.5
     assert r["adjacent_ok"] == 0.75
     assert r["confusion"][3][1] == 1
+
+
+# ── 조립: GPU와 CPU 경로가 공유한다 ────────────────────────────
+
+def test_assemble_depth_reconstructs_background_level():
+    """s=0인 픽셀은 정확히 배경 레벨 L이어야 한다 (docs/data-facts.md §1-2의 전제)."""
+    s = np.zeros((2, 3, 4), dtype=np.float32)
+    levels = np.array([140.0, 170.0], dtype=np.float32)
+    d = sem.assemble_depth(s, levels)
+    assert d.dtype == np.uint8
+    assert d.shape == (2, 3, 4)
+    assert (d[0] == 140).all()
+    assert (d[1] == 170).all()
+
+
+def test_assemble_depth_applies_reparameterization():
+    """d = L*(1-s) — s=0.5, L=160이면 80."""
+    s = np.full((1, 2, 2), 0.5, dtype=np.float32)
+    d = sem.assemble_depth(s, np.array([160.0], dtype=np.float32))
+    assert (d == 80).all()
+
+
+def test_assemble_depth_tau_clamps_background_to_exact_level():
+    """tau 미만의 s는 0으로 눌려 배경이 정확히 L에 붙는다. tau=0이면 클램프 없음."""
+    s = np.array([[[0.01, 0.9]]], dtype=np.float32)
+    assert sem.assemble_depth(s, np.array([100.0], dtype=np.float32), tau=0.05)[0, 0, 0] == 100
+    assert sem.assemble_depth(s, np.array([100.0], dtype=np.float32), tau=0.0)[0, 0, 0] == 99
+
+
+def test_assemble_depth_accepts_channel_dim():
+    """구조 회귀기 출력은 (N,1,H,W)다 — 채널 축을 받아들여야 한다."""
+    s = np.zeros((2, 1, 3, 4), dtype=np.float32)
+    d = sem.assemble_depth(s, np.array([150.0, 150.0], dtype=np.float32))
+    assert d.shape == (2, 3, 4)
+
+
+def test_assemble_depth_clips_out_of_range():
+    """s<0 이나 s>1 이 들어와도 uint8 범위를 벗어난 값을 쓰지 않는다."""
+    s = np.array([[[-1.0, 2.0]]], dtype=np.float32)
+    d = sem.assemble_depth(s, np.array([200.0], dtype=np.float32))
+    assert d[0, 0, 0] == 255
+    assert d[0, 0, 1] == 0
+
+
+def test_assemble_depth_rejects_length_mismatch():
+    with pytest.raises(ValueError):
+        sem.assemble_depth(np.zeros((3, 2, 2), dtype=np.float32),
+                       np.array([140.0, 150.0], dtype=np.float32))

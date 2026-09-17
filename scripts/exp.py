@@ -34,6 +34,10 @@ def main():
     new.add_argument("--metric-name", required=True)
     new.add_argument("--metric-x", required=True, choices=registry.X_DOMAINS)
     new.add_argument("--metric-y", required=True, choices=registry.Y_SOURCES)
+    new.add_argument("--source-branch", default="",
+                     help="실험을 낸 코드의 브랜치 — 워커가 자기 워크트리에서 읽은 값")
+    new.add_argument("--source-commit", default="",
+                     help="실험을 낸 코드의 커밋 — 기록자의 HEAD가 아니라 실행한 트리의 HEAD")
 
     res = sub.add_parser("result", help="실행 결과 매니페스트 기록 (기본: 기존 val에 병합)")
     res.add_argument("report_id")
@@ -60,7 +64,8 @@ def main():
             title=a.title, x_domain=a.x_domain, x_desc=a.x_desc,
             y_source=a.y_source, y_desc=a.y_desc, model=a.model, method=a.method,
             purpose=a.purpose, metric_name=a.metric_name,
-            metric_x_domain=a.metric_x, metric_y_source=a.metric_y)
+            metric_x_domain=a.metric_x, metric_y_source=a.metric_y,
+            source_branch=a.source_branch, source_commit=a.source_commit)
         print(rec["report_id"])
         if rec["metric"]["warning"]:
             print("WARNING:", rec["metric"]["warning"])

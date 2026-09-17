@@ -40,11 +40,76 @@ def _png_chunks(data: bytes):
         pos += 12 + length  # length + type + data + crc
 
 
+def _png_chunk(ctype: bytes, payload: bytes) -> bytes:
+    """길이 + 타입 + 데이터 + CRC32 — PNG 청크 1개."""
+    return (struct.pack(">I", len(payload)) + ctype + payload
+            + struct.pack(">I", zlib.crc32(ctype + payload) & 0xFFFFFFFF))
+
+
+def encode_png_gray8(arr: np.ndarray, level: int = 6) -> bytes:
+    """(H, W) uint8 → 8bit 그레이 non-interlaced PNG 바이트. `decode_png_gray8`의 역이다.
+
+    **필터는 0(None)만 쓴다.** 제출본은 한 번 쓰고 채점만 되므로 압축률보다 **결정성**이
+    중요하다 — 같은 입력이 같은 바이트를 내야 두 조립 경로의 동일성을 바이트로 비교할 수 있다.
+
+    cv2를 쓰지 않는 이유는 `decode_png_gray8`과 같다: `opencv-python`은 `baseline` 그룹이라
+    워크트리(dev 그룹만 sync)에는 없다. 조립이 옵션 의존성에 묶이면 CPU 진입점이 돌지 않는다.
+    """
+    a = np.asarray(arr)
+    if a.ndim != 2:
+        raise ValueError(f"(H, W) 2차원 배열이어야 한다 — 받은 형태 {a.shape}")
+    if a.dtype != np.uint8:
+        raise ValueError(f"uint8이어야 한다 — 받은 dtype {a.dtype}")
+    height, width = a.shape
+    raw = np.zeros((height, width + 1), dtype=np.uint8)
+    raw[:, 1:] = a  # 행마다 filter 바이트 0이 앞에 붙는다
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return PNG_SIGNATURE + b"".join([
+        _png_chunk(b"IHDR", ihdr),
+        _png_chunk(b"IDAT", zlib.compress(raw.tobytes(), level)),
+        _png_chunk(b"IEND", b""),
+    ])
+
+
+# zip 엔트리 타임스탬프 고정값. 파일 mtime을 쓰면 같은 입력도 실행마다 다른 바이트가 나와
+# 두 조립 경로의 동일성을 바이트로 비교할 수 없다. (1980-01-01은 zip 포맷의 하한)
+ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+
+
+def write_submission_zip(depth: np.ndarray, names, zip_path, work_dir=None) -> int:
+    """(N, H, W) uint8 depth → 제출 zip. 반환: 쓴 장수.
+
+    `work_dir`을 주면 같은 PNG 바이트를 파일로도 남긴다(검수용). **zip마다 다른 디렉터리를
+    써야 한다** — 공유하면 파일명이 test_names.json에서 오므로 모든 실행이 동일해, 두 조립이
+    병렬로 돌 때 서로의 PNG를 덮어써 zip에 다른 모델 출력이 섞인다. 점수는 나오지만 그게
+    무엇의 점수인지 알 수 없게 되는 최악의 실패다.
+    """
+    names = list(names)
+    if len(depth) != len(names):
+        raise ValueError(f"장수 불일치: depth {len(depth)}장, names {len(names)}개")
+    zip_path = Path(zip_path)
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    if work_dir is not None:
+        work_dir = Path(work_dir)
+        work_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for img, name in zip(depth, names):
+            png = encode_png_gray8(img)
+            # ZipInfo는 OS에 따라 create_system이 달라져 같은 입력도 다른 바이트를 낸다.
+            # 모든 호스트에서 동일한 zip을 만들려면 명시적으로 0(FAT filesystem)으로 고정한다.
+            info = zipfile.ZipInfo(name, date_time=ZIP_DATE_TIME)
+            info.create_system = 0
+            zf.writestr(info, png)
+            if work_dir is not None:
+                (work_dir / name).write_bytes(png)
+    return len(names)
+
+
 def decode_png_gray8(data: bytes) -> np.ndarray:
     """8-bit 그레이스케일 non-interlaced PNG → (H, W) uint8 배열.
 
-    제출본은 `cv2.imwrite`가 쓴 8bit 1채널이다. 다른 형식이면 조용히 넘기지 않고 예외를 던진다 —
-    읽지 못한 파일을 통과로 세면 검사기가 무력해진다 (`.agents/rules/enforcement.md`).
+    제출본은 `encode_png_gray8`이 쓴 8bit 1채널이다. 다른 형식이면 조용히 넘기지 않고 예외를
+    던진다 — 읽지 못한 파일을 통과로 세면 검사기가 무력해진다 (`.agents/rules/enforcement.md`).
     """
     header, idat = None, bytearray()
     for ctype, payload in _png_chunks(data):

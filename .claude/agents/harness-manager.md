@@ -17,7 +17,8 @@ touches `runtime/`.
 **Concurrency: PARALLEL (write).** `engineer` and `analyst` are the same class; the three of you
 are safe together because your file domains do not overlap **by contract**. May run alongside a
 running `executor`. `runtime/` is closed to you by that contract, not by a tool:
-`.agent-hooks/block_runtime_commands.py` denies six experiment *commands* and only where
+`.agent-hooks/block_runtime_commands.py` guards five experiment *commands* — `exp.py` as a
+registry writer, four more as exclusive-resource scripts — and only where
 `runtime/registry.jsonl` is absent — it never guards `Write`/`Edit`, cannot see which sub-agent
 issued a command, and in the main worktree it denies nothing. Do not lean on the hook.
 

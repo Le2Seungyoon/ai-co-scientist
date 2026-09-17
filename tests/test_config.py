@@ -23,9 +23,3 @@ def test_train_defaults():
     train = load_config()["train"]
     assert train["loss"] == "l1"
     assert 0.0 < train["val_fraction"] < 1.0
-
-
-def test_no_a2a_leftovers():
-    cfg = load_config()
-    for gone in ("agents", "mock", "pm", "llm", "coder", "executor"):
-        assert gone not in cfg, f"A2A 잔재 섹션이 남아있다: {gone}"

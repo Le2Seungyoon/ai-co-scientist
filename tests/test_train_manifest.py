@@ -77,3 +77,24 @@ def test_infer_decomposed_declares_leaderboard_target():
     assert "real_average_depth" not in source
 
 
+def test_infer_decomposed_does_not_import_cv2():
+    # 조립이 옵션 의존성(baseline 그룹)에 묶이면 CPU 진입점과 코드를 공유할 수 없다
+    source = _script("infer_decomposed.py")
+    assert "import cv2" not in source
+    assert "cv2." not in source
+
+
+def test_infer_decomposed_uses_shared_assembly():
+    # 조립이 두 벌이 되면 어느 경로가 과거 점수를 냈는지 말할 수 없게 된다
+    source = _script("infer_decomposed.py")
+    assert "assemble_depth" in source
+    assert "write_submission_zip" in source
+
+
+def test_infer_decomposed_exposes_dump_flags():
+    # ŝ와 레벨 사후확률을 덤프할 수 없으면 CPU 재조립 경로에 입력이 없다
+    source = _script("infer_decomposed.py")
+    assert '"--dump-structure"' in source
+    assert '"--dump-level-proba"' in source
+
+

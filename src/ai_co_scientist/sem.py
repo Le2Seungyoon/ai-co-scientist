@@ -191,3 +191,31 @@ def viterbi_levels(proba: np.ndarray, a: float = 0.974) -> np.ndarray:
     for t in range(n - 1, 0, -1):
         path[t - 1] = back[t, path[t]]
     return path
+
+
+# ── 조립 ────────────────────────────────────────────────
+
+def assemble_depth(structure: np.ndarray, levels: np.ndarray, tau: float = 0.0) -> np.ndarray:
+    """d̂ = L̂·(1 − ŝ). ŝ < τ 는 0으로 클램프해 배경을 정확히 L̂에 붙인다 (τ=0이면
+    클램프 없음).
+
+    GPU 경로(`scripts/infer_decomposed.py`)와 CPU 재조립 경로(`scripts/assemble_submission.py`)가
+    **이 함수 하나를 공유한다.** 조립이 두 벌이 되면 어느 쪽이 과거 점수를 낸 경로인지 말할 수
+    없게 된다.
+
+    structure: (N, H, W) 또는 (N, 1, H, W) — 구조 회귀기 출력 ŝ
+    levels:    (N,) — 이미지별 배경 레벨 L̂ (LEVELS의 값)
+    반환:      (N, H, W) uint8
+    """
+    s = np.asarray(structure, dtype=np.float32)
+    if s.ndim == 4 and s.shape[1] == 1:
+        s = s[:, 0]
+    if s.ndim != 3:
+        raise ValueError(f"(N, H, W) 또는 (N, 1, H, W)여야 한다 — 받은 형태 {s.shape}")
+    lv = np.asarray(levels, dtype=np.float32)
+    if lv.ndim != 1 or len(lv) != len(s):
+        raise ValueError(f"levels는 (N,)이어야 한다 — 구조 {len(s)}장, levels {lv.shape}")
+    if tau > 0:
+        s = np.where(s < tau, np.float32(0.0), s)
+    d = np.round(lv.reshape(-1, 1, 1) * (1.0 - s))
+    return np.clip(d, 0, 255).astype(np.uint8)
