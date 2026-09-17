@@ -98,6 +98,7 @@ a whole-PC reboot is a driver bugcheck, not an OOM. `.claude/rules/coding-patter
 | `.claude/rules/testing.md` | writing or changing tests, hooks, scanners |
 | `.claude/rules/enforcement.md` | turning a rule into a hook / test / deny — and before promoting any check |
 | `.claude/rules/self-review.md` | at the end of every task, before declaring done |
+| `.claude/rules/orca-parallel.md` | dispatching work to a **second Orca session** (not sub-agents) |
 
 ## Sub-agent roster
 
