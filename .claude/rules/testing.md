@@ -1,8 +1,8 @@
 ---
 paths:
   - tests/**
-  - .claude/hooks/**
-  - .claude/scripts/**
+  - .agent-hooks/**
+  - .agent-hooks/**
 ---
 # Testing
 
@@ -37,7 +37,7 @@ test over the tree itself (`enforcement.md` → Four layers).
   inference. **This is a stand-in that cannot check behavior** — as logic moves into `src/`, replace
   each check with a real unit test (`architecture.md` → CLI / logic separation). `scripts/legacy/` is
   not checked: frozen, reproduction-only, cannot regress.
-- **`.claude/scripts/check_rule_links.py`** pins that every file a rules file or an agent
+- **`.agent-hooks/check_rule_links.py`** pins that every file a rules file or an agent
   definition points at still exists — the pointers `workflow.md` → File size budget tells you to
   leave behind. Not yet wired into the
   suite; run it by hand (`self-review.md` → Gates) until its false-positive rate here is measured.
@@ -59,10 +59,10 @@ and it is the file every agent actually reads. Nothing currently fails when the 
 - **Delete the defense and re-run.** A green suite proves nothing currently violates a guard, never
   that the guard works. Remove the check, or feed it a violating input, and confirm something goes
   red. An untested guard is indistinguishable from a comment.
-- Harness code ships with its test beside it: `.claude/hooks/test_check_rules_size.py`,
-  `.claude/scripts/test_check_rule_links.py`. Both halves matter — the must-block half proves it
+- Harness code ships with its test beside it: `.agent-hooks/test_check_rules_size.py`,
+  `.agent-hooks/test_check_rule_links.py`. Both halves matter — the must-block half proves it
   fires, the must-pass half is what keeps false positives out. They are stdlib-only and run directly
-  (`python .claude/hooks/test_check_rules_size.py`), because a hook must be verifiable before
+  (`python .agent-hooks/test_check_rules_size.py`), because a hook must be verifiable before
   dev dependencies are installed.
 - **Fixtures must be distinguishable.** If two code paths coincidentally produce the same value, one
   output collapses both and a broken path still passes.

@@ -10,7 +10,7 @@ weaker rule, it is a rule that never runs.
 | Layer | Use when | How it fails |
 |-------|----------|--------------|
 | **Prose** (`.claude/rules/*.md`) | context-dependent advice; the *why* behind a ban | quietly ignored under deadline |
-| **Hook** (`.claude/hooks/*.py`) | deterministic check, fast feedback, this session's edits | one false positive and it gets switched off |
+| **Hook** (`.agent-hooks/*.py`) | deterministic check, fast feedback, this session's edits | one false positive and it gets switched off |
 | **Test / CI invariant** | must hold no matter who authored the code | slow feedback; needs a real assertion |
 | **`permissions.deny`** | absolute in every context (person · solo/team · time) | blocks legitimate work with no escape |
 
@@ -114,9 +114,14 @@ stayed green. Green means "not in scope", never "not there".
 
 ## Where harness code lives
 
-- `.claude/hooks/` — event-driven, invoked by `settings.json`.
-- `.claude/scripts/` — generators and repo-wide scanners. Not event-driven: a person runs them,
-  and so does the freshness/invariant test that covers the paths hooks cannot see.
+`.agent-hooks/` — one directory, one copy of every hook and scanner, because more than one
+harness runs them and a per-harness home would fork the logic. What kind of script it is stays
+visible in **who calls it**, never in a directory name:
+
+- **Event-driven** — registered in `.claude/settings.json` and `.codex/config.toml`, whose
+  schemas are unrelated. Registered on one and not the other = that harness is unprotected.
+- **Generators and repo-wide scanners** — not event-driven: a person runs them, and so does the
+  freshness/invariant test that covers the paths hooks cannot see.
 
 Both ship with `test_<name>.py` beside them. The dividing line is **not** "is it agent-only" —
 both get referenced from rules files and both may be run by hand. It is **would this exist if

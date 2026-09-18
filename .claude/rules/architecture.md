@@ -76,7 +76,7 @@ training, so the parallel gain is in analysis, criticism, proposals, and prepari
 experiments still queued.
 
 `engineer` and `executor` hold the SAME tools. What separates them is
-`.claude/hooks/block_runtime_commands.py`, which denies the six experiment scripts wherever
+`.agent-hooks/block_runtime_commands.py`, which denies the six experiment scripts wherever
 `runtime/registry.jsonl` is absent. That hook cannot see which sub-agent issued a command, so
 it only makes the boundary real in a worktree — **the engineer lane must run in a worktree**,
 or its contract is prose alone.

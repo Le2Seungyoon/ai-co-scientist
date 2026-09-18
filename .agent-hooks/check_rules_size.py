@@ -90,11 +90,11 @@ def emit(message: str) -> None:
 
 
 def project_root() -> str:
-    """`__file__`-based, not cwd: this file is `<root>/.claude/hooks/`, so the root is derivable
+    """`__file__`-based, not cwd: this file is `<root>/.agent-hooks/`, so the root is derivable
     wherever the hook is invoked from. cwd is wrong from any subdirectory."""
     if os.environ.get("CLAUDE_PROJECT_DIR"):
         return os.environ["CLAUDE_PROJECT_DIR"]
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def is_generated(head: "list[str]") -> bool:

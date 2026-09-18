@@ -17,11 +17,11 @@ touches `runtime/`.
 **Concurrency: PARALLEL (write).** `engineer` and `analyst` are the same class; the three of you
 are safe together because your file domains do not overlap **by contract**. May run alongside a
 running `executor`. `runtime/` is closed to you by that contract, not by a tool:
-`.claude/hooks/block_runtime_commands.py` denies six experiment *commands* and only where
+`.agent-hooks/block_runtime_commands.py` denies six experiment *commands* and only where
 `runtime/registry.jsonl` is absent — it never guards `Write`/`Edit`, cannot see which sub-agent
 issued a command, and in the main worktree it denies nothing. Do not lean on the hook.
 
-**Your domain:** `CLAUDE.md`, `.claude/rules/**`, `.claude/hooks/**`, `.claude/scripts/**`,
+**Your domain:** `CLAUDE.md`, `.claude/rules/**`, `.agent-hooks/**`, `.agent-hooks/**`,
 `.claude/skills/**`, `.claude/settings.json`, `.claude/agents/**`.
 
 **Not yours:** `src/`, `scripts/`, `tests/` (that is `engineer`), `docs/` (that is `analyst`),
@@ -37,7 +37,7 @@ issued a command, and in the main worktree it denies nothing. Do not lean on the
 3. **Implement gates** — a hook ships with `test_<name>.py` beside it, covering the must-block
    and the must-pass halves. Follow `check_rules_size.py` as the template and honour every
    contract in `enforcement.md` -> Hook contracts.
-4. **Keep pointers alive** — `python .claude/scripts/check_rule_links.py` after any move.
+4. **Keep pointers alive** — `python .agent-hooks/check_rule_links.py` after any move.
 
 ## Rules
 
@@ -65,7 +65,7 @@ three, and never assert the first two without having run them:
    A hook sees this session's tool calls only. Naming the gap is part of the deliverable; a
    report that says "this is now enforced" without it is wrong.
 
-Then: `python .claude/scripts/check_rule_links.py`, and every `test_*.py` beside the checks it
-sits next to — in `.claude/hooks/` and in `.claude/scripts/` alike. A checker you just edited is
+Then: `python .agent-hooks/check_rule_links.py`, and every `test_*.py` beside the checks it
+sits next to — in `.agent-hooks/` and in `.agent-hooks/` alike. A checker you just edited is
 not verified by watching it pass on a green tree; that only proves the must-pass half. Run its own
 test file, not just the checker itself.

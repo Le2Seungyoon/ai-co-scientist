@@ -130,7 +130,7 @@ integration, and:
 in), a commit-attribution deny hook, a runtime-command deny hook (`block_runtime_commands.py` —
 experiment scripts only run where `runtime/registry.jsonl` lives), and a PostToolUse hook that
 scans the instruction files for the ~150-line budget. Repo-wide scanners live in
-`.claude/scripts/`, not `.claude/hooks/` — `enforcement.md` → Where harness code lives.
+`.agent-hooks/`, not `.agent-hooks/` — `enforcement.md` → Where harness code lives.
 
 **Hooks only see this session's edits** — `.claude/rules/enforcement.md` → Hooks only see this
 session's edits.

@@ -59,10 +59,10 @@ REASON = (
 
 
 def project_root():
-    """`__file__`-based, not cwd: this file is `<root>/.claude/hooks/`."""
+    """`__file__`-based, not cwd: this file is `<root>/.agent-hooks/`."""
     if os.environ.get("CLAUDE_PROJECT_DIR"):
         return os.environ["CLAUDE_PROJECT_DIR"]
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def deny(message):

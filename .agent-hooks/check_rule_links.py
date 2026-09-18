@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Scanner: every file a rules file or agent definition points at must exist.
 
-Run: python3 .claude/scripts/check_rule_links.py     (exit 1 on findings)
+Run: uv run python .agent-hooks/check_rule_links.py     (exit 1 on findings)
 
 The CLAUDE.md rules table and the cross-references between rules files are the only delivery
 mechanism the harness has, so **a stale path there is a rule nobody is told to read**. Nothing
@@ -37,7 +37,7 @@ this project diverges anywhere beyond the source roots, say why in this docstrin
 
 DIVERGENCE (2026-09-04): `GOVERNED` widened to add `.claude/agents` — this project's agent
 definitions (`.claude/agents/*.md`) carry backticked pointers into `.claude/rules/` and
-`.claude/hooks/` (e.g. `harness-manager.md`) the same way rules files do, and those pointers were
+`.agent-hooks/` (e.g. `harness-manager.md`) the same way rules files do, and those pointers were
 previously unchecked (`.claude/agents` sat outside every governed root). At the time of widening
 this passed clean (a snapshot, not a re-checked invariant — re-run the scanner for the current
 count rather than trust a number written here).
@@ -59,7 +59,7 @@ EXTENSIONS = (".md", ".py", ".json", ".sh")
 # findings were real files under an unlisted `include/custflow`, a 95% false-positive rate — and
 # `enforcement.md` -> Before promoting a check to deny is exactly about that being fatal.
 SEARCH_DIRS = (
-    "", ".claude", ".claude/rules", ".claude/hooks", ".claude/scripts",
+    "", ".claude", ".claude/rules", ".agent-hooks",
     "src", "src/ai_co_scientist", "scripts", "scripts/legacy", "tests", "docs",
 )
 # A token carrying any of these describes a shape, not a file.
@@ -99,7 +99,7 @@ def governed_files(root):
 
 def main():
     root = os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        os.path.dirname(os.path.abspath(__file__))
     )
     files = list(governed_files(root))
 

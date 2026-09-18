@@ -97,7 +97,7 @@ Format:
 
 Gotchas accumulate; a bloated rules file loads in full every session and dilutes signal. Soft
 budget: **~150 lines per file** (CLAUDE.md and each `.claude/rules/*.md`). A PostToolUse hook
-(`.claude/hooks/check_rules_size.py`) scans the governed set and nudges.
+(`.agent-hooks/check_rules_size.py`) scans the governed set and nudges.
 
 Detection is deterministic; the response is judgment. **Invoke the `refactor-agent-rules`
 skill** — it holds the four remedies (relocate / split / abstract / compress, in that order),
@@ -135,5 +135,5 @@ that keeps growing and getting corrected.
 ```bash
 uv run pytest -q                       # must pass before declaring done (offline, no API keys)
 uv run ruff check src tests scripts    # lint (line-length 100)
-python .claude/scripts/check_rule_links.py   # every path a rules file / agent names exists
+python .agent-hooks/check_rule_links.py   # every path a rules file / agent names exists
 ```

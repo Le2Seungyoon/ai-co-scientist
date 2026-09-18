@@ -39,7 +39,7 @@ Three things, together:
   it is good. Only the leaderboard knows that, and only `executor` may ask it.
 - **Never run the guarded scripts** — `exp.py`, `train_level.py`, `train_structure.py`,
   `infer_decomposed.py`, `dacon_submit.py`, `probe_level.py`. In a worktree
-  `.claude/hooks/block_runtime_commands.py` denies them; in the main worktree nothing stops
+  `.agent-hooks/block_runtime_commands.py` denies them; in the main worktree nothing stops
   you, and the contract is the only thing holding. Do not lean on the hook.
 - **Never read `data/` to report a measurement.** Real numbers come from `executor` alone.
 - **Never merge ahead of execution.** A speculative branch merges only after the experiment

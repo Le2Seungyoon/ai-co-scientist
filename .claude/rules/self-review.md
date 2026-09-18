@@ -19,7 +19,7 @@ prove nothing.
 |---|---|
 | `uv run pytest -q` | the offline suite passes with no API keys and no `.env` |
 | `uv run ruff check src tests scripts` | lint clean (line-length 100) |
-| `python .claude/scripts/check_rule_links.py` | every file a rules file or agent definition points at exists |
+| `python .agent-hooks/check_rule_links.py` | every file a rules file or agent definition points at exists |
 | zip check before `dacon_submit.py` | 25,988 files, every image max in {140,150,160,170}, 0.00 % outside |
 
 There is no single command that runs all four — run them separately. The zip check applies only

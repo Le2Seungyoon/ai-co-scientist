@@ -31,7 +31,7 @@
           },
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block_runtime_commands.py\"",
+            "command": "p=$(command -v python3 || command -v python); if [ -z \"$p\" ]; then cat >/dev/null 2>&1 || :; echo '[runtime-lane] no python interpreter on PATH -- command NOT checked' >&2; exit 0; fi; \"$p\" \"$CLAUDE_PROJECT_DIR/.agent-hooks/block_runtime_commands.py\"",
             "timeout": 10,
             "statusMessage": "Checking the experiment command runs where the registry lives..."
           }
@@ -44,9 +44,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/check_rules_size.py\"",
+            "command": "p=$(command -v python3 || command -v python); if [ -z \"$p\" ]; then cat >/dev/null 2>&1 || :; echo '[rules-size] no python interpreter on PATH -- size budget NOT checked' >&2; exit 0; fi; \"$p\" \"$CLAUDE_PROJECT_DIR/.agent-hooks/check_rules_size.py\"",
             "timeout": 10,
             "statusMessage": "Checking instruction-file size budget..."
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "s=\"$CLAUDE_PROJECT_DIR/.agent-hooks/build-agents.py\"; p=$(command -v python3 || command -v python); if [ -z \"$p\" ] || [ ! -f \"$s\" ]; then cat >/dev/null 2>&1 || :; echo '[build-agents] interpreter or script unresolved -- generated lanes NOT rebuilt' >&2; exit 0; fi; \"$p\" \"$s\" --hook",
+            "timeout": 20,
+            "statusMessage": "Rebuilding generated agent lanes..."
           }
         ]
       }

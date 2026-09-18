@@ -55,7 +55,7 @@ def main():
         check("broken pointer exits 1", rc == 1, f"rc={rc}")
 
     with tempfile.TemporaryDirectory() as root:
-        build(root, rules={"a.md": "Wired in `.claude/hooks/gone.py`.\n"})
+        build(root, rules={"a.md": "Wired in `.agent-hooks/gone.py`.\n"})
         check("broken full path is caught", "RULE_LINKS_BROKEN" in run(root)[0])
 
     with tempfile.TemporaryDirectory() as root:
@@ -70,7 +70,7 @@ def main():
         build(root)
         os.makedirs(os.path.join(root, ".claude", "agents"), exist_ok=True)
         with open(os.path.join(root, ".claude", "agents", "gardener.md"), "w", encoding="utf-8") as f:
-            f.write("---\nname: gardener\n---\nSee `.claude/hooks/gone.py` for the guard.\n")
+            f.write("---\nname: gardener\n---\nSee `.agent-hooks/gone.py` for the guard.\n")
         out, rc = run(root)
         check("broken pointer in .claude/agents/*.md is caught", "RULE_LINKS_BROKEN" in out, out[:70])
         check(".claude/agents finding names its file", "gardener.md:4" in out, out[:70])
@@ -83,7 +83,7 @@ def main():
                 "a.md": (
                     "Sibling by bare name: `b.md`.\n"
                     "Bare harness file: `settings.json`.\n"
-                    "Full path: `.claude/hooks/check_rules_size.py`.\n"
+                    "Full path: `.agent-hooks/check_rules_size.py`.\n"
                     "Root file by name: `CLAUDE.md`.\n"
                     "A glob: `.claude/rules/*.md`.\n"
                     "A placeholder: `origin/{{DEFAULT_BRANCH}}/notes.md`.\n"
@@ -96,7 +96,7 @@ def main():
                 ),
                 "b.md": "# B\n",
             },
-            extra=[".claude/settings.json", ".claude/hooks/check_rules_size.py"],
+            extra=[".claude/settings.json", ".agent-hooks/check_rules_size.py"],
         )
         out, rc = run(root)
         check("clean tree reports clean", "RULE_LINKS_CLEAN" in out, out[:90])
