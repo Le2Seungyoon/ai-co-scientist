@@ -17,13 +17,15 @@ prove nothing.
 
 | Run | What it proves |
 |---|---|
-| `uv run pytest -q` | the offline suite passes with no API keys and no `.env` |
+| `uv run pytest -q` | the offline suite passes with no API keys and no `.env` — **and** the four harness checks below, which it calls |
 | `uv run ruff check src tests scripts` | lint clean (line-length 100) |
-| `python .agent-hooks/check_rule_links.py` | every file a rules file or agent definition points at exists |
 | zip check before `dacon_submit.py` | 25,988 files, every image max in {140,150,160,170}, 0.00 % outside |
 
-There is no single command that runs all four — run them separately. The zip check applies only
-when the task produced a submission.
+`tests/test_harness_generated.py` runs `check_rule_links.py`, `build-agents.py --check`,
+`test_harness_parity.py` and `test-build-agents.py` as subprocesses, so **`pytest` is the gate
+for all of them**. Run one by hand for a faster loop while working on the harness, never as extra
+assurance afterwards — a second run of the same judgment proves nothing. The zip check applies
+only when the task produced a submission.
 
 Red here is not a review comment; fix it before you declare done. Where the same judgment exists
 as both a hook and a repo-wide scan, **the scan is not redundant** — a hook sees this session's

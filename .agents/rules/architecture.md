@@ -2,7 +2,7 @@
 paths:
   - src/**
   - scripts/**
-  - .claude/agents/**
+  - .agents/agents/**
 ---
 # Architecture
 
@@ -10,7 +10,7 @@ Human (project lead) → main Claude (PM) → sub-agent (execution) → `scripts
 submission. No servers, no protocols. The agents share exactly one piece of state: the experiment
 registry.
 
-The `paths:` gate above covers `scripts/**` and `.claude/agents/**` on purpose — the parallel
+The `paths:` gate above covers `scripts/**` and `.agents/agents/**` on purpose — the parallel
 contract below governs sessions that *orchestrate* agents and run CLIs, not just sessions editing
 `src/`. A gate set to where a rule is stored, instead of where it executes, is a rule nobody reads.
 
@@ -18,13 +18,13 @@ contract below governs sessions that *orchestrate* agents and run CLIs, not just
 
 | Layer | Location | Rule |
 |---|---|---|
-| Agent definitions | `.claude/agents/*.md` | Role prompts only. No code |
+| Lane definitions | `.agents/agents/*.md` (source) → `.claude/agents/*.md` · `.codex/agents/*.toml` (**generated**) | Role prompts only. No code. Edit the source, never a generated copy |
 | Harness package | `src/ai_co_scientist/` | `config.py` (settings) · `registry.py` (registry) · `sem.py` (pure SEM/depth logic: split, reparameterization, smoothing, QDA) · `backends/` (external I/O). This is what tests cover |
 | Execution CLI | `scripts/*.py` | Sub-agent entry points. Keep them thin |
 | State | `runtime/registry.jsonl` → `docs/experiment-registry.md` | The single truth of every experiment |
 
 **Two layers of markdown, never mixed** (relocated here from `workflow.md`, 2026-09-01): the
-co-scientist's own agents are the role prompts in `.claude/agents/*.md`; `.agents/rules/*.md` are the
+co-scientist's own agents are the role prompts in `.agents/agents/*.md`; `.agents/rules/*.md` are the
 rules for whoever works *on* this repo. A runtime instruction belongs in the first, a working
 convention in the second. The old top-level `rules/` directory went away in the 2026-07-30 A2A strip.
 
@@ -64,7 +64,7 @@ source-text contract checks.
 | Class | Agents | Domain | Why it is safe |
 |---|---|---|---|
 | **Parallel (read)** | `researcher` · `reviewer` | — | read-only by contract; Bash is not withheld |
-| **Parallel (write)** | `engineer` · `harness-manager` · `analyst` | `src/scripts/tests` · `CLAUDE.md` + `.claude/**` · `docs/` | disjoint file domains by contract; the hook covers the worktree case only |
+| **Parallel (write)** | `engineer` · `harness-manager` · `analyst` | `src/scripts/tests` · `AGENTS.md` + `.agents/**` + `.agent-hooks/**` + both registrations · `docs/` | disjoint file domains by contract; the hook covers the worktree case only |
 | **Exclusive (one)** | `executor` | `runtime/` | one 8 GB GPU · DACON quota · checkpoint writes |
 
 `README.md` is human-facing and owned by no agent — it is outside every domain above, not folded

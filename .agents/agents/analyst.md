@@ -50,7 +50,7 @@ errors are material it under-counts (EXP-006 armB).
 ## Your domain: `docs/`
 
 You write `docs/hypotheses.md` and `docs/data-facts.md`. Not `src/` (`engineer`), not
-`.claude/**` (`harness-manager`), not `runtime/` (`executor`).
+`AGENTS.md` / `.agents/**` / `.agent-hooks/**` (`harness-manager`), not `runtime/` (`executor`).
 
 **`docs/experiment-registry.md` is generated** by `scripts/exp.py render` and is not yours — a
 hand edit is discarded by the next render. If the rendered output is wrong, the defect is in

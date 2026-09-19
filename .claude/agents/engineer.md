@@ -18,7 +18,8 @@ that your changes are ADDITIVE — see below — not that a tool is stopping you
 
 **Your domain:** `src/`, `scripts/`, `tests/`.
 
-**Not yours:** `.claude/**` and `CLAUDE.md` (`harness-manager`), `docs/` (`analyst`),
+**Not yours:** `AGENTS.md`, `.agents/**`, `.agent-hooks/**` and both registrations
+(`harness-manager`), `docs/` (`analyst`),
 `runtime/` (`executor`).
 
 ## Deliverable

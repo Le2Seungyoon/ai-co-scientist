@@ -57,6 +57,48 @@ Two consequences:
   interpreter. No `tomllib`, no match statements.
 - **Their tests may use 3.12** — run them with `uv run python`, which is the project venv.
 
+## `tools:` restricts a lane on Claude Code only
+
+`tools.claude` is emitted for Claude Code and generates **nothing** for Codex: measured from the
+installed binary, `[agents.*]` carries exactly `description` / `config_file` /
+`nickname_candidates`, and there is no per-lane tool allowlist anywhere. So `reviewer` and
+`researcher` are read-only *by mechanism* in one harness and *by instruction* in the other.
+
+- **Do not invent a Codex spelling for it.** A `tools` line there would read as a restriction
+  nothing enforces — worse than none.
+- **Write every lane's domain limit into its body**, where both harnesses read it.
+- The nearest real equivalent is `sandbox_mode = "read-only"` in the role file, deliberately
+  unset because a sandbox that cannot start kills every shell command and nobody has measured
+  whether it starts here. Ledger item 5.
+
+**Until that item is closed, a Codex lane's domain compliance is not checked by anything.** Say
+so rather than implying parity.
+
+## Before you call a harness change done
+
+```bash
+uv run pytest -q                                     # runs the four below, plus the repo suite
+uv run python .agent-hooks/build-agents.py --check    # AGENTS_FRESH — generated lanes and skills
+uv run python .agent-hooks/test_harness_parity.py     # the two registrations agree
+uv run python .agent-hooks/check_rule_links.py        # every pointer resolves
+uv run python .agent-hooks/test-build-agents.py       # the generator itself
+```
+
+`uv run pytest -q` already calls all four (`tests/test_harness_generated.py`), so running them
+separately is for a faster loop, never for extra assurance — two implementations of one judgment
+prove nothing (`self-review.md` → Gates).
+
+Three questions no command answers:
+
+1. **Both registrations updated?** The schemas are unrelated and neither derives from the other.
+   Changing one and not the other leaves that harness silently unprotected. The parity test
+   catches a *name* mismatch, not a semantic one.
+2. **Does the shared logic still handle the other harness's payload?** They differ — a Codex file
+   edit arrives as `apply_patch` with the whole patch in `tool_input.command` and no `file_path`
+   at all. Adding a branch for one is fine; replacing the other's is not.
+3. **Did you verify, or assume?** Registration syntax cannot be tested offline. An unverified
+   change is reported as unverified and goes in the ledger.
+
 ## Harness work fails silently — so verify the effect, not the input
 
 **A thing that is configured but does nothing looks exactly like a thing that works.** The

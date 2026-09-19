@@ -16,14 +16,17 @@ vs *resolved*).
 
 ### 1. Codex가 이 저장소를 trusted로 잡고 `.codex/config.toml`을 읽는가
 
-- **상태**: 미측정
+- **상태**: **부정 관측** (2026-09-08, Claude Code 세션에서 측정) — 아직 trusted가 아니다
 - **왜 중요한가**: 이게 아니면 아래 전부가 무의미하다. 훅도 레인도 등록되지 않은 채 "설정돼 있다"고
   보인다 — 정확히 이 원장이 막으려는 상태다.
 - **확인**: 이 디렉토리에서 Codex CLI를 한 번 띄우고 트러스트 프롬프트에서 'Trust all and continue'를
   받는다. **IDE는 이 프롬프트를 띄우지 않는다.** 그 다음 `~/.codex/config.toml`에 이 저장소 경로의
   `[hooks.state.…]` 항목이 생겼는지 본다.
-- **관측**: (비어 있음)
-- **결론 → 고칠 파일**: (비어 있음)
+- **관측**: `~/.codex/config.toml`에 이 저장소의 `.codex/config.toml`을 가리키는
+  `[hooks.state.…]` 항목이 **0개**다(훅 항목은 3개). `.agent-hooks/test_harness_parity.py`가
+  실행될 때마다 이 사실을 NOTE로 보고한다. 즉 **현재 Codex 쪽 훅 3개는 하나도 돌지 않는다.**
+- **결론 → 고칠 파일**: 없음 — 파일 문제가 아니라 트러스트 미부여다. 이 디렉토리에서 Codex CLI를
+  한 번 띄워 'Trust all and continue'를 받으면 해소된다. 그 전까지 2번은 확인할 수 없다.
 
 ### 2. 훅 3개가 실제로 실행되는가
 

@@ -136,14 +136,23 @@ integration, and:
 
 ## Enforcement hooks
 
-`.claude/settings.json` wires four: a PR gate (blocks `git push` when `origin/main` is not merged
-in), a commit-attribution deny hook, a runtime-command deny hook (`block_runtime_commands.py` —
-experiment scripts only run where `runtime/registry.jsonl` lives), and a PostToolUse hook that
-scans the instruction files for the ~150-line budget. Repo-wide scanners live in
-`.agent-hooks/`, not `.agent-hooks/` — `enforcement.md` → Where harness code lives.
+Hook scripts live in `.agent-hooks/`, **one copy**, registered by each harness in its own file —
+`.claude/settings.json` and `.codex/config.toml`, whose schemas are unrelated. Wired: a PR gate
+(blocks `git push` when `origin/main` is not merged in), a commit-attribution deny hook, a
+runtime-command deny hook (`block_runtime_commands.py` — experiment scripts only run where
+`runtime/registry.jsonl` lives), a PostToolUse nudge on the ~150-line instruction budget
+(`check_rules_size.py`), and a PostToolUse rebuild of the generated lanes (`build-agents.py
+--hook`). Repo-wide scanners sit beside them, each with its test —
+`.agents/rules/enforcement.md` → Where harness code lives.
+
+Lane definitions live in `.agents/agents/` and skills in `.agents/skills/`; `build-agents.py`
+generates the `.claude/` and `.codex/` copies both harnesses read — **never hand-edit those**.
+`uv run pytest -q` fails when they drift, when the two registrations disagree, or when a rule
+pointer stops resolving.
 
 **Hooks only see this session's edits** — `.agents/rules/enforcement.md` → Hooks only see this
-session's edits.
+session's edits. What has not been measured on the Codex side is in
+`docs/codex-verification-ledger.md`; do not build a rule on an entry that is still empty.
 
 ## References
 
@@ -158,4 +167,6 @@ session's edits.
   training-bearing improvement is EXP-003, −0.396), which is why the cheap axes are swept first.
   Deltas are re-derivable from `runtime/registry.jsonl`; `docs/hypotheses.md` → 순위 기준 holds
   the same claim — fix both or neither.
+- `docs/codex-verification-ledger.md` — what has NOT been measured on the Codex side.
+  **Do not build a rule on an entry that is still empty.**
 - README — data preparation / baseline reproduction / enabling the real backends.
