@@ -67,5 +67,5 @@ the generator; report it and let the orchestrator route it to `engineer`.
   interpretation and you record it, so a second reader is what keeps those two from collapsing
   into one.
 - **Distinguish domain evidence from procedure.** A measured fact about this dataset belongs in
-  `docs/`. A rule that must be applied to every experiment belongs in `.claude/rules/` — hand
+  `docs/`. A rule that must be applied to every experiment belongs in `.agents/rules/` — hand
   it to `harness-manager` rather than writing it into `hypotheses.md`.

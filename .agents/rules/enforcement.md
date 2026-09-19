@@ -9,7 +9,7 @@ weaker rule, it is a rule that never runs.
 
 | Layer | Use when | How it fails |
 |-------|----------|--------------|
-| **Prose** (`.claude/rules/*.md`) | context-dependent advice; the *why* behind a ban | quietly ignored under deadline |
+| **Prose** (`.agents/rules/*.md`) | context-dependent advice; the *why* behind a ban | quietly ignored under deadline |
 | **Hook** (`.agent-hooks/*.py`) | deterministic check, fast feedback, this session's edits | one false positive and it gets switched off |
 | **Test / CI invariant** | must hold no matter who authored the code | slow feedback; needs a real assertion |
 | **`permissions.deny`** | absolute in every context (person · solo/team · time) | blocks legitimate work with no escape |

@@ -24,7 +24,7 @@ contract below governs sessions that *orchestrate* agents and run CLIs, not just
 | State | `runtime/registry.jsonl` → `docs/experiment-registry.md` | The single truth of every experiment |
 
 **Two layers of markdown, never mixed** (relocated here from `workflow.md`, 2026-09-01): the
-co-scientist's own agents are the role prompts in `.claude/agents/*.md`; `.claude/rules/*.md` are the
+co-scientist's own agents are the role prompts in `.claude/agents/*.md`; `.agents/rules/*.md` are the
 rules for whoever works *on* this repo. A runtime instruction belongs in the first, a working
 convention in the second. The old top-level `rules/` directory went away in the 2026-07-30 A2A strip.
 

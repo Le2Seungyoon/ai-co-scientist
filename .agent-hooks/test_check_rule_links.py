@@ -31,12 +31,12 @@ def run(root):
 
 
 def build(root, rules=None, extra=None, claude_md="# Project\n"):
-    os.makedirs(os.path.join(root, ".claude", "rules"), exist_ok=True)
-    os.makedirs(os.path.join(root, ".claude", "hooks"), exist_ok=True)
-    with open(os.path.join(root, "CLAUDE.md"), "w", encoding="utf-8") as f:
+    os.makedirs(os.path.join(root, ".agents", "rules"), exist_ok=True)
+    os.makedirs(os.path.join(root, ".agent-hooks"), exist_ok=True)
+    with open(os.path.join(root, "AGENTS.md"), "w", encoding="utf-8") as f:
         f.write(claude_md)
     for name, body in (rules or {}).items():
-        with open(os.path.join(root, ".claude", "rules", name), "w", encoding="utf-8") as f:
+        with open(os.path.join(root, ".agents", "rules", name), "w", encoding="utf-8") as f:
             f.write(body)
     for rel in extra or []:
         path = os.path.join(root, rel.replace("/", os.sep))
@@ -64,16 +64,16 @@ def main():
 
     with tempfile.TemporaryDirectory() as root:
         build(root, claude_md="| `nope.md` | when to read |\n")
-        check("broken pointer in CLAUDE.md is caught", "RULE_LINKS_BROKEN" in run(root)[0])
+        check("broken pointer in AGENTS.md is caught", "RULE_LINKS_BROKEN" in run(root)[0])
 
     with tempfile.TemporaryDirectory() as root:
         build(root)
-        os.makedirs(os.path.join(root, ".claude", "agents"), exist_ok=True)
-        with open(os.path.join(root, ".claude", "agents", "gardener.md"), "w", encoding="utf-8") as f:
+        os.makedirs(os.path.join(root, ".agents", "agents"), exist_ok=True)
+        with open(os.path.join(root, ".agents", "agents", "gardener.md"), "w", encoding="utf-8") as f:
             f.write("---\nname: gardener\n---\nSee `.agent-hooks/gone.py` for the guard.\n")
         out, rc = run(root)
-        check("broken pointer in .claude/agents/*.md is caught", "RULE_LINKS_BROKEN" in out, out[:70])
-        check(".claude/agents finding names its file", "gardener.md:4" in out, out[:70])
+        check("broken pointer in .agents/agents/*.md is caught", "RULE_LINKS_BROKEN" in out, out[:70])
+        check(".agents/agents finding names its file", "gardener.md:4" in out, out[:70])
 
     # --- must-pass half: none of these is a broken path ---
     with tempfile.TemporaryDirectory() as root:
@@ -84,7 +84,7 @@ def main():
                     "Sibling by bare name: `b.md`.\n"
                     "Bare harness file: `settings.json`.\n"
                     "Full path: `.agent-hooks/check_rules_size.py`.\n"
-                    "Root file by name: `CLAUDE.md`.\n"
+                    "Root file by name: `AGENTS.md`.\n"
                     "A glob: `.claude/rules/*.md`.\n"
                     "A placeholder: `origin/{{DEFAULT_BRANCH}}/notes.md`.\n"
                     "A shape: `test_<name>.py` and `tests/<module>/test_*.py`.\n"
@@ -105,12 +105,12 @@ def main():
 
     with tempfile.TemporaryDirectory() as root:
         build(root, rules={"a.md": "# A\n"})
-        os.makedirs(os.path.join(root, ".claude", "agents"), exist_ok=True)
-        with open(os.path.join(root, ".claude", "agents", "gardener.md"), "w", encoding="utf-8") as f:
-            f.write("---\nname: gardener\n---\nRead `.claude/rules/a.md` first.\n")
+        os.makedirs(os.path.join(root, ".agents", "agents"), exist_ok=True)
+        with open(os.path.join(root, ".agents", "agents", "gardener.md"), "w", encoding="utf-8") as f:
+            f.write("---\nname: gardener\n---\nRead `.agents/rules/a.md` first.\n")
         out, rc = run(root)
-        check(".claude/agents is in the governed scope", "RULE_LINKS_CLEAN" in out, out[:90])
-        check(".claude/agents reference is counted", "1 references across 3 files" in out, out)
+        check(".agents/agents is in the governed scope", "RULE_LINKS_CLEAN" in out, out[:90])
+        check(".agents/agents reference is counted", "1 references across 3 files" in out, out)
 
     # --- an empty target set is a failure, not a pass ---
     with tempfile.TemporaryDirectory() as root:

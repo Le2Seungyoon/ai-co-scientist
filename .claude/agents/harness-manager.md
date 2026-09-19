@@ -21,7 +21,7 @@ running `executor`. `runtime/` is closed to you by that contract, not by a tool:
 `runtime/registry.jsonl` is absent — it never guards `Write`/`Edit`, cannot see which sub-agent
 issued a command, and in the main worktree it denies nothing. Do not lean on the hook.
 
-**Your domain:** `CLAUDE.md`, `.claude/rules/**`, `.agent-hooks/**`, `.agent-hooks/**`,
+**Your domain:** `CLAUDE.md`, `.agents/rules/**`, `.agent-hooks/**`, `.agent-hooks/**`,
 `.claude/skills/**`, `.claude/settings.json`, `.claude/agents/**`.
 
 **Not yours:** `src/`, `scripts/`, `tests/` (that is `engineer`), `docs/` (that is `analyst`),

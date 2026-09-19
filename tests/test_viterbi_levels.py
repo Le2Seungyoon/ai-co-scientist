@@ -97,7 +97,7 @@ def test_softmax_rows_sum_to_one_and_are_shift_invariant():
 
 
 def test_cli_refuses_to_stack_hmm_with_smooth():
-    """CLI가 두 평활기를 겹쳐 쓰지 못하게 막는지 — 소스 계약 검사다(`.claude/rules/testing.md`의
+    """CLI가 두 평활기를 겹쳐 쓰지 못하게 막는지 — 소스 계약 검사다(`.agents/rules/testing.md`의
     stand-in). main()을 실제로 돌리는 것은 실험 스크립트 실행이라 하지 않는다."""
     from pathlib import Path  # noqa: PLC0415
     src = (Path(__file__).resolve().parents[1] / "scripts" / "infer_decomposed.py").read_text(

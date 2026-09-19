@@ -62,14 +62,14 @@ def write(root, relpath, n_lines, first_line=None):
 def tree(**files):
     """A throwaway project root. `files` maps a relpath -> line count, or (lines, first_line)."""
     with tempfile.TemporaryDirectory() as root:
-        os.makedirs(os.path.join(root, ".claude", "rules"), exist_ok=True)
+        os.makedirs(os.path.join(root, ".agents", "rules"), exist_ok=True)
         for rel, spec in files.items():
             n, first = spec if isinstance(spec, tuple) else (spec, None)
             write(root, rel.replace("__", "/"), n, first)
         yield root
 
 
-def payload(tool="Write", path=".claude/rules/over.md"):
+def payload(tool="Write", path=".agents/rules/over.md"):
     body = {"hook_event_name": "PostToolUse", "tool_name": tool}
     if path:
         body["tool_input"] = {"file_path": path}
@@ -78,7 +78,7 @@ def payload(tool="Write", path=".claude/rules/over.md"):
 
 def main():
     # --- must-block half: the nudge has to fire, and say something usable ---
-    with tree(**{".claude__rules__over.md": BUDGET + 50}) as root:
+    with tree(**{".agents__rules__over.md": BUDGET + 50}) as root:
         msg, rc = run(root, payload())
         check("over-budget rules file nudges", bool(msg), "silent")
         check("nudge reports the real line count", str(BUDGET + 50) in msg, msg[:60])
@@ -97,29 +97,29 @@ def main():
         check("empty stdin still nudges", bool(run(root)[0]))
         check("garbage payload still exits 0", run(root, "not json at all", raw=True)[1] == 0)
 
-    with tree(**{"CLAUDE.md": BUDGET + 1}) as root:
-        check("over-budget CLAUDE.md nudges", bool(run(root, payload())[0]))
+    with tree(**{"AGENTS.md": BUDGET + 1}) as root:
+        check("over-budget AGENTS.md nudges", bool(run(root, payload())[0]))
 
     # --- generated files: the four options do not apply to them ---
-    with tree(**{".claude__rules__ledger.md": (BUDGET + 50, GENERATED_HEADER)}) as root:
+    with tree(**{".agents__rules__ledger.md": (BUDGET + 50, GENERATED_HEADER)}) as root:
         msg, _ = run(root, payload())
         check("over-budget generated file nudges", bool(msg), "silent")
         check("generated file gets the generator advice", "GENERATED" in msg and "generator" in msg, msg[:80])
         check("generated file is NOT routed to the refactor skill", "refactor-agent-rules" not in msg, msg[:80])
 
     with tree(**{
-        ".claude__rules__ledger.md": (BUDGET + 50, GENERATED_HEADER),
-        ".claude__rules__workflow.md": BUDGET + 10,
+        ".agents__rules__ledger.md": (BUDGET + 50, GENERATED_HEADER),
+        ".agents__rules__workflow.md": BUDGET + 10,
     }) as root:
         msg, _ = run(root, payload())
         check("mixed over-budget set gets both advices", "refactor-agent-rules" in msg and "generator" in msg, msg[:80])
 
     # --- must-pass half: everything below is legitimate work and must stay silent ---
     with tree(**{
-        ".claude__rules__under.md": BUDGET - 50,
-        ".claude__rules__edge.md": BUDGET,  # exactly at budget: still passing
-        ".claude__rules__ledger.md": (BUDGET - 1, GENERATED_HEADER),
-        "CLAUDE.md": BUDGET - 1,
+        ".agents__rules__under.md": BUDGET - 50,
+        ".agents__rules__edge.md": BUDGET,  # exactly at budget: still passing
+        ".agents__rules__ledger.md": (BUDGET - 1, GENERATED_HEADER),
+        "AGENTS.md": BUDGET - 1,
         "src__big_module.py": BUDGET + 500,
         "docs__2026-01-01-notes.md": BUDGET + 500,
     }) as root:
@@ -128,13 +128,29 @@ def main():
         check("clean tree exits 0", rc == 0, f"rc={rc}")
 
     # --- silence must mean exactly one thing: checked and passing ---
-    with tempfile.TemporaryDirectory() as root:  # no .claude/rules, no CLAUDE.md
+    with tempfile.TemporaryDirectory() as root:  # no .agents/rules, no AGENTS.md
         msg, rc = run(root, payload())
         check("empty governed set says so instead of passing quietly", "EMPTY" in msg, msg[:80] or "silent")
         check("empty governed set still exits 0", rc == 0, f"rc={rc}")
 
-    with tree(**{".claude__rules__ok.md": BUDGET - 1}) as root:
-        os.mkdir(os.path.join(root, ".claude", "rules", "trap.md"))  # a directory, not a file
+    # One GOVERNED pattern going to zero while another still matches: the union is non-empty,
+    # so the EMPTY guard never fires. Without the dead-pattern note the whole `.agents/rules`
+    # directory drops out of the budget and the hook stays silent -- measured 2026-09-08 when
+    # the cross-agent move emptied `.claude/rules/*.md`.
+    with tree(**{"AGENTS.md": BUDGET - 1}) as root:  # AGENTS.md matches, .agents/rules/*.md does not
+        msg, rc = run(root, payload())
+        check("a governed pattern matching nothing says so", "matched NOTHING" in msg, msg[:90] or "silent")
+        check("dead governed pattern names the pattern", ".agents/rules/*.md" in msg, msg[:90] or "silent")
+        check("dead governed pattern still exits 0", rc == 0, f"rc={rc}")
+
+    # ... and the must-pass half: with both patterns matching and everything under budget, the
+    # hook must stay silent. A note that fires on a healthy tree is how a checker gets switched off.
+    with tree(**{".agents__rules__ok.md": BUDGET - 1, "AGENTS.md": BUDGET - 1}) as root:
+        msg, rc = run(root, payload())
+        check("both patterns matching stays silent", msg == "", msg[:90])
+
+    with tree(**{".agents__rules__ok.md": BUDGET - 1}) as root:
+        os.mkdir(os.path.join(root, ".agents", "rules", "trap.md"))  # a directory, not a file
         msg, rc = run(root, payload())
         check("unreadable governed entry says so instead of passing quietly", "NOT checked" in msg, msg[:80] or "silent")
         check("unreadable governed entry still exits 0", rc == 0, f"rc={rc}")

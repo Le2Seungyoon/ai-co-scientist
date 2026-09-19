@@ -70,7 +70,7 @@ At the end of every task, before declaring done: **did anything reusable/recurri
 session?** If so, don't leave it in chat — capture it.
 
 Route first — the layer decides whether the rule ever runs (`enforcement.md` → Four layers):
-- Anyone touching this repo (convention · contract · gotcha) → a committed `.claude/rules/` file.
+- Anyone touching this repo (convention · contract · gotcha) → a committed `.agents/rules/` file.
 - This machine/session only (local path, personal taste, one-off setup) → auto memory.
 - Deterministic, and checkable on this session's edits → a **hook** (+ its test).
 - Must hold on every authoring path (IDE · teammate · another agent) → a **test/CI invariant**;
@@ -84,7 +84,7 @@ Do not capture: one-off facts specific to this task (already in code/tests/commi
 code/git already makes self-evident.
 
 Format:
-- Write instruction files (CLAUDE.md, `.claude/rules/*`) in **English** — clarity + tokens. Domain
+- Write instruction files (CLAUDE.md, `.agents/rules/*`) in **English** — clarity + tokens. Domain
   string literals (column names, error constants) stay in their original language: they are data.
 - Pick the file by topic; **read the target file first** and match its existing style/format —
   update the relevant section, don't blindly append a duplicate.
@@ -96,7 +96,7 @@ Format:
 ## File size budget (keep each instruction file dense)
 
 Gotchas accumulate; a bloated rules file loads in full every session and dilutes signal. Soft
-budget: **~150 lines per file** (CLAUDE.md and each `.claude/rules/*.md`). A PostToolUse hook
+budget: **~150 lines per file** (CLAUDE.md and each `.agents/rules/*.md`). A PostToolUse hook
 (`.agent-hooks/check_rules_size.py`) scans the governed set and nudges.
 
 Detection is deterministic; the response is judgment. **Invoke the `refactor-agent-rules`
@@ -112,7 +112,7 @@ A tight single-topic file slightly over budget is fine — these are levers, not
 
 ## Rule Conflicts & Harness Improvement
 
-The harness (CLAUDE.md · `.claude/rules/` · settings) is not a static document — it's a device
+The harness (CLAUDE.md · `.agents/rules/` · settings) is not a static document — it's a device
 that keeps growing and getting corrected.
 
 - **Rule ↔ request conflict**: don't silently follow the rule and ignore the request, and don't

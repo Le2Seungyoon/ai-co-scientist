@@ -45,12 +45,18 @@ OPEN ITEM, not yet reconciled with the shipped skeleton: this repo has not check
 skeleton ships agent definitions with harness-internal pointers of its own. Until that is checked,
 treat this widening as project-local — `harness-spine:update` should decide whether to adopt it
 upstream, not assume either way.
+DIVERGENCE (2026-09-08, cross-agent port): the governed roots and SEARCH_DIRS moved with the
+port -- `AGENTS.md`, `.agents/rules`, `.agents/agents`, `.agent-hooks` in place of their
+`.claude/` predecessors, with `.codex` added so Codex registration paths resolve. `CLAUDE.md`
+stays governed although it is one line: it is still a file rules may point at. The LOGIC is
+untouched. `harness-spine:update` must reconcile AROUND these roots, never onto them.
+
 """
 import os
 import re
 import sys
 
-GOVERNED = ("CLAUDE.md", ".claude/rules", ".claude/agents")
+GOVERNED = ("AGENTS.md", "CLAUDE.md", ".agents/rules", ".agents/agents")
 EXTENSIONS = (".md", ".py", ".json", ".sh")
 # Where a bare filename is allowed to live: the harness dirs, plus this project's SOURCE ROOTS.
 # Source roots, filled for this project. Rules files name modules the way the code imports them
@@ -59,7 +65,7 @@ EXTENSIONS = (".md", ".py", ".json", ".sh")
 # findings were real files under an unlisted `include/custflow`, a 95% false-positive rate — and
 # `enforcement.md` -> Before promoting a check to deny is exactly about that being fatal.
 SEARCH_DIRS = (
-    "", ".claude", ".claude/rules", ".agent-hooks",
+    "", ".claude", ".codex", ".agents", ".agents/rules", ".agents/agents", ".agent-hooks",
     "src", "src/ai_co_scientist", "scripts", "scripts/legacy", "tests", "docs",
 )
 # A token carrying any of these describes a shape, not a file.

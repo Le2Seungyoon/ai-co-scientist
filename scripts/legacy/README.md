@@ -54,5 +54,5 @@ fda_transform · blur_aug · aug-brightness · val-case · histmatch · clahe ·
   낱개로 옮기면 깨진다.
 - `train_sem_depth.py`·`baseline_sem_depth.py`는 `wandb`를 최상단에서 import한다. 현행 경로가
   이 파일들을 import하지 않는 이유 중 하나다.
-- standalone 제약은 2026-08-17 폐기됐지만(`.claude/rules/architecture.md`) 이 파일들은 그
+- standalone 제약은 2026-08-17 폐기됐지만(`.agents/rules/architecture.md`) 이 파일들은 그
   제약 아래 쓰였다. `src/`로 이행하지 않는다 — 재현 대상이므로 **그대로 얼려 둔다**.

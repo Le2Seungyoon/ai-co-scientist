@@ -40,7 +40,7 @@ that is a stop: escalate to the orchestrator, don't silently reconcile the two y
      **Never set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`** — it is Linux-only and on
      Windows/WDDM it triggers the 0x10E bugcheck that reboots the machine. It is never the fix
      for an apparent OOM here; the two real causes are the `cudnn.benchmark` line and genuine
-     batch size (`.claude/rules/coding-patterns.md` -> Gotchas).
+     batch size (`.agents/rules/coding-patterns.md` -> Gotchas).
    - level classifier: `scripts/train_level.py`
    Long runs: launch in the background and capture **stderr** (`2>&1`) — redirecting it to
    `/dev/null` has twice hidden the actual traceback.
