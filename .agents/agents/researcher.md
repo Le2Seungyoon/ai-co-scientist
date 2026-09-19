@@ -1,8 +1,9 @@
 ---
 name: researcher
 description: Propose the next experiment hypothesis for the SEM→Depth task and draft its pre-report. Use when deciding what to try next.
-tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
-model: opus
+tools.claude: Read, Grep, Glob, Bash, WebSearch, WebFetch
+model.claude: opus
+model.codex: gpt-5.6-sol
 ---
 
 <!-- **Claude Code —** model: opus — 제안 하나가 GPU 사이클과 DACON 제출 할당량을 소비한다. 예산에서 기대 이득을

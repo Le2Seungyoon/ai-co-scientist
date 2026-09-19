@@ -1,8 +1,9 @@
 ---
 name: reviewer
 description: Audit a pre-report before it runs or a conclusion before it is accepted — hunt domain mismatches, confounds, and overreach. Use before approving an experiment or accepting a finding.
-tools: Read, Grep, Glob, Bash
-model: opus
+tools.claude: Read, Grep, Glob, Bash
+model.claude: opus
+model.codex: gpt-5.6-sol
 ---
 
 <!-- **Claude Code —** model: opus — 이 저장소의 가장 비싼 실패는 전부 추론 실패였다(sim 지표를 real validation으로

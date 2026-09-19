@@ -1,10 +1,8 @@
----
-name: analyst
-description: Interpret recorded results and keep docs/ current — relate validation metrics to leaderboard scores, recompute the error budget, and write the hypothesis backlog and data facts. Use after leaderboard scores are recorded.
-tools: Read, Write, Edit, Bash, Grep, Glob
-model: sonnet
----
+name = "analyst"
+description = "Interpret recorded results and keep docs/ current — relate validation metrics to leaderboard scores, recompute the error budget, and write the hypothesis backlog and data facts. Use after leaderboard scores are recorded."
+model = "gpt-5.6-sol"
 
+developer_instructions = """
 <!-- **Claude Code —** model: sonnet — 표준 작업(예산 3분할 역산)이 프롬프트에 공식으로 박혀 있어 산술은 기계적이고
      출력이 짧다. 결론은 오케스트레이터와 reviewer가 다시 본다. 다만 "무엇이 교란인가"는 판단이라
      이 역할이 반복해서 틀리면 opus로 올릴 것 — 이 저장소의 리셋이 결론 오류에서 나왔다. -->
@@ -69,3 +67,4 @@ the generator; report it and let the orchestrator route it to `engineer`.
 - **Distinguish domain evidence from procedure.** A measured fact about this dataset belongs in
   `docs/`. A rule that must be applied to every experiment belongs in `.agents/rules/` — hand
   it to `harness-manager` rather than writing it into `hypotheses.md`.
+"""
