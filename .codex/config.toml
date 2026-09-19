@@ -1,0 +1,78 @@
+# Project config for ai-co-scientist. Codex ignores this file until the project is trusted
+# (`[projects."<abs path>"] trust_level = "trusted"` in ~/.codex/config.toml, or the trust prompt
+# on first run from this directory -- the IDE never shows that prompt).
+# Whether that has happened here is UNMEASURED: docs/codex-verification-ledger.md item 1.
+#
+# No sandbox_mode / approval_policy. Whether the sandbox starts on this Windows machine has not
+# been measured, and a sandbox that cannot start kills every shell command. It is also the only
+# thing on this side that could enforce a read-only lane -- Codex has no per-lane tool allowlist,
+# so `tools.claude` generates nothing here. Ledger item 5.
+#
+# Hook commands resolve two things instead of naming them:
+#   - the repo, through `git rev-parse --show-toplevel`, because Codex may start in a
+#     subdirectory and a cwd-relative path that misses is indistinguishable from a clean run;
+#   - the interpreter, because this machine has `python` (3.8) and no `python3` at all.
+# When either is unresolvable the hook says so on stderr and exits 0. It never passes in silence:
+# "checked and clean" and "never ran" must not look the same (.agents/rules/enforcement.md ->
+# Hook contracts). Claude Code's half of these is .claude/settings.json; the schemas are
+# unrelated and `.agent-hooks/test_harness_parity.py` fails when the two drift apart.
+
+project_doc_max_bytes = 65536
+project_root_markers = [".git"]
+
+[[hooks.PostToolUse]]
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = 'r=$(git rev-parse --show-toplevel 2>/dev/null); p=$(command -v python3 || command -v python); s="$r/.agent-hooks/check_rules_size.py"; if [ -n "$r" ] && [ -n "$p" ] && [ -f "$s" ]; then "$p" "$s"; else cat >/dev/null 2>&1 || :; echo "[rules-size] repo or interpreter unresolved -- size budget NOT checked" >&2; fi'
+timeout = 15
+
+[[hooks.PostToolUse]]
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = 'r=$(git rev-parse --show-toplevel 2>/dev/null); p=$(command -v python3 || command -v python); s="$r/.agent-hooks/build-agents.py"; if [ -n "$r" ] && [ -n "$p" ] && [ -f "$s" ]; then "$p" "$s" --hook; else cat >/dev/null 2>&1 || :; echo "[build-agents] repo or interpreter unresolved -- generated lanes NOT rebuilt" >&2; fi'
+timeout = 20
+
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'r=$(git rev-parse --show-toplevel 2>/dev/null); p=$(command -v python3 || command -v python); s="$r/.agent-hooks/block_runtime_commands.py"; if [ -n "$r" ] && [ -n "$p" ] && [ -f "$s" ]; then "$p" "$s"; else cat >/dev/null 2>&1 || :; echo "[runtime-lane] repo or interpreter unresolved -- command NOT checked" >&2; fi'
+timeout = 10
+
+# Lane registration. `config_file` is relative to this file's directory. The role files are
+# GENERATED from .agents/agents/*.md -- never hand-edit them; edit the source and run
+# `uv run python .agent-hooks/build-agents.py`.
+#
+# `description` and `nickname_candidates` live HERE rather than in the role file: the binary's
+# [agents.*] shape carries exactly description / config_file / nickname_candidates, while the
+# role file is parsed as a full config. Whether the role file's own copies are read at all is
+# ledger item 3.
+
+[agents.researcher]
+description = "Propose the next experiment hypothesis for SEM→Depth and draft its pre-report."
+config_file = "agents/researcher.toml"
+nickname_candidates = ["researcher"]
+
+[agents.reviewer]
+description = "Audit a pre-report before it runs, or a conclusion before it is accepted."
+config_file = "agents/reviewer.toml"
+nickname_candidates = ["reviewer"]
+
+[agents.engineer]
+description = "Write additive pipeline code in src/ and scripts/ with offline tests. Never runs training or submission."
+config_file = "agents/engineer.toml"
+nickname_candidates = ["engineer"]
+
+[agents.harness_manager]
+description = "Own the harness — AGENTS.md, .agents/, .agent-hooks/ and both registrations."
+config_file = "agents/harness-manager.toml"
+nickname_candidates = ["harness manager"]
+
+[agents.analyst]
+description = "Interpret recorded results and keep docs/ current."
+config_file = "agents/analyst.toml"
+nickname_candidates = ["analyst"]
+
+[agents.executor]
+description = "Execute ONE approved experiment and record what happened. Exclusive: never two at once."
+config_file = "agents/executor.toml"
+nickname_candidates = ["executor"]

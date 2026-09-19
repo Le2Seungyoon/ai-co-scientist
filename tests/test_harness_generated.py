@@ -56,6 +56,14 @@ def test_generated_lanes_and_skills_match_their_sources():
     )
 
 
+def test_harness_registrations_have_not_drifted():
+    proc = _run(HOOKS / "test_harness_parity.py")
+    assert proc.returncode == 0, (
+        "두 하니스의 등록이 벌어졌다 — 한쪽에만 걸린 훅, 없는 스크립트, 아무도 등록하지 않는 "
+        f"Codex 레인, 한쪽에만 사는 스킬 중 하나다.\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
 def test_every_rule_and_lane_pointer_resolves():
     proc = _run(HOOKS / "check_rule_links.py")
     assert proc.returncode == 0, (
