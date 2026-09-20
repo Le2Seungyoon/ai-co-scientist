@@ -35,7 +35,18 @@ expected to differ and is NOT drift — `harness-spine:update` reconciles around
 Everything else: do not hand-edit here; reconcile with that skill so the copies do not drift. If
 this project diverges anywhere beyond the source roots, say why in this docstring.
 
-DIVERGENCE (2026-09-04): `GOVERNED` widened to add `.claude/agents` — this project's agent
+MEASURED AND REJECTED (2026-09-08): widening GOVERNED to `.agent-hooks` and scanning `.py`
+as well as `.md`. Rationale was real -- the hook scripts cite rule files in their docstrings
+and in one DENY MESSAGE, and the cross-agent move left three of those pointing at
+`.claude/rules/`, which nothing here noticed. But the measurement was 12 findings, 12 of
+them false: test fixture path literals, `%s` format strings, and an `@import` example.
+A 100% false-positive rate is the case `enforcement.md` -> Before promoting a check calls
+fatal. So this stays UNCOVERED: a stale rule citation inside `.agent-hooks/*.py` is found by
+grepping the source, not by this scanner. Do not re-widen without first teaching `candidates`
+to skip string literals inside code.
+
+DIVERGENCE (2026-09-04, SUPERSEDED by the 2026-09-08 entry below -- the paths named here are
+the pre-port ones and no longer exist): `GOVERNED` widened to add `.claude/agents` — this project's agent
 definitions (`.claude/agents/*.md`) carry backticked pointers into `.claude/rules/` and
 `.agent-hooks/` (e.g. `harness-manager.md`) the same way rules files do, and those pointers were
 previously unchecked (`.claude/agents` sat outside every governed root). At the time of widening

@@ -85,7 +85,7 @@ def main():
                     "Bare harness file: `settings.json`.\n"
                     "Full path: `.agent-hooks/check_rules_size.py`.\n"
                     "Root file by name: `AGENTS.md`.\n"
-                    "A glob: `.claude/rules/*.md`.\n"
+                    "A glob: `.agents/rules/*.md`.\n"
                     "A placeholder: `origin/{{DEFAULT_BRANCH}}/notes.md`.\n"
                     "A shape: `test_<name>.py` and `tests/<module>/test_*.py`.\n"
                     "A URL: `https://example.com/spec.md`.\n"

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """PreToolUse deny: experiment-execution commands only run where the registry lives.
 
-See `.claude/rules/enforcement.md` -> Hook contracts and
-`.claude/rules/architecture.md` -> Parallel execution contract.
+See `.agents/rules/enforcement.md` -> Hook contracts and
+`.agents/rules/architecture.md` -> Parallel execution contract.
 
   Event     PreToolUse (Bash) only. It DENIES; the advisory counterpart is check_rules_size.py.
   Governed  The commands in GUARDED, which all read or write `runtime/`. `scripts/legacy/*.py`
@@ -54,7 +54,7 @@ REASON = (
     "Run experiment commands in the MAIN worktree, where the registry lives. This lane "
     "(engineer / harness-manager) is for additive code and offline tests only. "
     "Escape hatch: set {var}=\"<reason>\" for this command. "
-    "-- .claude/rules/architecture.md -> Parallel execution contract"
+    "-- .agents/rules/architecture.md -> Parallel execution contract"
 )
 
 

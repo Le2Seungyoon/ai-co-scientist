@@ -2,7 +2,7 @@
 """PostToolUse nudge: warn when a governed instruction file exceeds the soft line budget.
 
 Contract — this hook is the template every other hook in this project follows.
-See `.claude/rules/enforcement.md` -> Hook contracts.
+See `.agents/rules/enforcement.md` -> Hook contracts.
 
   Event     PostToolUse only. It ADVISES and never denies; denial belongs to PreToolUse.
   Governed  `.agents/rules/*.md` and the root `AGENTS.md` (see GOVERNED).
