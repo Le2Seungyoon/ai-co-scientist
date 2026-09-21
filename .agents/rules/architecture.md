@@ -1,18 +1,8 @@
----
-paths:
-  - src/**
-  - scripts/**
-  - .agents/agents/**
----
 # Architecture
 
 Human (project lead) → main Claude (PM) → sub-agent (execution) → `scripts/` CLI → data / GPU /
 submission. No servers, no protocols. The agents share exactly one piece of state: the experiment
 registry.
-
-The `paths:` gate above covers `scripts/**` and `.agents/agents/**` on purpose — the parallel
-contract below governs sessions that *orchestrate* agents and run CLIs, not just sessions editing
-`src/`. A gate set to where a rule is stored, instead of where it executes, is a rule nobody reads.
 
 ## Layers & dependency direction
 

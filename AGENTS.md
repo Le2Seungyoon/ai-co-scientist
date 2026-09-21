@@ -82,17 +82,6 @@ here, so a statement true of one harness and false of another does more damage t
 Harness-dependent text goes in the rule it modifies as a labelled paragraph, never here —
 `.agents/rules/harness.md` → Where a thing lives.
 
-## Docs convention
-
-- **User-facing docs** — `docs/`, written in Korean. All three are **living documents, overwritten
-  in place**, so they carry no date prefix: current state is rewritten, traps and prerequisites
-  accumulate, and per-experiment decisions belong in the registry, not here.
-- `docs/experiment-registry.md` is **generated** by `scripts/exp.py render`. Never hand-edit it, and
-  never run a compression skill over it — the next render discards both.
-- **Agent-facing instruction files** (this file, the one-line `CLAUDE.md` that imports it, and
-  `.agents/**/*.md`) — **English**; `src/` comments stay Korean.
-  `.agents/rules/workflow.md` → Capturing Learnings → Format.
-
 ## Rules
 
 | File | When to read |
@@ -102,6 +91,7 @@ Harness-dependent text goes in the rule it modifies as a labelled paragraph, nev
 | `.agents/rules/architecture.md` | harness structure · layer boundaries · **sub-agent parallel contract** |
 | `.agents/rules/coding-patterns.md` | editing `src/**`, `scripts/**` |
 | `.agents/rules/testing.md` | writing or changing tests, hooks, scanners |
+| `.agents/rules/docs.md` | writing anything anyone reads — which language, which lifetime, what may not be hand-edited |
 | `.agents/rules/enforcement.md` | turning a rule into a hook / test / deny — and before promoting any check |
 | `.agents/rules/harness.md` | **before changing anything that configures an agent** — instructions, rules, hooks, registrations |
 | `.agents/rules/self-review.md` | at the end of every task, before declaring done |

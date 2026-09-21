@@ -1,8 +1,3 @@
----
-paths:
-  - src/**
-  - scripts/**
----
 # Coding Patterns
 
 ## Before writing new code (the rule that generates the rest)

@@ -37,6 +37,10 @@ If a whole file would be one harness's paragraphs, that is a signal rather than 
 it belongs beside the neutral rule it modifies, or it is operational fact about launching and
 debugging a harness.
 
+**No `paths:` front-matter on a rules file.** Codex cannot read it and nothing here consumes it;
+removed 2026-09-08. Path-scoping returns when the rules set outgrows one read, as a key the
+generator reads and emits the `AGENTS.md` table from.
+
 ## `.claude/` paths in the record are historical
 
 `.superpowers/**` and `docs/superpowers/plans/2026-09-04-agent-roster.md` name `.claude/rules/`

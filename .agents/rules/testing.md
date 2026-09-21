@@ -1,8 +1,3 @@
----
-paths:
-  - tests/**
-  - .agent-hooks/**
----
 # Testing
 
 ## Conventions

@@ -84,8 +84,8 @@ Do not capture: one-off facts specific to this task (already in code/tests/commi
 code/git already makes self-evident.
 
 Format:
-- Write instruction files (CLAUDE.md, `.agents/rules/*`) in **English** — clarity + tokens. Domain
-  string literals (column names, error constants) stay in their original language: they are data.
+- Language and lifetime are `docs.md`'s: instruction files English, `docs/` Korean, quoted domain
+  literals unchanged.
 - Pick the file by topic; **read the target file first** and match its existing style/format —
   update the relevant section, don't blindly append a duplicate.
 - Keep it terse and actionable — rules, not prose narrative. Stage it with the code change.
