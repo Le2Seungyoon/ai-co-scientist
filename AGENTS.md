@@ -5,8 +5,7 @@ Follow-up to the 2025 Samsung AI Challenge — AI Co-Scientist. The point of the
 image → depth map regression. The human is the project lead, the main Claude is PM/orchestrator,
 and the work is done by the sub-agents defined in `.agents/agents/`.
 
-Sub-agents call the `scripts/` CLI directly: the A2A / MCP-server layout was stripped on
-2026-07-30 and must not be revived (`.agents/rules/architecture.md` → Removed structure).
+Sub-agents call the `scripts/` CLI directly — no servers, no protocols.
 
 ## Core invariants
 
@@ -21,9 +20,8 @@ Sub-agents call the `scripts/` CLI directly: the A2A / MCP-server layout was str
   structure) and the meaning of `average_depth` are fixed in `docs/data-facts.md`. Code or docs that
   disagree with it are bugs.
 - **Tests are offline** — `uv run pytest -q` passes in full with no API keys.
-- **Logic in `src/`, `scripts/` thin** — the standalone constraint was abolished on 2026-08-17.
-  The migration is unfinished, so **write new code in `src/` and do not grow logic in a script**.
-  `.agents/rules/architecture.md`.
+- **Logic in `src/`, `scripts/` thin** — the migration is unfinished, so **write new code in
+  `src/` and do not grow logic in a script**. `.agents/rules/architecture.md`.
 - **Only `executor` is exclusive** — one at a time (GPU + submissions); the other five run in
   parallel. `.agents/rules/architecture.md` → Parallel execution contract.
 

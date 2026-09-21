@@ -96,7 +96,7 @@ Format:
 ## File size budget (keep each instruction file dense)
 
 Gotchas accumulate; a bloated rules file loads in full every session and dilutes signal. Soft
-budget: **~150 lines per file** (CLAUDE.md and each `.agents/rules/*.md`). A PostToolUse hook
+budget: **~150 lines per file** (`AGENTS.md` and each `.agents/rules/*.md`). A PostToolUse hook
 (`.agent-hooks/check_rules_size.py`) scans the governed set and nudges.
 
 Detection is deterministic; the response is judgment. **Invoke the `refactor-agent-rules`
@@ -112,7 +112,7 @@ A tight single-topic file slightly over budget is fine — these are levers, not
 
 ## Rule Conflicts & Harness Improvement
 
-The harness (CLAUDE.md · `.agents/rules/` · settings) is not a static document — it's a device
+The harness (`AGENTS.md` · `.agents/rules/` · both registrations) is not a static document — it's a device
 that keeps growing and getting corrected.
 
 - **Rule ↔ request conflict**: don't silently follow the rule and ignore the request, and don't
@@ -127,7 +127,7 @@ that keeps growing and getting corrected.
   that asserts it — no test, no generated artifact, no command that re-checks it — mark it as an
   assumption or delete it.
 - **Improving the harness itself**: a missing trigger, a dead rule, a wrong path-gate, a bloated
-  CLAUDE.md — refine the harness alongside Capturing Learnings. Reconciling against the shared
+  `AGENTS.md` — refine the harness alongside Capturing Learnings. Reconciling against the shared
   skeleton is the `harness-spine:update` skill's job, not a hand-diff.
 
 ## Verification Commands
