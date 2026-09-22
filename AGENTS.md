@@ -24,6 +24,10 @@ Sub-agents call the `scripts/` CLI directly — no servers, no protocols.
   `src/` and do not grow logic in a script**. `.agents/rules/architecture.md`.
 - **Only `executor` is exclusive** — one at a time (GPU + submissions); the other five run in
   parallel. `.agents/rules/architecture.md` → Parallel execution contract.
+- **The harness has one copy of everything but its registration** — rules, hooks and lane sources
+  under `.agents/` and `.agent-hooks/`; the `.claude/` and `.codex/` copies are **generated, never
+  hand-edited**. `uv run pytest -q` gates that, and hooks only see this session's edits.
+  `.agents/rules/harness.md` · `enforcement.md` → This project's gates.
 
 ## Commands
 
@@ -120,22 +124,6 @@ integration, and:
 - **does not invent conclusions** — only what `analyst` and `reviewer` support;
 - **does not rank without stated criteria** — write the criteria and their application down
   (`docs/hypotheses.md` → 순위 기준).
-
-## Enforcement hooks
-
-**One copy of the content and the logic; per-harness registration only.** Hook scripts and
-scanners live in `.agent-hooks/`, each with its test; lane definitions in `.agents/agents/` and
-skills in `.agents/skills/`. `build-agents.py` generates the `.claude/` and `.codex/` copies both
-harnesses read — **never hand-edit those**. Registration is the one thing that necessarily
-differs: `.claude/settings.json` and `.codex/config.toml`, whose schemas are unrelated.
-
-`uv run pytest -q` fails when a generated copy drifts, when the two registrations disagree, or
-when a rule pointer stops resolving. Which gate is which layer, and what escapes it:
-`.agents/rules/enforcement.md` → This project's gates.
-
-**Hooks only see this session's edits** — `enforcement.md` → Hooks only see this session's edits.
-What has not been measured on the Codex side is in `docs/codex-verification-ledger.md`; do not
-build a rule on an entry that is still empty. Changing any of this: `harness.md`.
 
 ## References
 
