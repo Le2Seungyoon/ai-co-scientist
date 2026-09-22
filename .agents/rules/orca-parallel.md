@@ -83,7 +83,7 @@ that opens a local TUI prompt the coordinator cannot see or answer, and the sess
 
 Put in the spec only the task, the domain limits, and the file domain it owns.
 
-## Mutations are idempotent now — do not hand-roll create-then-verify
+## Mutations are idempotent — do not hand-roll create-then-verify
 
 Every mutating call returns `mutation: {requestId, replayed}` and accepts `--retry-request <id>`,
 "only for exact recovery after an unknown mutation result". Re-issue with the returned id instead of
@@ -128,25 +128,18 @@ otherwise unreachable; it lost the leading token of the text once, so put nothin
 `agentIdentity` in `terminal list` lags the pane in both directions (showed `claude` for a running
 Codex, and again after a Codex restart). Do not branch on it.
 
-## Fitting this repo's invariants
-
-Exclusivity, file domains, the pre-report and the shared branch are one contract, owned by
-`architecture.md` → **Extending the contract to a second Orca session**. Ordering between dispatched
-tasks would be `task-create --deps <json_array>` — **unmeasured**; until it is, serialize by not
-dispatching the second task.
-
 ## Not measured — treat as open
 
 Everything above was measured in one sitting on a healthy app; a fault that needs hours or a
-reconnect to appear could not be. Open: `--deps`, heartbeat visibility, `terminal create` for a
-*new* session, anything across worktrees or hosts, and a **Codex round trip** (injection reached it;
-its account was rate-limited, so no reply was ever observed).
+reconnect to appear could not be. Open: heartbeat visibility, `terminal create` for a *new*
+session, anything across worktrees or hosts, and a **Codex round trip** (injection reached it; its
+account was rate-limited, so no reply was ever observed). Ordering between dispatched tasks would
+be `task-create --deps <json_array>` — until that is measured, serialize by not dispatching the
+second task.
 
-Two predecessors of this file's claims were historical failures that may simply be dormant:
+Two symptoms whose causes were dismissed on one healthy app, so treat them as dormant, not gone:
 
-- **A latching relay.** No `node relay.js` daemon exists in 1.4.197 and reads measured 20/20 at
-  ~0.6 s — but the app had been up 5 minutes. If calls start returning `EPIPE`, or exiting 0 having
-  printed only a handshake line, that is it returning: **validate the JSON body, never the exit
-  code**, and reconnect the workspace between runs.
-- **A stale `$ORCA_TERMINAL_HANDLE`.** It matched `terminal list` throughout, and rows now carry an
-  `incarnationId` — but not across a reconnect. Resolve the handle from `terminal list`; one call.
+- **Calls returning `EPIPE`, or exiting 0 having printed only a handshake line** — a latching
+  relay. **Validate the JSON body, never the exit code**, and reconnect the workspace between runs.
+- **`$ORCA_TERMINAL_HANDLE` no longer matching after a reconnect** — resolve the handle from
+  `terminal list` instead; one call.
