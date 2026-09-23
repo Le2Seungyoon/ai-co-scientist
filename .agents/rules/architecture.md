@@ -11,7 +11,7 @@ registry.
 | Lane definitions | `.agents/agents/*.md` (source) → `.claude/agents/*.md` · `.codex/agents/*.toml` (**generated**) | Role prompts only. No code. Edit the source, never a generated copy |
 | Harness package | `src/ai_co_scientist/` | `config.py` (settings) · `registry.py` (registry) · `sem.py` (pure SEM/depth logic: split, reparameterization, smoothing, QDA) · `backends/` (external I/O). This is what tests cover |
 | Execution CLI | `scripts/*.py` | Sub-agent entry points. Keep them thin |
-| State | `runtime/registry.jsonl` → `docs/experiment-registry.md` | The single truth of every experiment |
+| State | `runtime/registry.jsonl` → `docs/experiment-registry.md` | The single truth of every experiment. **`runtime/` is gitignored: the jsonl exists on this machine only, with no backup** — the rendered doc is the only copy in git |
 
 **Two layers of markdown, never mixed** (relocated here from `workflow.md`, 2026-09-01): the
 co-scientist's own agents are the role prompts in `.agents/agents/*.md`; `.agents/rules/*.md` are the

@@ -71,7 +71,9 @@ session?** If so, don't leave it in chat — capture it.
 
 Route first — the layer decides whether the rule ever runs (`enforcement.md` → Four layers):
 - Anyone touching this repo (convention · contract · gotcha) → a committed `.agents/rules/` file.
-- This machine/session only (local path, personal taste, one-off setup) → auto memory.
+- **Not auto-memory — this repo does not use it.** The harness is what is being measured here;
+  a rule arriving from memory makes it impossible to tell whether the harness delivered it.
+  A machine-local fact goes in the rules file that owns the topic, marked as one.
 - Deterministic, and checkable on this session's edits → a **hook** (+ its test).
 - Must hold on every authoring path (IDE · teammate · another agent) → a **test/CI invariant**;
   absolute in every context → `permissions.deny`. Contracts and gate promotion: `enforcement.md`.
