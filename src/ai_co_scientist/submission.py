@@ -40,6 +40,37 @@ def _png_chunks(data: bytes):
         pos += 12 + length  # length + type + data + crc
 
 
+def _png_chunk(ctype: bytes, payload: bytes) -> bytes:
+    """길이 + 타입 + 데이터 + CRC32 — PNG 청크 1개."""
+    return (struct.pack(">I", len(payload)) + ctype + payload
+            + struct.pack(">I", zlib.crc32(ctype + payload) & 0xFFFFFFFF))
+
+
+def encode_png_gray8(arr: np.ndarray, level: int = 6) -> bytes:
+    """(H, W) uint8 → 8bit 그레이 non-interlaced PNG 바이트. `decode_png_gray8`의 역이다.
+
+    **필터는 0(None)만 쓴다.** 제출본은 한 번 쓰고 채점만 되므로 압축률보다 **결정성**이
+    중요하다 — 같은 입력이 같은 바이트를 내야 두 조립 경로의 동일성을 바이트로 비교할 수 있다.
+
+    cv2를 쓰지 않는 이유는 `decode_png_gray8`과 같다: `opencv-python`은 `baseline` 그룹이라
+    워크트리(dev 그룹만 sync)에는 없다. 조립이 옵션 의존성에 묶이면 CPU 진입점이 돌지 않는다.
+    """
+    a = np.asarray(arr)
+    if a.ndim != 2:
+        raise ValueError(f"(H, W) 2차원 배열이어야 한다 — 받은 형태 {a.shape}")
+    if a.dtype != np.uint8:
+        raise ValueError(f"uint8이어야 한다 — 받은 dtype {a.dtype}")
+    height, width = a.shape
+    raw = np.zeros((height, width + 1), dtype=np.uint8)
+    raw[:, 1:] = a  # 행마다 filter 바이트 0이 앞에 붙는다
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return PNG_SIGNATURE + b"".join([
+        _png_chunk(b"IHDR", ihdr),
+        _png_chunk(b"IDAT", zlib.compress(raw.tobytes(), level)),
+        _png_chunk(b"IEND", b""),
+    ])
+
+
 def decode_png_gray8(data: bytes) -> np.ndarray:
     """8-bit 그레이스케일 non-interlaced PNG → (H, W) uint8 배열.
 

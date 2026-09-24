@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from ai_co_scientist.submission import EXPECTED_FILES, decode_png_gray8, verify_submission
+from ai_co_scientist.submission import EXPECTED_FILES, decode_png_gray8, encode_png_gray8, verify_submission
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
@@ -48,7 +48,7 @@ def _filter_row(cur: np.ndarray, prior: np.ndarray, ftype: int) -> bytes:
     return bytes(out)
 
 
-def encode_png_gray8(img: np.ndarray, ftype: int = 0) -> bytes:
+def _encode_png_gray8_with_filters(img: np.ndarray, ftype: int = 0) -> bytes:
     h, w = img.shape
     raw = bytearray()
     prior = np.zeros(w, dtype=np.uint8)
@@ -72,7 +72,7 @@ def _make_zip(tmp_path: Path, maxima, name="sub.zip", ftype: int = 0) -> Path:
     zp = tmp_path / name
     with zipfile.ZipFile(zp, "w") as zf:
         for i, m in enumerate(maxima):
-            zf.writestr(f"img_{i:05d}.png", encode_png_gray8(_image(m), ftype))
+            zf.writestr(f"img_{i:05d}.png", _encode_png_gray8_with_filters(_image(m), ftype))
     return zp
 
 
@@ -84,7 +84,7 @@ def test_decode_roundtrip_every_filter_type(ftype):
     현장에서 오탐/미탐이 난다."""
     rng = np.random.default_rng(0)
     img = rng.integers(0, 171, size=(9, 7), dtype=np.uint8)
-    assert np.array_equal(decode_png_gray8(encode_png_gray8(img, ftype)), img)
+    assert np.array_equal(decode_png_gray8(_encode_png_gray8_with_filters(img, ftype)), img)
 
 
 def test_decode_rejects_non_png():
@@ -212,3 +212,37 @@ def test_cli_verify_only_does_not_submit(tmp_path, monkeypatch):
                                       "--verify-only"])
     assert cli.main() == 0
     assert called == []
+
+
+# ── 인코더 ──────────────────────────────────────────────────
+
+def test_encode_png_gray8_roundtrips():
+    """인코더 출력이 기존 디코더로 원본 배열까지 복원돼야 한다."""
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 256, size=(72, 48), dtype=np.uint8)
+    out = decode_png_gray8(encode_png_gray8(img))
+    assert out.shape == img.shape
+    assert np.array_equal(out, img)
+
+
+def test_encode_png_gray8_is_deterministic():
+    """같은 입력은 같은 바이트 — 두 경로의 zip 바이트 동일성이 여기에 걸려 있다."""
+    img = np.arange(72 * 48, dtype=np.int64).reshape(72, 48).astype(np.uint8)
+    assert encode_png_gray8(img) == encode_png_gray8(img)
+
+
+def test_encode_png_gray8_rejects_wrong_shape_or_dtype():
+    """조용히 넘기지 않는다 — 잘못된 배열이 제출본이 되면 슬롯 하나가 날아간다."""
+    with pytest.raises(ValueError):
+        encode_png_gray8(np.zeros((4, 4, 3), dtype=np.uint8))
+    with pytest.raises(ValueError):
+        encode_png_gray8(np.zeros((4, 4), dtype=np.float32))
+
+
+def test_encode_png_gray8_matches_cv2_decode_when_available():
+    """cv2가 읽을 수 있는 PNG여야 한다 — 채점 측 디코더가 무엇일지 모른다."""
+    cv2 = pytest.importorskip("cv2")
+    rng = np.random.default_rng(1)
+    img = rng.integers(0, 256, size=(16, 24), dtype=np.uint8)
+    buf = np.frombuffer(encode_png_gray8(img), dtype=np.uint8)
+    assert np.array_equal(cv2.imdecode(buf, cv2.IMREAD_UNCHANGED), img)
