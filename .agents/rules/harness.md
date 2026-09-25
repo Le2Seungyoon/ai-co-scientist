@@ -61,6 +61,25 @@ Two consequences:
   interpreter. No `tomllib`, no match statements.
 - **Their tests may use 3.12** — run them with `uv run python`, which is the project venv.
 
+## Codex cannot reach the Orca CLI on this machine
+
+Measured 2026-09-21. Codex runs under `[windows] sandbox = "elevated"` with `trust_level`
+granted to the project roots and **nothing for Orca's install directory**, so a dispatched Codex
+lane cannot execute `orca` — by PATH or by absolute path. The file is on disk and a plain
+PowerShell resolves it; Codex's own process cannot stat it. The four probes:
+`orca-measured.md` → Codex cannot reach the Orca CLI.
+
+**The consequence is not that a Codex lane is useless — it is that it cannot report the usual
+way.** One read its spec, ran its commands, composed a correct `worker_done`, and spent five
+minutes failing to send it while the coordinator saw only `count: 0`.
+
+**So route it through the mailbox relay rather than lowering anyone's sandbox.** The lane writes
+its message into a directory its sandbox already trusts and a relay outside the sandbox puts it on
+the bus — measured 2026-09-22, and a relayed `worker_done` auto-completes its dispatch exactly as
+a self-sent one would. Running it: `orca-parallel.md` → A Codex lane reports through the mailbox.
+`sandbox_mode = "danger-full-access"` also works (`orca-measured.md`) but removes the sandbox from
+**every** command that lane runs to buy the one thing the relay buys alone.
+
 ## `tools:` restricts a lane on Claude Code only
 
 `tools.claude` is emitted for Claude Code and generates **nothing** for Codex: measured from the

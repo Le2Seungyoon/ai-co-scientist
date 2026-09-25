@@ -24,6 +24,7 @@ HARNESS_TESTS = (
     "test_block_runtime_commands.py",
     "test_check_rule_links.py",
     "test_check_rules_size.py",
+    "test_orca_mailbox_relay.py",
 )
 
 

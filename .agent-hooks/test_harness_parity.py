@@ -29,6 +29,7 @@ registrations AGREE; it cannot prove either one is honoured.
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -36,7 +37,6 @@ ROOT = os.environ.get(
     "CLAUDE_PROJECT_DIR",
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 )
-CODEX_HOME = os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
 SHARED = re.compile(r"[\w./$-]*\.agent-hooks/([\w.-]+)")
 
 
@@ -66,19 +66,22 @@ def codex_hooks():
     return out, total
 
 
-def trusted_count():
-    """How many of this project's hook entries Codex has a trust record for.
+def codex_commands():
+    """Return every configured Codex hook command.
 
-    A project with hook entries and NO trust record has never been trusted -- a real, actionable
-    state, and the one that makes every hook here inert. Anything stronger (reading `trusted_hash`
-    as proof that hooks still run) has been refuted elsewhere and is not attempted.
+    Registration syntax is behavior: Codex launches these through the platform shell, so a
+    POSIX-only command is inert on Windows even when the hook is installed and trusted.
     """
-    path = os.path.join(CODEX_HOME, "config.toml")
-    if not os.path.exists(path):
-        return None
-    marker = os.path.join(ROOT, ".codex", "config.toml")
-    with open(path, encoding="utf-8") as fh:
-        return sum(1 for line in fh if line.startswith("[hooks.state.") and marker in line)
+    path = os.path.join(ROOT, ".codex", "config.toml")
+    with open(path, "rb") as fh:
+        cfg = tomllib.load(fh)
+    return [
+        hook["command"]
+        for entries in (cfg.get("hooks") or {}).values()
+        for entry in entries
+        for hook in entry.get("hooks", [])
+        if hook.get("type", "command") == "command" and hook.get("command")
+    ]
 
 
 def main():
@@ -86,6 +89,21 @@ def main():
 
     claude = claude_hooks()
     codex, codex_total = codex_hooks()
+
+    # Exercise the registration one step past parsing. `Read` is deliberately outside every
+    # mutating matcher/condition, so this verifies launch + payload plumbing without changing the
+    # tree. This is the regression for POSIX `$()` commands exiting 1 under Windows cmd.exe.
+    payload = json.dumps({"tool_name": "Read", "tool_input": {}, "cwd": ROOT})
+    for index, command in enumerate(codex_commands(), 1):
+        proc = subprocess.run(
+            command, shell=True, cwd=os.path.join(ROOT, "src"), input=payload,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        if proc.returncode:
+            problems.append(
+                "Codex hook command %d cannot run in the platform shell (exit %d): %s" %
+                (index, proc.returncode, proc.stderr.strip() or proc.stdout.strip() or "no output")
+            )
 
     if not claude or not codex:
         print("FAIL  one side registered NO shared hooks at all -- that is a broken parse, "
@@ -158,15 +176,6 @@ def main():
                     "`.agents/skills/%s/SKILL.md` declares `name: %s` but sits in `%s/`. Claude "
                     "Code would register it as `%s` and Codex as `%s` -- one skill, two names, "
                     "no error from either harness." % (name, declared, name, name, declared))
-
-    trusted = trusted_count()
-    if trusted is None:
-        print("NOTE  no %s/config.toml -- Codex trust NOT checked (ledger item 1)" % CODEX_HOME)
-    elif trusted == 0 and codex_total:
-        print("NOTE  Codex has no trust record for this project: %d hook entries in "
-              ".codex/config.toml, 0 trusted in %s/config.toml. Those hooks are NOT running. "
-              "Run the Codex CLI once from this directory and accept 'Trust all and continue' "
-              "-- the IDE never shows that prompt. (ledger item 1)" % (codex_total, CODEX_HOME))
 
     if problems:
         print("FAIL  harness registrations have drifted\n")

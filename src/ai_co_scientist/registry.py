@@ -8,16 +8,15 @@ sim SEM→sim depth 지표를 real validation으로 착각해 여러 실험을 �
 저장: JSONL 1줄 = 실험 1건. 갱신은 load-modify-write (건수가 수백 규모라 단순함이 이득).
 """
 import json
-import os
-import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path
 
 from ai_co_scientist.config import load_config, project_root
+from ai_co_scientist.locks import LOCK_STALE, ResourceBusy, file_lock
 
 LOCK_TIMEOUT = 30.0  # 초. 학습이 아니라 JSONL 갱신이므로 이보다 오래 걸릴 일이 없다
-LOCK_STALE = 120.0  # 이보다 오래된 락은 죽은 프로세스가 남긴 것으로 보고 회수한다
+# LOCK_STALE은 locks.py의 정의를 그대로 쓴다 — 같은 값을 두 곳에서 정의하면 한쪽만 바뀌는 드리프트가 생긴다
 
 X_DOMAINS = ("sim", "real")
 Y_SOURCES = ("sim_depth_gt", "real_average_depth", "real_group_label", "real_depth_gt",
@@ -56,37 +55,21 @@ def locked(path=None):
     발급하고, 나중 write가 앞선 선보고를 통째로 덮어쓴다(실측 확인). `_write_all`이 파일 전체를
     다시 쓰는 load-modify-write이므로 락 없이는 append조차 안전하지 않다.
 
-    `O_CREAT|O_EXCL`은 POSIX·Windows 모두에서 원자적이라 별도 의존성이 필요 없다.
+    획득 루프는 `locks.file_lock`에 있다. **경로는 의도적으로 트리별이다** — 기록소는 워크트리가
+    복제하지 않는 자원이고, 기계 단위 자원은 `locks.resource_lock`이 맡는다.
+
+    `try`는 **획득 한 줄만** 감싼다. `yield`까지 감싸면 본문 안에서 난 `ResourceBusy`(중첩된
+    `resource_lock` 등)가 이 락의 타임아웃으로 잘못 보고된다 — 엉뚱한 파일 이름을 댄 채로.
     """
-    lock = _path(path).with_suffix(".lock")
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + LOCK_TIMEOUT
-    fd = None
-    while fd is None:
+    with ExitStack() as stack:
         try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except (FileExistsError, PermissionError):
-            # PermissionError는 **Windows 전용 경로**다. 막 unlink된 파일이 delete-pending
-            # 상태면 O_CREAT|O_EXCL이 EEXIST가 아니라 EACCES를 던진다 — POSIX 가정으로 짜면
-            # 놓친다. 8스레드 x 40회 타격에서 재현됐고, 잡지 않으면 그 스레드의 선보고가
-            # 통째로 소실된다(실측 7/8).
-            # `exists()` 후 `stat()` 사이에 락이 해제되면 FileNotFoundError가 난다(TOCTOU).
-            try:
-                age = time.time() - lock.stat().st_mtime
-            except FileNotFoundError:
-                continue  # 방금 해제됐다 — 즉시 재시도
-            if age > LOCK_STALE:
-                lock.unlink(missing_ok=True)  # 죽은 프로세스가 남긴 락 회수
-                continue
-            if time.monotonic() > deadline:
-                raise TimeoutError(f"기록소 락 대기 초과({LOCK_TIMEOUT}초): {lock}")
-            time.sleep(0.05)
-    try:
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
+            stack.enter_context(
+                file_lock(_path(path).with_suffix(".lock"), timeout=LOCK_TIMEOUT, stale=LOCK_STALE))
+        except ResourceBusy as e:
+            # 역호환성: 기존 호출부는 TimeoutError를 기대한다
+            raise TimeoutError(
+                f"기록소 락 대기 초과({LOCK_TIMEOUT}초): {_path(path).with_suffix('.lock')}") from e
         yield
-    finally:
-        lock.unlink(missing_ok=True)
 
 
 def load_all(path=None) -> list[dict]:
@@ -111,15 +94,16 @@ def get(report_id: str, path=None) -> dict:
 
 
 def _require(name: str, value: str) -> str:
-    if not str(value).strip():
+    if value is None or not str(value).strip():
         raise ValueError(f"선보고 필수 항목 누락: {name}")
     return str(value).strip()
 
 
 def new_report(*, title, x_domain, x_desc, y_source, y_desc, model, method, purpose,
-               metric_name, metric_x_domain, metric_y_source,
+               metric_name, metric_x_domain, metric_y_source, hypothesis,
                source_branch="", source_commit="", path=None) -> dict:
-    """선보고 등록. 5항목 + 지표 도메인이 모두 있어야 report_id를 발급한다."""
+    """선보고 등록. 5항목 + 지표 도메인이 모두 있어야 report_id를 발급한다.
+    가설 id(`hypothesis`)는 필수다 — 조인 없는 레코드는 조인에 보이지 않는다."""
     if x_domain not in X_DOMAINS:
         raise ValueError(f"x_domain은 {X_DOMAINS} 중 하나여야 한다: {x_domain}")
     if y_source not in Y_SOURCES:
@@ -128,6 +112,8 @@ def new_report(*, title, x_domain, x_desc, y_source, y_desc, model, method, purp
         raise ValueError(f"metric_x_domain은 {X_DOMAINS} 중 하나여야 한다: {metric_x_domain}")
     if metric_y_source not in Y_SOURCES:
         raise ValueError(f"metric_y_source는 {Y_SOURCES} 중 하나여야 한다: {metric_y_source}")
+
+    hypothesis = _require("hypothesis", hypothesis)
 
     matches = metric_matches_target(metric_x_domain, metric_y_source)
     warning = "" if matches else (
@@ -141,6 +127,10 @@ def new_report(*, title, x_domain, x_desc, y_source, y_desc, model, method, purp
         record = {
             "report_id": f"EXP-{len(records) + 1:03d}",
             "created": datetime.now().isoformat(timespec="seconds"),
+            # 가설 ↔ 실행 조인 키. 다대일이다 — 한 가설이 여러 실행을 가질 수 있으나(3-arm
+            # sweep도 한 실행), 한 실행은 가설 하나만 가리킨다. 손으로 유지하는 표를 대신하므로
+            # 선택이 아니라 필수다.
+            "hypothesis": hypothesis,
             "title": _require("title", title),
             "x": {"domain": x_domain, "desc": _require("x_desc", x_desc)},
             "y": {"source": y_source, "desc": _require("y_desc", y_desc)},
@@ -298,19 +288,22 @@ def render_markdown(path=None) -> str:
            "> 이 파일은 `scripts/exp.py render`가 생성한다 — 직접 수정하지 말 것.",
            RESET_NOTICE,
            "## 요약", "",
-           "| report_id | 제목 | X | y | 지표(타깃일치) | val | LB pub/priv | 판정 |",
-           "|---|---|---|---|---|---|---|---|"]
+           "| report_id | 가설 | 제목 | X | y | 지표(타깃일치) | val | LB pub/priv | 판정 |",
+           "|---|---|---|---|---|---|---|---|---|"]
     for r in records:
         val = json.dumps(r["val"], ensure_ascii=False) if r["val"] else "-"
         lb = f"{r['lb']['public']} / {r['lb']['private']}" if r["lb"] else "-"
         mark = "✅" if r["metric"]["matches_target"] else "⚠️sim"
+        # 가설 20건(2026-09-21 이전)에는 이 키 자체가 없다 — 빈 칸도 "None"도 찍지 않는다.
+        hypothesis = r.get("hypothesis") or "-"
         out.append(
-            f"| {r['report_id']} | {r['title']} | {r['x']['domain']} | {r['y']['source']} "
+            f"| {r['report_id']} | {hypothesis} | {r['title']} | {r['x']['domain']} | {r['y']['source']} "
             f"| {r['metric']['name']} {mark} | {val} | {lb} | {r['verdict'] or '-'} |")
 
     out += ["", "## 상세", ""]
     for r in records:
         out += [f"### {r['report_id']} — {r['title']}", f"- **생성**: {r['created']}",
+                f"- **가설**: {r.get('hypothesis') or '-'}",
                 f"- **X**: `{r['x']['domain']}` — {r['x']['desc']}",
                 f"- **y**: `{r['y']['source']}` — {r['y']['desc']}",
                 f"- **모델+하이퍼**: {r['model']}",

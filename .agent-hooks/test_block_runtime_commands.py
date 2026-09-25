@@ -10,6 +10,7 @@ Each scenario needs its own tree because the verdict turns on whether
 
 Stdlib only, no test runner: pytest does not collect this file (`testpaths = ["tests"]`).
 """
+import ast
 import importlib.util
 import json
 import os
@@ -39,7 +40,8 @@ def run(root, command, env_extra=None, raw=None):
 
 def run_no_project_dir(command, env_extra=None):
     """Same as run(), but with CLAUDE_PROJECT_DIR unset -- exercises the __file__ fallback in
-    project_root(). Falls back to the real repo root, which HAS runtime/registry.jsonl."""
+    project_root(). The real repo root may be the main checkout (registry present) or a linked
+    worktree (registry absent), so the expected decision follows that sentinel."""
     env = dict(os.environ)
     env.pop("CLAUDE_PROJECT_DIR", None)
     if env_extra:
@@ -94,7 +96,15 @@ def main():
         "uv run python scripts/train_level.py",
         "uv run python scripts/exp.py new --title x",
         "uv run python scripts/infer_decomposed.py --submit runtime/submissions/a.zip",
+        "uv run python scripts/dump_level_proba.py --out level.npy",
         "uv run python scripts/dacon_submit.py runtime/submissions/a.zip",
+        "uv run python scripts/train_dann.py --arm B --lambda-max 1.0",
+        "uv run python scripts/build_pseudo_labels.py build --out labels.npy",
+        "uv run python scripts/train_self_training.py train --arm arm1",
+        "uv run python scripts/train_cyclegan.py --manifest plan.json",
+        "uv run python scripts/translate_sim.py --ckpt generator.pt",
+        "uv run python scripts/train_two_head.py --arm two_head",
+        "uv run python scripts/infer_two_head.py --ckpt model.pt",
     ):
         out, rc = run(worktree, cmd)
         check(f"denies: {cmd.split()[3]}", denied(out), out[:120] or "silent")
@@ -164,18 +174,43 @@ def main():
 
     print("finding 5a -- project_root() __file__ fallback")
     out, rc = run_no_project_dir("uv run python scripts/train_structure.py --arch mlp")
-    check("no CLAUDE_PROJECT_DIR: falls back to real repo root (has registry) -> passes",
-          not denied(out), out[:120])
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(HOOK)))
+    fallback_has_registry = os.path.isfile(
+        os.path.join(repo_root, "runtime", "registry.jsonl")
+    )
+    check("no CLAUDE_PROJECT_DIR: decision follows fallback root registry sentinel",
+          denied(out) is not fallback_has_registry, out[:120])
     check("no CLAUDE_PROJECT_DIR: exits 0", rc == 0, f"rc={rc}")
 
     print("finding 3 -- GUARDED stays tied to reality")
     hook_mod = load_hook_module()
     guarded = hook_mod.GUARDED
     check("GUARDED is non-empty", bool(guarded), "GUARDED is empty")
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(HOOK)))
     for script in guarded:
         path = os.path.join(repo_root, *script.split("/"))
         check(f"GUARDED entry exists on disk: {script}", os.path.isfile(path), path)
+
+    # A new resource-locking entry point must not silently bypass the worktree hook.
+    exclusive_scripts = set()
+    scripts_dir = os.path.join(repo_root, "scripts")
+    for filename in os.listdir(scripts_dir):
+        if not filename.endswith(".py"):
+            continue
+        with open(os.path.join(scripts_dir, filename), encoding="utf-8") as source:
+            tree = ast.parse(source.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+                if name == "resource_lock":
+                    exclusive_scripts.add("scripts/" + filename)
+    check("resource-locking entry points are non-empty", bool(exclusive_scripts))
+    check("every resource-locking entry point is governed by EXCLUSIVE",
+          exclusive_scripts == set(hook_mod.EXCLUSIVE),
+          repr(sorted(exclusive_scripts.symmetric_difference(hook_mod.EXCLUSIVE))))
+    for script in sorted(exclusive_scripts):
+        out, _ = run(worktree, "uv run python " + script)
+        check("enumerated entry point denied: " + script, denied(out), out[:120] or "silent")
 
     print("grade split -- what unlocks in a registry-less tree, and what stays guarded")
     with tempfile.TemporaryDirectory() as root:  # no registry.jsonl = a worktree
@@ -199,9 +234,8 @@ def main():
                 "and permanently unlock the gate in this tree"
             )
 
-        for script in ("train_level.py", "train_structure.py", "infer_decomposed.py",
-                       "dacon_submit.py"):
-            out, _ = run(root, "uv run python scripts/{0} --submit a.zip".format(script),
+        for script in sorted(exclusive_scripts):
+            out, _ = run(root, "uv run python {0} --submit a.zip".format(script),
                          env_extra={"ACS_RUNTIME_EXEMPT": "measured one-off"})
             if out.strip():
                 failures.append(

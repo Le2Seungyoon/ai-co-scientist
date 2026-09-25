@@ -30,6 +30,7 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ai_co_scientist.adabn import adapt_bn_exact, iter_cache_batches, save_bn_stats
 from ai_co_scientist.config import ensure_utf8_console
+from ai_co_scientist.locks import GPU_LOCK, ResourceBusy, resource_lock
 from ai_co_scientist.sem import (
     GROUPS, LEVELS, assemble_depth, load_labels, pixel_features, qda_log_posterior,
     smooth_levels, softmax, viterbi_levels,
@@ -45,11 +46,15 @@ SOURCES = {"test": ["test"], "real": ["real"], "realtest": ["real", "test"]}
 
 @torch.no_grad()
 def predict_levels_cnn(cache: Path, ckpt: str, batch: int = 512,
-                       return_proba: bool = False) -> np.ndarray | tuple:
+                       return_proba: bool = False,
+                       npy: str = "test_sem.npy") -> np.ndarray | tuple:
     """EXP-013 CNN으로 test 클래스를 예측한다 (적합 불필요 — 이미 학습된 모델이다).
 
     return_proba=True면 (클래스, 사후확률 (N,4))를 준다 — Viterbi 복호(`--level-hmm`)에는
     argmax가 아니라 방출확률이 필요하다. 기본값은 기존 호출부를 위해 argmax 배열 그대로다.
+
+    npy로 소스 배열을 고른다 — real train(real_sem.npy)에서 뽑으면 레벨 축 후처리의 사전
+    선별 지표가 된다.
 
     구조 회귀기와 달리 **AdaBN을 걸지 않는다.** 이 분류기는 real로 학습해 real에 적용하므로
     sim→real 전이가 없다. real train ↔ test 간 잔여 이동에 AdaBN을 거는 것은 별개 축이며,
@@ -59,7 +64,7 @@ def predict_levels_cnn(cache: Path, ckpt: str, batch: int = 512,
     model = LevelCNN(width=obj.get("width", 32)).to(DEVICE)
     model.load_state_dict(obj["state_dict"])
     model.eval()
-    sem = np.load(cache / "test_sem.npy", mmap_mode="r")
+    sem = np.load(cache / npy, mmap_mode="r")
     out = []
     for s in range(0, len(sem), batch):
         x = np.asarray(sem[s:s + batch]).astype(np.float32)[:, None] / 255.0
@@ -265,7 +270,19 @@ def main():
     if args.level_hmm and args.level_smooth > 1:
         ap.error("--level-hmm과 --level-smooth는 함께 쓸 수 없다 — 평활기를 두 번 겹치면 "
                  "어느 쪽이 점수를 움직였는지 분리되지 않는다. 하나만 고를 것")
+    if (args.level_hmm or args.dump_level_proba) and args.level_source == "mean_only":
+        ap.error("--level-source mean_only는 사후확률을 내지 않는다 — "
+                 "--level-hmm / --dump-level-proba는 cnn 또는 qda에서만 쓸 수 있다")
 
+    try:
+        with resource_lock(GPU_LOCK):
+            return _run_locked(args)
+    except ResourceBusy as e:
+        ap.error(f"{GPU_LOCK} 사용 중: {e}")
+
+
+def _run_locked(args):
+    """모델 로딩부터 덤프·zip 출력까지 같은 GPU 락 안에서 실행한다."""
     cache = Path(args.cache_dir)
     model, arch = load_model(args.ckpt, args.arch, args.width)
     print(f"구조 모델: {args.ckpt} (arch={arch})", flush=True)
@@ -291,9 +308,6 @@ def main():
             print(f"BN 통계 덤프 → {save_bn_stats(model, args.adabn_dump)}", flush=True)
 
     want_proba = bool(args.level_hmm or args.dump_level_proba)
-    if want_proba and args.level_source == "mean_only":
-        ap.error("--level-source mean_only는 사후확률을 내지 않는다 — "
-                 "--level-hmm / --dump-level-proba는 cnn 또는 qda에서만 쓸 수 있다")
     if want_proba:
         cls, diag, proba = fit_predict_levels(Path(args.data_dir), cache, args.level_source,
                                               args.level_ckpt, return_proba=True)

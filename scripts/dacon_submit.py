@@ -15,6 +15,7 @@ import sys
 
 from ai_co_scientist.backends import dacon
 from ai_co_scientist.config import ensure_utf8_console
+from ai_co_scientist.locks import DACON_LOCK, ResourceBusy, resource_lock
 from ai_co_scientist.submission import EXPECTED_FILES, verify_submission
 
 EXIT_VERIFY_FAILED = 2
@@ -54,7 +55,14 @@ def main() -> int:
         os.environ["DACON_TEAM_NAME"] = args.team_name
 
     memo = f"[{args.report_id}] {args.memo}".strip() if args.report_id else args.memo
-    result = dacon.submit(args.file_path, memo)
+    try:
+        with resource_lock(DACON_LOCK):
+            result = dacon.submit(args.file_path, memo)
+    except ResourceBusy as e:
+        print(f"{DACON_LOCK} 사용 중: {e}", file=sys.stderr)
+        print(json.dumps({"submitted": False, "verified": True, "busy": True,
+                          "verify": check.to_dict()}, ensure_ascii=False))
+        return EXIT_NOT_SUBMITTED
     if not result.get("isSubmitted"):
         print(f"제출되지 않음: {result.get('detail')}", file=sys.stderr)
     print(json.dumps({"submitted": bool(result.get("isSubmitted")), "verified": True,

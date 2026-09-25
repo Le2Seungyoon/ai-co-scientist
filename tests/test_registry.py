@@ -18,8 +18,8 @@ BASE = dict(
 
 def test_new_report_assigns_sequential_ids(tmp_path):
     p = tmp_path / "reg.jsonl"
-    first = registry.new_report(path=p, **BASE)
-    second = registry.new_report(path=p, **{**BASE, "title": "두 번째"})
+    first = registry.new_report(path=p, **BASE, hypothesis="H0")
+    second = registry.new_report(path=p, **{**BASE, "title": "두 번째"}, hypothesis="H0")
     assert first["report_id"] == "EXP-001"
     assert second["report_id"] == "EXP-002"
 
@@ -27,25 +27,25 @@ def test_new_report_assigns_sequential_ids(tmp_path):
 def test_new_report_rejects_unknown_x_domain(tmp_path):
     p = tmp_path / "reg.jsonl"
     with pytest.raises(ValueError, match="x_domain"):
-        registry.new_report(path=p, **{**BASE, "x_domain": "synthetic"})
+        registry.new_report(path=p, **{**BASE, "x_domain": "synthetic"}, hypothesis="H0")
 
 
 def test_new_report_rejects_unknown_y_source(tmp_path):
     p = tmp_path / "reg.jsonl"
     with pytest.raises(ValueError, match="y_source"):
-        registry.new_report(path=p, **{**BASE, "y_source": "guess"})
+        registry.new_report(path=p, **{**BASE, "y_source": "guess"}, hypothesis="H0")
 
 
 def test_new_report_rejects_empty_purpose(tmp_path):
     p = tmp_path / "reg.jsonl"
     with pytest.raises(ValueError, match="purpose"):
-        registry.new_report(path=p, **{**BASE, "purpose": "  "})
+        registry.new_report(path=p, **{**BASE, "purpose": "  "}, hypothesis="H0")
 
 
 def test_sim_metric_is_flagged_as_not_matching_target(tmp_path):
     # 이 프로젝트가 실제로 당한 실패: sim SEM→sim depth 지표를 real validation으로 착각
     p = tmp_path / "reg.jsonl"
-    rec = registry.new_report(path=p, **BASE)
+    rec = registry.new_report(path=p, **BASE, hypothesis="H0")
     assert rec["metric"]["matches_target"] is False
     assert "sim" in rec["metric"]["warning"]
 
@@ -54,7 +54,7 @@ def test_real_avgdepth_metric_matches_target(tmp_path):
     p = tmp_path / "reg.jsonl"
     rec = registry.new_report(path=p, **{
         **BASE, "metric_name": "real_avgdepth_rmse",
-        "metric_x_domain": "real", "metric_y_source": "real_average_depth"})
+        "metric_x_domain": "real", "metric_y_source": "real_average_depth"}, hypothesis="H0")
     assert rec["metric"]["matches_target"] is True
     assert rec["metric"]["warning"] == ""
 
@@ -66,7 +66,7 @@ def test_real_group_label_metric_matches_target(tmp_path):
         **BASE, "x_domain": "real", "x_desc": "real train SEM hole crop",
         "y_source": "real_group_label", "y_desc": "폴더명 4그룹",
         "metric_name": "site_holdout_accuracy",
-        "metric_x_domain": "real", "metric_y_source": "real_group_label"})
+        "metric_x_domain": "real", "metric_y_source": "real_group_label"}, hypothesis="H0")
     assert rec["metric"]["matches_target"] is True
     assert rec["metric"]["warning"] == ""
 
@@ -76,7 +76,7 @@ def test_leaderboard_metric_declares_real_depth_gt(tmp_path):
     p = tmp_path / "reg.jsonl"
     rec = registry.new_report(path=p, **{
         **BASE, "metric_name": "leaderboard_rmse",
-        "metric_x_domain": "real", "metric_y_source": "real_depth_gt"})
+        "metric_x_domain": "real", "metric_y_source": "real_depth_gt"}, hypothesis="H0")
     assert rec["metric"]["matches_target"] is True
     assert rec["metric"]["warning"] == ""
 
@@ -92,7 +92,7 @@ def test_metric_matches_target_pure_function():
 
 def test_record_result_and_lb_roundtrip(tmp_path):
     p = tmp_path / "reg.jsonl"
-    rid = registry.new_report(path=p, **BASE)["report_id"]
+    rid = registry.new_report(path=p, **BASE, hypothesis="H0")["report_id"]
     registry.record_result(rid, {"sim_val_rmse": 2.57}, path=p)
     registry.record_lb(rid, public=7.35, private=7.34, path=p)
     registry.set_verdict(rid, "기준선", path=p)
@@ -111,7 +111,7 @@ def test_concurrent_new_report_keeps_both_and_assigns_distinct_ids(tmp_path):
 
     def register(title):
         try:
-            registry.new_report(path=p, **{**BASE, "title": title})
+            registry.new_report(path=p, **{**BASE, "title": title}, hypothesis="H0")
         except BaseException as e:  # noqa: BLE001 - 스레드 예외를 본 스레드로 옮긴다
             errors.append(e)
 
@@ -154,7 +154,7 @@ def test_record_result_unknown_id_raises(tmp_path):
 
 def test_render_markdown_contains_ids_and_reset_notice(tmp_path):
     p = tmp_path / "reg.jsonl"
-    rid = registry.new_report(path=p, **BASE)["report_id"]
+    rid = registry.new_report(path=p, **BASE, hypothesis="H0")["report_id"]
     registry.record_lb(rid, public=6.7, private=6.8, path=p)
     md = registry.render_markdown(path=p)
     assert "EXP-001" in md
@@ -166,7 +166,7 @@ def test_second_result_call_preserves_first_calls_keys(tmp_path):
     """EXP-020 회귀 — `record_result`가 val을 통째로 교체하던 시절, 제출 후의 두 번째
     호출이 학습 직후 기록한 wall_clock/run/verify_only를 조용히 지웠다."""
     p = tmp_path / "reg.jsonl"
-    rid = registry.new_report(path=p, **BASE)["report_id"]
+    rid = registry.new_report(path=p, **BASE, hypothesis="H0")["report_id"]
     registry.record_result(rid, {"wall_clock": "1h02m", "run": "EXP-020-a"}, path=p)
     up = registry.record_result(rid, {"verify_only": {"files": 25988}}, path=p)
     assert registry.get(rid, path=p)["val"] == {
@@ -178,7 +178,7 @@ def test_second_result_call_preserves_first_calls_keys(tmp_path):
 
 def test_result_merge_is_idempotent_for_equal_values(tmp_path):
     p = tmp_path / "reg.jsonl"
-    rid = registry.new_report(path=p, **BASE)["report_id"]
+    rid = registry.new_report(path=p, **BASE, hypothesis="H0")["report_id"]
     registry.record_result(rid, {"wall_clock": "1h02m"}, path=p)
     up = registry.record_result(rid, {"wall_clock": "1h02m"}, path=p)
     assert up.unchanged == ["wall_clock"]
@@ -189,7 +189,7 @@ def test_result_merge_is_idempotent_for_equal_values(tmp_path):
 def test_result_key_collision_with_different_value_raises(tmp_path):
     # 조용한 덮어쓰기는 통째 교체와 같은 결함이라 기본 경로에서 막는다
     p = tmp_path / "reg.jsonl"
-    rid = registry.new_report(path=p, **BASE)["report_id"]
+    rid = registry.new_report(path=p, **BASE, hypothesis="H0")["report_id"]
     registry.record_result(rid, {"wall_clock": "1h02m"}, path=p)
     with pytest.raises(ValueError, match="wall_clock"):
         registry.record_result(rid, {"wall_clock": "2h30m"}, path=p)
@@ -198,7 +198,7 @@ def test_result_key_collision_with_different_value_raises(tmp_path):
 
 def test_result_collision_overwrites_only_with_explicit_replace_key(tmp_path):
     p = tmp_path / "reg.jsonl"
-    rid = registry.new_report(path=p, **BASE)["report_id"]
+    rid = registry.new_report(path=p, **BASE, hypothesis="H0")["report_id"]
     registry.record_result(rid, {"wall_clock": "1h02m", "run": "a"}, path=p)
     up = registry.record_result(rid, {"wall_clock": "2h30m"}, replace_keys=["wall_clock"], path=p)
     assert up.overwritten == {"wall_clock": "1h02m"}  # 이전 값이 호출자에게 그대로 보인다
@@ -207,7 +207,7 @@ def test_result_collision_overwrites_only_with_explicit_replace_key(tmp_path):
 
 def test_result_replace_reports_every_dropped_key(tmp_path):
     p = tmp_path / "reg.jsonl"
-    rid = registry.new_report(path=p, **BASE)["report_id"]
+    rid = registry.new_report(path=p, **BASE, hypothesis="H0")["report_id"]
     registry.record_result(rid, {"wall_clock": "1h02m", "run": "a"}, path=p)
     up = registry.record_result(rid, {"run": "a"}, replace=True, path=p)
     assert up.dropped == {"wall_clock": "1h02m"}
@@ -216,7 +216,7 @@ def test_result_replace_reports_every_dropped_key(tmp_path):
 
 def test_result_rejects_non_dict_val(tmp_path):
     p = tmp_path / "reg.jsonl"
-    rid = registry.new_report(path=p, **BASE)["report_id"]
+    rid = registry.new_report(path=p, **BASE, hypothesis="H0")["report_id"]
     with pytest.raises(ValueError, match="dict"):
         registry.record_result(rid, [1, 2], path=p)
 
@@ -238,7 +238,7 @@ def test_concurrent_result_calls_keep_every_key(tmp_path):
     그 경쟁 조건이 val 안에서 그대로 재현된다."""
     import threading
     p = tmp_path / "reg.jsonl"
-    rid = registry.new_report(path=p, **BASE)["report_id"]
+    rid = registry.new_report(path=p, **BASE, hypothesis="H0")["report_id"]
     errors: list[BaseException] = []
 
     def add(i):
@@ -278,7 +278,7 @@ def test_cli_result_merges_by_default_and_refuses_silent_overwrite(tmp_path, mon
     p = tmp_path / "reg.jsonl"
     monkeypatch.setattr(registry, "_default_path", lambda: p)
     cli = _load_exp_cli()
-    rid = registry.new_report(path=p, **BASE)["report_id"]
+    rid = registry.new_report(path=p, **BASE, hypothesis="H0")["report_id"]
 
     def run(*argv):
         monkeypatch.setattr("sys.argv", ["exp.py", *argv])
@@ -308,7 +308,7 @@ def test_new_report_records_source_when_given(tmp_path):
         title="t", x_domain="real", x_desc="x", y_source="real_group_label", y_desc="y",
         model="m", method="me", purpose="p", metric_name="acc",
         metric_x_domain="real", metric_y_source="real_group_label",
-        source_branch="feature/postproc-k", source_commit="deadbeef", path=path)
+        hypothesis="H0", source_branch="feature/postproc-k", source_commit="deadbeef", path=path)
     assert rec["source"] == {"branch": "feature/postproc-k", "commit": "deadbeef"}
     assert registry.get(rec["report_id"], path)["source"]["branch"] == "feature/postproc-k"
 
@@ -319,8 +319,32 @@ def test_new_report_source_is_none_when_omitted(tmp_path):
     rec = registry.new_report(
         title="t", x_domain="sim", x_desc="x", y_source="sim_depth_gt", y_desc="y",
         model="m", method="me", purpose="p", metric_name="rmse",
-        metric_x_domain="sim", metric_y_source="sim_depth_gt", path=path)
+        metric_x_domain="sim", metric_y_source="sim_depth_gt", hypothesis="H0", path=path)
     assert rec["source"] is None
+
+
+def test_source_round_trips_distinct_per_record_and_is_never_defaulted(tmp_path):
+    """실측 결함(I-1)의 회귀: 병렬 레인 둘의 기록에 코디네이터 자신의 커밋이 찍혔다 —
+    워커가 준 branch/commit이 아니라. 서로 다른 두 레코드가 각자의 값을 그대로 유지하고,
+    서로 뒤섞이거나 빈 값으로 조용히 대체되지 않아야 한다."""
+    p = tmp_path / "reg.jsonl"
+    rec_a = registry.new_report(
+        path=p, **BASE, hypothesis="H12",
+        source_branch="feature/h12-smooth", source_commit="1050d5a")
+    rec_b = registry.new_report(
+        path=p, **{**BASE, "title": "다른 레인"}, hypothesis="H13",
+        source_branch="feature/h13-hmm", source_commit="41091c8")
+
+    assert rec_a["source"] == {"branch": "feature/h12-smooth", "commit": "1050d5a"}
+    assert rec_b["source"] == {"branch": "feature/h13-hmm", "commit": "41091c8"}
+
+    # 다시 디스크에서 읽어도(round-trip) 각자의 값 그대로다 — 서로 바뀌지도, 코디네이터의
+    # 어떤 값(예: 이 프로세스가 아는 브랜치/커밋)으로 조용히 덮이지도 않는다.
+    reloaded_a = registry.get(rec_a["report_id"], p)
+    reloaded_b = registry.get(rec_b["report_id"], p)
+    assert reloaded_a["source"] == {"branch": "feature/h12-smooth", "commit": "1050d5a"}
+    assert reloaded_b["source"] == {"branch": "feature/h13-hmm", "commit": "41091c8"}
+    assert reloaded_a["source"] != reloaded_b["source"]
 
 
 def test_render_markdown_shows_source_when_present(tmp_path):
@@ -328,7 +352,7 @@ def test_render_markdown_shows_source_when_present(tmp_path):
     docs/experiment-registry.md가 유일한 사본이다."""
     p = tmp_path / "reg.jsonl"
     registry.new_report(path=p, **{
-        **BASE, "source_branch": "feature/postproc-k", "source_commit": "deadbeef"})
+        **BASE, "source_branch": "feature/postproc-k", "source_commit": "deadbeef"}, hypothesis="H0")
     md = registry.render_markdown(path=p)
     assert "feature/postproc-k" in md
     assert "deadbeef" in md
@@ -338,10 +362,41 @@ def test_render_markdown_omits_source_line_when_absent(tmp_path):
     """source가 없는(기존 20건 포함) 레코드는 렌더가 이전과 똑같아야 한다 -- 빈 줄도,
     "None"도 나오면 안 된다."""
     p = tmp_path / "reg.jsonl"
-    registry.new_report(path=p, **BASE)
+    registry.new_report(path=p, **BASE, hypothesis="H0")
     md = registry.render_markdown(path=p)
     assert "출처" not in md
     assert "None" not in md
+
+
+def test_render_markdown_shows_hypothesis_in_summary_and_detail(tmp_path):
+    """가설 ↔ 실행 조인 키가 유일한 git 커밋 사본(docs/experiment-registry.md)까지 이어져야
+    한다 — runtime/registry.jsonl은 백업이 없다."""
+    p = tmp_path / "reg.jsonl"
+    registry.new_report(path=p, **BASE, hypothesis="H12")
+    md = registry.render_markdown(path=p)
+    assert "| 가설 |" in md  # 요약 표 헤더
+    assert "- **가설**: H12" in md  # 상세 블록
+    lines = [ln for ln in md.splitlines() if ln.startswith("| EXP-001 |")]
+    assert lines and "H12" in lines[0]
+
+
+def test_render_markdown_shows_dash_not_none_for_records_without_hypothesis(tmp_path):
+    """가설 도입 이전(2026-09-21 이전) 20건에는 `hypothesis` 키 자체가 없다 — 렌더가
+    깨지거나 "None"을 찍으면 안 된다."""
+    p = tmp_path / "reg.jsonl"
+    p.write_text(json.dumps({
+        "report_id": "EXP-001", "created": "2026-07-30T00:00:00", "title": "old",
+        "x": {"domain": "sim", "desc": "d"}, "y": {"source": "sim_depth_gt", "desc": "d"},
+        "model": "m", "method": "me", "purpose": "p",
+        "metric": {"name": "rmse", "x_domain": "sim", "y_source": "sim_depth_gt",
+                   "matches_target": False, "warning": "w"},
+        "val": None, "lb": None, "verdict": "",
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+    md = registry.render_markdown(path=p)
+    assert "None" not in md
+    line = next(ln for ln in md.splitlines() if ln.startswith("| EXP-001 |"))
+    hypothesis_cell = line.split("|")[2].strip()  # report_id 다음 칸
+    assert hypothesis_cell == "-"  # 빈 칸이 아니라 다른 선택 필드(val/lb)와 같은 자리표시자
 
 
 def test_records_without_source_still_load(tmp_path):
@@ -357,3 +412,45 @@ def test_records_without_source_still_load(tmp_path):
     }, ensure_ascii=False) + "\n", encoding="utf-8")
     assert registry.get("EXP-001", path)["title"] == "old"
     assert registry.load_all(path)[0].get("source") is None
+
+
+def test_new_report_records_the_hypothesis(tmp_path):
+    """가설 ↔ 실행 조인은 손으로 유지하는 표가 아니라 레코드가 들어야 한다."""
+    path = tmp_path / "r.jsonl"
+    rec = registry.new_report(**BASE, hypothesis="H12", path=path)
+    assert rec["hypothesis"] == "H12"
+    assert registry.get(rec["report_id"], path)["hypothesis"] == "H12"
+
+
+def test_new_report_refuses_without_a_hypothesis(tmp_path):
+    """조인 없는 레코드는 조인에 보이지 않고 아무도 눈치채지 못한다 —
+    조용한 실패이므로 관례가 아니라 거부로 막는다."""
+    path = tmp_path / "r.jsonl"
+    with pytest.raises(TypeError):
+        registry.new_report(**BASE, path=path)
+
+
+def test_new_report_refuses_a_blank_hypothesis(tmp_path):
+    """빈 문자열을 통과시키면 필수 인자가 형식뿐인 것이 된다."""
+    path = tmp_path / "r.jsonl"
+    with pytest.raises(ValueError):
+        registry.new_report(**BASE, hypothesis="   ", path=path)
+
+
+def test_new_report_refuses_null_hypothesis_before_coercion(tmp_path):
+    # None used to become the nonempty string "None" and enter the registry as a false join key.
+    path = tmp_path / "r.jsonl"
+    with pytest.raises(ValueError, match="hypothesis"):
+        registry.new_report(**BASE, hypothesis=None, path=path)
+    assert not path.exists()
+
+
+def test_many_runs_may_answer_one_hypothesis(tmp_path):
+    """관계는 다대일이다 — EXP-010은 3-arm을 한 항목으로 기록했다. (스키마·docstring과
+    한 번 더 맞춘다: registry.py의 new_report 주석과 experiment-ledger.md도 다대일이라 적는다.)"""
+    path = tmp_path / "r.jsonl"
+    a = registry.new_report(**BASE, hypothesis="H12", path=path)
+    b = registry.new_report(**BASE, hypothesis="H12", path=path)
+    assert a["report_id"] != b["report_id"]
+    ids = [r["report_id"] for r in registry.load_all(path) if r["hypothesis"] == "H12"]
+    assert ids == [a["report_id"], b["report_id"]]

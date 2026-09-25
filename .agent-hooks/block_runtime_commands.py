@@ -9,8 +9,12 @@ See `.agents/rules/enforcement.md` -> Hook contracts and
             `runtime/` -- graded by why they are guarded, not by one blanket reason.
             REGISTRY_WRITERS (`scripts/exp.py`) would fork the experiment registry.
             EXCLUSIVE (`train_level.py`, `train_structure.py`, `infer_decomposed.py`,
-            `dacon_submit.py`) need a resource the main worktree owns: the single 8 GB GPU, or
-            the finite DACON submission quota. `scripts/probe_level.py` (read-only, no
+            `train_dann.py`, `build_pseudo_labels.py`, `train_self_training.py`,
+            `train_cyclegan.py`, `translate_sim.py`, `train_two_head.py`, `infer_two_head.py`,
+            `dump_level_proba.py`, `dacon_submit.py`) need a resource the main worktree owns:
+            the single 8 GB GPU, or
+            the finite DACON submission quota.
+            `scripts/probe_level.py` (read-only, no
             `runtime/` writes) and `scripts/assemble_submission.py` (CPU-only, writes only its
             own tree) are deliberately NOT guarded. `scripts/legacy/*.py` also touch `runtime/`
             and were considered -- excluded because they are frozen, reproduction-only, and
@@ -54,6 +58,14 @@ EXCLUSIVE = (
     "scripts/train_level.py",
     "scripts/train_structure.py",
     "scripts/infer_decomposed.py",
+    "scripts/dump_level_proba.py",
+    "scripts/train_dann.py",
+    "scripts/build_pseudo_labels.py",
+    "scripts/train_self_training.py",
+    "scripts/train_cyclegan.py",
+    "scripts/translate_sim.py",
+    "scripts/train_two_head.py",
+    "scripts/infer_two_head.py",
     "scripts/dacon_submit.py",
 )
 
