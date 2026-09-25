@@ -13,7 +13,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from ai_co_scientist.submission import EXPECTED_FILES, decode_png_gray8, encode_png_gray8, verify_submission
+from ai_co_scientist.submission import (
+    EXPECTED_FILES,
+    decode_png_gray8,
+    encode_png_gray8,
+    verify_submission,
+    write_submission_zip,
+)
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
@@ -246,3 +252,45 @@ def test_encode_png_gray8_matches_cv2_decode_when_available():
     img = rng.integers(0, 256, size=(16, 24), dtype=np.uint8)
     buf = np.frombuffer(encode_png_gray8(img), dtype=np.uint8)
     assert np.array_equal(cv2.imdecode(buf, cv2.IMREAD_UNCHANGED), img)
+
+
+# ── 제출 zip 쓰기 ─────────────────────────────────────────────
+
+def test_write_submission_zip_is_byte_reproducible(tmp_path):
+    """두 번 써서 바이트가 같아야 한다 — 경로 등가성 검증이 여기에 의존한다."""
+    rng = np.random.default_rng(2)
+    depth = rng.integers(0, 256, size=(3, 8, 6), dtype=np.uint8)
+    names = ["000000.png", "000001.png", "000002.png"]
+    a, b = tmp_path / "a.zip", tmp_path / "b.zip"
+    assert write_submission_zip(depth, names, a) == 3
+    write_submission_zip(depth, names, b)
+    assert a.read_bytes() == b.read_bytes()
+
+
+def test_write_submission_zip_contents_decode_back(tmp_path):
+    """zip 안의 PNG가 원본 배열로 복원돼야 한다."""
+    rng = np.random.default_rng(3)
+    depth = rng.integers(0, 256, size=(2, 8, 6), dtype=np.uint8)
+    names = ["a.png", "b.png"]
+    path = tmp_path / "s.zip"
+    write_submission_zip(depth, names, path)
+    with zipfile.ZipFile(path) as zf:
+        assert zf.namelist() == names
+        for i, name in enumerate(names):
+            assert np.array_equal(decode_png_gray8(zf.read(name)), depth[i])
+
+
+def test_write_submission_zip_work_dir_receives_same_bytes(tmp_path):
+    """work_dir는 zip에 들어간 것과 같은 바이트를 남긴다 (검수용 사본)."""
+    depth = np.zeros((1, 4, 4), dtype=np.uint8)
+    work = tmp_path / "work"
+    path = tmp_path / "s.zip"
+    write_submission_zip(depth, ["x.png"], path, work_dir=work)
+    with zipfile.ZipFile(path) as zf:
+        assert (work / "x.png").read_bytes() == zf.read("x.png")
+
+
+def test_write_submission_zip_rejects_length_mismatch(tmp_path):
+    with pytest.raises(ValueError):
+        write_submission_zip(np.zeros((2, 4, 4), dtype=np.uint8), ["only.png"],
+                             tmp_path / "s.zip")

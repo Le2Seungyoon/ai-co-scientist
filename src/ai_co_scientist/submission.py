@@ -71,6 +71,36 @@ def encode_png_gray8(arr: np.ndarray, level: int = 6) -> bytes:
     ])
 
 
+# zip 엔트리 타임스탬프 고정값. 파일 mtime을 쓰면 같은 입력도 실행마다 다른 바이트가 나와
+# 두 조립 경로의 동일성을 바이트로 비교할 수 없다. (1980-01-01은 zip 포맷의 하한)
+ZIP_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+
+
+def write_submission_zip(depth: np.ndarray, names, zip_path, work_dir=None) -> int:
+    """(N, H, W) uint8 depth → 제출 zip. 반환: 쓴 장수.
+
+    `work_dir`을 주면 같은 PNG 바이트를 파일로도 남긴다(검수용). **zip마다 다른 디렉터리를
+    써야 한다** — 공유하면 파일명이 test_names.json에서 오므로 모든 실행이 동일해, 두 조립이
+    병렬로 돌 때 서로의 PNG를 덮어써 zip에 다른 모델 출력이 섞인다. 점수는 나오지만 그게
+    무엇의 점수인지 알 수 없게 되는 최악의 실패다.
+    """
+    names = list(names)
+    if len(depth) != len(names):
+        raise ValueError(f"장수 불일치: depth {len(depth)}장, names {len(names)}개")
+    zip_path = Path(zip_path)
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    if work_dir is not None:
+        work_dir = Path(work_dir)
+        work_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for img, name in zip(depth, names):
+            png = encode_png_gray8(img)
+            zf.writestr(zipfile.ZipInfo(name, date_time=ZIP_DATE_TIME), png)
+            if work_dir is not None:
+                (work_dir / name).write_bytes(png)
+    return len(names)
+
+
 def decode_png_gray8(data: bytes) -> np.ndarray:
     """8-bit 그레이스케일 non-interlaced PNG → (H, W) uint8 배열.
 
