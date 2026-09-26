@@ -17,11 +17,9 @@ standalone(패키지 import 없음). 형제 스크립트 import는 기존 패턴
 import argparse
 import json
 import sys
-import zipfile
 from collections import Counter
 from pathlib import Path
 
-import cv2
 import numpy as np
 import torch
 import torch.nn as nn
@@ -30,9 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ai_co_scientist.adabn import adapt_bn_exact, iter_cache_batches, save_bn_stats
 from ai_co_scientist.config import ensure_utf8_console
 from ai_co_scientist.sem import (
-    GROUPS, LEVELS, load_labels, pixel_features, qda_log_posterior, smooth_levels, softmax,
-    viterbi_levels,
+    GROUPS, LEVELS, assemble_depth, load_labels, pixel_features, qda_log_posterior,
+    smooth_levels, softmax, viterbi_levels,
 )
+from ai_co_scientist.submission import write_submission_zip
 from train_level import LevelCNN  # noqa: E402
 from train_structure import DEVICE, H, W, load_model  # noqa: E402
 
@@ -184,35 +183,33 @@ def adapt_bn(model, cache: Path, source: str, lut, batch: int = 512,
 
 
 @torch.no_grad()
-def reconstruct_and_zip(model, cache: Path, cls: np.ndarray, tau: float, zip_path: Path,
-                        lut=None, batch: int = 512) -> int:
-    """d̂ = L̂·(1 − ŝ). ŝ<τ → 0 클램프로 배경을 정확히 L̂에 붙인다 (τ=0이면 클램프 없음)."""
+def predict_structure(model, cache: Path, lut=None, batch: int = 512) -> np.ndarray:
+    """test SEM 전량 → ŝ (N, H, W) float32. **여기까지가 GPU 구간이다.**
+
+    이후의 레벨 결정·τ 클램프·조립·zip은 전부 ŝ를 읽기만 하는 CPU 연산이라
+    `scripts/assemble_submission.py`가 GPU 없이 되풀이할 수 있다.
+    """
     model.eval()
     sem = np.load(cache / "test_sem.npy", mmap_mode="r")
+    out = np.empty((len(sem), H, W), dtype=np.float32)
+    for s in range(0, len(sem), batch):
+        a = np.asarray(sem[s:s + batch])
+        if lut is not None:
+            a = lut[a]  # 구조 모델 입력만 변환 — 레벨 분류기는 원본 real 특징을 쓴다
+        x = a.astype(np.float32)[:, None] / 255.0
+        sp = model(torch.from_numpy(x).to(DEVICE))
+        out[s:s + len(x)] = sp.reshape(-1, H, W).cpu().numpy()
+    return out
+
+
+def reconstruct_and_zip(structure: np.ndarray, cache: Path, cls: np.ndarray, tau: float,
+                        zip_path: Path) -> int:
+    """ŝ + 레벨 → 제출 zip. GPU를 쓰지 않는다 (조립은 `assemble_depth`가 한다)."""
     names = json.loads((cache / "test_names.json").read_text(encoding="utf-8"))
     levels = np.array(LEVELS, dtype=np.float32)[cls]
-    # 제출 zip마다 **다른** 작업 디렉터리를 쓴다. 공유하면 파일명이 test_names.json에서 오므로
-    # 모든 실행이 동일해, 두 추론이 병렬로 돌 때 서로의 PNG를 덮어써 zip에 다른 모델 출력이
-    # 섞인다 — 점수는 나오지만 그게 무엇의 점수인지 알 수 없게 되는 최악의 실패다.
-    work = cache.parent / "submission_work" / zip_path.stem
-    work.mkdir(parents=True, exist_ok=True)
-    zip_path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "w") as zf:
-        for s in range(0, len(sem), batch):
-            a = np.asarray(sem[s:s + batch])
-            if lut is not None:
-                a = lut[a]  # 구조 모델 입력만 변환 — 레벨 분류기는 원본 real 특징을 쓴다
-            x = a.astype(np.float32)[:, None] / 255.0
-            sp = model(torch.from_numpy(x).to(DEVICE))
-            if tau > 0:
-                sp = torch.where(sp < tau, torch.zeros_like(sp), sp)
-            lv = torch.from_numpy(levels[s:s + len(x)]).to(DEVICE).view(-1, 1, 1, 1)
-            d = (lv * (1.0 - sp)).round().clamp(0, 255).cpu().numpy()
-            for j, img in enumerate(d.reshape(-1, H, W).astype(np.uint8)):
-                name = names[s + j]
-                cv2.imwrite(str(work / name), img)
-                zf.write(work / name, arcname=name)
-    return len(names)
+    depth = assemble_depth(structure, levels, tau)
+    return write_submission_zip(depth, names, zip_path,
+                                work_dir=cache.parent / "submission_work" / zip_path.stem)
 
 
 def main():
@@ -251,6 +248,12 @@ def main():
     ap.add_argument("--adabn-dump", default="",
                     help="재계산된 BN 층별 통계를 이 경로에 덤프 (.npz면 배열, 그 외 JSON). "
                          "batch 방식 통계와 층별로 비교하려면 필요하다")
+    ap.add_argument("--dump-structure", default="",
+                    help="구조 성분 ŝ를 이 경로에 .npy로 덤프한다 (N,H,W) float32. "
+                         "CPU 재조립(scripts/assemble_submission.py)의 입력")
+    ap.add_argument("--dump-level-proba", default="",
+                    help="레벨 사후확률을 이 경로에 .npy로 덤프한다 (N,4) float32. "
+                         "--level-source mean_only는 사후확률이 없어 거부된다")
     args = ap.parse_args()
     if args.level_hmm and args.level_smooth > 1:
         ap.error("--level-hmm과 --level-smooth는 함께 쓸 수 없다 — 평활기를 두 번 겹치면 "
@@ -280,9 +283,22 @@ def main():
         if args.adabn_dump:
             print(f"BN 통계 덤프 → {save_bn_stats(model, args.adabn_dump)}", flush=True)
 
-    if args.level_hmm:
+    want_proba = bool(args.level_hmm or args.dump_level_proba)
+    if want_proba and args.level_source == "mean_only":
+        ap.error("--level-source mean_only는 사후확률을 내지 않는다 — "
+                 "--level-hmm / --dump-level-proba는 cnn 또는 qda에서만 쓸 수 있다")
+    if want_proba:
         cls, diag, proba = fit_predict_levels(Path(args.data_dir), cache, args.level_source,
                                               args.level_ckpt, return_proba=True)
+    else:
+        cls, diag = fit_predict_levels(Path(args.data_dir), cache, args.level_source,
+                                       args.level_ckpt)
+        proba = None
+    if args.dump_level_proba:
+        Path(args.dump_level_proba).parent.mkdir(parents=True, exist_ok=True)
+        np.save(args.dump_level_proba, proba.astype(np.float32))
+        print(f"레벨 사후확률 덤프 → {args.dump_level_proba} {proba.shape}", flush=True)
+    if args.level_hmm:
         before = cls.copy()
         cls = viterbi_levels(proba, a=args.level_hmm_a)
         changed = int((before != cls).sum())
@@ -290,9 +306,6 @@ def main():
                 "changed": changed, "changed_frac": round(changed / len(cls), 4)}
         print(f"레벨 Viterbi(a={args.level_hmm_a}): {changed}장 변경 "
               f"({100 * changed / len(cls):.2f} percent)", flush=True)
-    else:
-        cls, diag = fit_predict_levels(Path(args.data_dir), cache, args.level_source,
-                                       args.level_ckpt)
     if args.level_smooth > 1:
         before = cls.copy()
         cls = smooth_levels(cls, args.level_smooth)
@@ -304,7 +317,12 @@ def main():
     print(f"레벨 분류({args.level_source}) test 분포: {diag['test_class_frac']}", flush=True)
     print("  ↑ 4그룹이 균등(약 0.25)에서 크게 벗어나면 경고 신호", flush=True)
 
-    n = reconstruct_and_zip(model, cache, cls, args.tau, Path(args.submit), lut)
+    structure = predict_structure(model, cache, lut)
+    if args.dump_structure:
+        Path(args.dump_structure).parent.mkdir(parents=True, exist_ok=True)
+        np.save(args.dump_structure, structure)
+        print(f"구조 성분 덤프 → {args.dump_structure} {structure.shape}", flush=True)
+    n = reconstruct_and_zip(structure, cache, cls, args.tau, Path(args.submit))
     print(f"제출본 {n}장 → {args.submit}", flush=True)
 
     print(json.dumps({
@@ -317,6 +335,8 @@ def main():
         "level_hmm_a": args.level_hmm_a if args.level_hmm else None,
         "adabn_drop_last": bool(args.adabn_drop_last), "adabn_shuffle": args.adabn_shuffle,
         "adabn_stats": args.adabn_stats, "adabn_dump": args.adabn_dump or None,
+        "dump_structure": args.dump_structure or None,
+        "dump_level_proba": args.dump_level_proba or None,
         "reconstruct": "d = L * (1 - s)", "levels": list(LEVELS),
         "n": n, "zip": args.submit, "level_diag": diag,
     }, ensure_ascii=False))
