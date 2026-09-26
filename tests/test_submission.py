@@ -265,6 +265,14 @@ def test_write_submission_zip_is_byte_reproducible(tmp_path):
     assert write_submission_zip(depth, names, a) == 3
     write_submission_zip(depth, names, b)
     assert a.read_bytes() == b.read_bytes()
+    # 핀고정된 date_time과 create_system이 실제로 zip에 기록돼야 한다.
+    from ai_co_scientist.submission import ZIP_DATE_TIME
+    with zipfile.ZipFile(a) as zf:
+        for info in zf.infolist():
+            assert info.date_time == ZIP_DATE_TIME, \
+                f"{info.filename}: date_time={info.date_time} != {ZIP_DATE_TIME}"
+            assert info.create_system == 0, \
+                f"{info.filename}: create_system={info.create_system} != 0"
 
 
 def test_write_submission_zip_contents_decode_back(tmp_path):

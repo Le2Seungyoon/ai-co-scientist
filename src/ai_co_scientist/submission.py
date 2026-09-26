@@ -95,7 +95,11 @@ def write_submission_zip(depth: np.ndarray, names, zip_path, work_dir=None) -> i
     with zipfile.ZipFile(zip_path, "w") as zf:
         for img, name in zip(depth, names):
             png = encode_png_gray8(img)
-            zf.writestr(zipfile.ZipInfo(name, date_time=ZIP_DATE_TIME), png)
+            # ZipInfo는 OS에 따라 create_system이 달라져 같은 입력도 다른 바이트를 낸다.
+            # 모든 호스트에서 동일한 zip을 만들려면 명시적으로 0(FAT filesystem)으로 고정한다.
+            info = zipfile.ZipInfo(name, date_time=ZIP_DATE_TIME)
+            info.create_system = 0
+            zf.writestr(info, png)
             if work_dir is not None:
                 (work_dir / name).write_bytes(png)
     return len(names)
