@@ -1218,6 +1218,12 @@ git add .agents/rules/architecture.md .agents/rules/enforcement.md config.yaml t
 
 오프라인 테스트는 "두 경로가 같다"만 증명한다. "새 경로가 과거 채택 레시피를 재현한다"는 실제 ckpt와 캐시가 필요하고 그것은 main에만 있다. **이 태스크는 워크트리에서 실행할 수 없다.**
 
+> **개정 (Task 4 리뷰 결과, 2026-09-14).** 최초 계획은 리팩터 **이후**의 두 경로끼리만 비교했다.
+> 그러면 조립이 torch에서 numpy로, 인코더가 cv2에서 stdlib으로 옮겨간 것을 아무도 검증하지
+> 않는다 — 두 경로가 같은 새 코드를 쓰므로 함께 틀려도 일치한다. 리뷰어가 이 구멍을 지적했고,
+> **`runtime/submissions/EXP-019-smooth9.zip` 이 남아 있다**: LB 3.0493을 낸 그 제출본이고,
+> **리팩터 이전 cv2 + torch 코드가 만든 것**이다. 이것이 진짜 기준선이므로 비교 대상에 넣는다.
+
 **Files:**
 - 코드 변경 없음. 산출물: 증거 기록
 
@@ -1264,27 +1270,52 @@ uv run python scripts/assemble_submission.py \
 
 바이트가 아니라 **픽셀**로 비교한다 — 인코더가 cv2에서 stdlib으로 바뀌었으므로 과거 zip과 바이트는 다르고, 채점되는 것은 픽셀이다.
 
+**세 개를 비교한다.** 기준선은 리팩터 이전 코드가 만든 과거 제출본이다.
+
 ```bash
 uv run python - <<'PY'
 import zipfile
 import numpy as np
 from ai_co_scientist.submission import decode_png_gray8, verify_submission
 
-a = zipfile.ZipFile("runtime/submissions/regress-oneshot.zip")
-b = zipfile.ZipFile("runtime/submissions/regress-twostage.zip")
-names = a.namelist()
-assert names == b.namelist(), "파일 목록이 다르다"
-bad = [n for n in names
-       if not np.array_equal(decode_png_gray8(a.read(n)), decode_png_gray8(b.read(n)))]
-print(f"검사 {len(names)}장 · 불일치 {len(bad)}장")
-if bad:
-    print("불일치 예:", bad[:5])
-print(verify_submission("runtime/submissions/regress-twostage.zip"))
+HIST = "runtime/submissions/EXP-019-smooth9.zip"       # 리팩터 이전 cv2+torch 산출물 (LB 3.0493)
+ONE = "runtime/submissions/regress-oneshot.zip"        # 리팩터 이후 GPU 경로
+TWO = "runtime/submissions/regress-twostage.zip"       # 리팩터 이후 CPU 재조립
+
+zips = {k: zipfile.ZipFile(v) for k, v in (("hist", HIST), ("one", ONE), ("two", TWO))}
+names = sorted(zips["hist"].namelist())
+for k, z in zips.items():
+    assert sorted(z.namelist()) == names, f"{k}: 파일 목록이 다르다 ({len(z.namelist())}장)"
+
+mismatch = {"hist_vs_one": [], "one_vs_two": []}
+for n in names:
+    h = decode_png_gray8(zips["hist"].read(n))
+    o = decode_png_gray8(zips["one"].read(n))
+    t = decode_png_gray8(zips["two"].read(n))
+    if not np.array_equal(h, o):
+        mismatch["hist_vs_one"].append(n)
+    if not np.array_equal(o, t):
+        mismatch["one_vs_two"].append(n)
+
+print(f"검사 {len(names)}장")
+for k, v in mismatch.items():
+    print(f"  {k}: 불일치 {len(v)}장" + (f" — 예 {v[:5]}" if v else ""))
+print(verify_submission(TWO))
 PY
 ```
 
-Expected: `검사 25988장 · 불일치 0장`, 그리고 `verify_submission`이 통과.
-**불일치가 1장이라도 나오면 착지를 중단하고 원인을 찾는다.** 조립·반올림·레벨 결정 순서 중 하나가 갈린 것이다.
+Expected: `검사 25988장`, **두 비교 모두 불일치 0장**, 그리고 `verify_submission`이 통과.
+
+- `hist_vs_one` 불일치 0 = **리팩터가 숫자를 바꾸지 않았다** (torch→numpy 조립, cv2→stdlib 인코더).
+  이것이 과거 리더보드 점수와의 유일한 연결고리다.
+- `one_vs_two` 불일치 0 = 두 경로가 같다.
+
+**어느 쪽이든 1장이라도 어긋나면 착지를 중단한다.** `hist_vs_one`이 어긋나면 리팩터가 산술을
+바꾼 것이고, `one_vs_two`가 어긋나면 CPU 진입점이 GPU 경로와 갈린 것이다 — 원인이 다르므로
+어느 쪽이 깨졌는지부터 확인한다.
+
+바이트가 아니라 **픽셀**로 비교하는 이유: 인코더가 cv2에서 stdlib으로 바뀌었고, zip
+타임스탬프도 고정값으로 바뀌었다. 채점되는 것은 픽셀이다.
 
 - [ ] **Step 4: 증거를 기록한다**
 
