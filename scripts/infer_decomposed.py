@@ -188,6 +188,10 @@ def predict_structure(model, cache: Path, lut=None, batch: int = 512) -> np.ndar
 
     이후의 레벨 결정·τ 클램프·조립·zip은 전부 ŝ를 읽기만 하는 CPU 연산이라
     `scripts/assemble_submission.py`가 GPU 없이 되풀이할 수 있다.
+
+    배치 스트리밍 대신 전량을 메모리에 들고 있는다 — ŝ 자체가 덤프·재생될 산출물이기
+    때문이다. real test 규모(25,988 × 72 × 48 float32 ≈ 359MB)에서 `assemble_depth`의
+    임시 배열(1−ŝ, 곱셈, clip)까지 합치면 피크 RSS는 대략 1~1.5GB다.
     """
     model.eval()
     sem = np.load(cache / "test_sem.npy", mmap_mode="r")
