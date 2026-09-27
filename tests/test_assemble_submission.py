@@ -91,3 +91,66 @@ def test_declares_leaderboard_target():
     assert '"x_domain": "real"' in source
     assert '"y_source": "real_depth_gt"' in source
     assert "real_average_depth" not in source
+
+
+def test_two_paths_produce_identical_zip_bytes(tmp_path):
+    """GPU 경로의 조립과 CPU 진입점의 조립이 바이트까지 같아야 한다.
+
+    GPU forward 자체는 재현할 수 없으므로, 그 **출력** ŝ를 고정한 뒤 이후 구간만 비교한다.
+    조립이 두 벌이 되면(다른 인코더·다른 반올림·다른 zip 타임스탬프) 여기서 즉시 깨진다.
+    """
+    from ai_co_scientist.sem import LEVELS, assemble_depth
+    from ai_co_scientist.submission import write_submission_zip
+
+    structure, proba, names = _fixture(tmp_path)
+
+    # 경로 ① — infer_decomposed.reconstruct_and_zip이 하는 것과 같은 순서
+    cls = proba.argmax(1)
+    levels = np.array(LEVELS, dtype=np.float32)[cls]
+    direct = tmp_path / "direct.zip"
+    write_submission_zip(assemble_depth(structure, levels, 0.0), names, direct)
+
+    # 경로 ② — CPU 진입점
+    viacli, _ = _run(tmp_path)
+
+    assert direct.read_bytes() == viacli.read_bytes()
+
+
+def test_structure_dump_roundtrips_bit_exactly(tmp_path):
+    """float32 저장·로드가 ŝ를 비트 단위로 보존해야 한다.
+
+    float16(절반 용량)을 버린 근거를 고정한다: d = L*(1-s)에서 L이 최대 170이라 s의 오차
+    ~0.0005가 d에서 ~0.085가 되어 round()의 경계를 흔든다.
+    """
+    from ai_co_scientist.sem import assemble_depth
+
+    rng = np.random.default_rng(7)
+    s = rng.random((200, 4, 3), dtype=np.float32)
+    path = tmp_path / "s32.npy"
+    np.save(path, s)
+    assert np.load(path).dtype == np.float32
+    assert np.array_equal(np.load(path), s)
+
+    # float16으로 저장했다면 조립 결과가 실제로 달라진다 — 버린 근거를 숫자로 남긴다.
+    # L=170은 LEVELS의 최댓값이라 s 오차가 d로 가장 크게 증폭되는 조건이다.
+    levels = np.full(len(s), 170.0, dtype=np.float32)
+    lossy = s.astype(np.float16).astype(np.float32)
+    differing = int((assemble_depth(s, levels) != assemble_depth(lossy, levels)).sum())
+    assert differing > 0, (
+        "float16 왕복이 이 표본에서 조립 결과를 전혀 바꾸지 않았다 — 표본을 넓히거나, "
+        "float32를 고집하는 근거를 다시 재야 한다")
+
+
+def test_tau_survives_both_paths(tmp_path):
+    """τ가 CPU 진입점에서도 같은 클램프를 낸다 — 인자가 한쪽에만 먹으면 조용히 갈린다."""
+    from ai_co_scientist.sem import LEVELS, assemble_depth
+    from ai_co_scientist.submission import write_submission_zip
+
+    structure, proba, names = _fixture(tmp_path)
+    cls = proba.argmax(1)
+    levels = np.array(LEVELS, dtype=np.float32)[cls]
+    direct = tmp_path / "direct_tau.zip"
+    write_submission_zip(assemble_depth(structure, levels, 0.5), names, direct)
+
+    viacli, _ = _run(tmp_path, "--tau", "0.5")
+    assert direct.read_bytes() == viacli.read_bytes()
