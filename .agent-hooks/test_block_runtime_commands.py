@@ -119,6 +119,11 @@ def main():
     check("main worktree: experiment command passes", not denied(out), out[:120])
     check("main worktree: exits 0", rc == 0, f"rc={rc}")
 
+    out, rc = run(main_tree, "uv run python scripts/exp.py new --title x")
+    check("main worktree: registry-tier command (exp.py) passes -- sentinel covers both tiers",
+          not denied(out), out[:120])
+    check("main worktree: exp.py exits 0", rc == 0, f"rc={rc}")
+
     out, _ = run(worktree, "uv run pytest -q")
     check("worktree: unrelated command passes", not denied(out), out[:120])
     out, _ = run(worktree, "uv run ruff check src tests scripts")
