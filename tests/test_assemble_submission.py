@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from ai_co_scientist.submission import decode_png_gray8
 
@@ -154,3 +155,36 @@ def test_tau_survives_both_paths(tmp_path):
 
     viacli, _ = _run(tmp_path, "--tau", "0.5")
     assert direct.read_bytes() == viacli.read_bytes()
+
+
+def test_reconstruct_and_zip_matches_cpu_path(tmp_path):
+    """GPU forward reconstruct_and_zip이 CPU 진입점과 같은 바이트를 낸다.
+
+    이 테스트는 **실제** infer_decomposed.reconstruct_and_zip을 호출한다
+    (이전 테스트들은 그 로직을 inline으로 재현했을 뿐).
+    """
+    pytest.importorskip("torch")
+
+    SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+    sys.path.insert(0, str(SCRIPTS))
+    from infer_decomposed import reconstruct_and_zip  # noqa: E402
+
+    structure, proba, names = _fixture(tmp_path)
+    cls = proba.argmax(1)
+
+    # GPU forward 경로 — reconstruct_and_zip 호출
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "test_names.json").write_text(json.dumps(names), encoding="utf-8")
+
+    # tau=0 경우
+    gpu_zip_tau0 = tmp_path / "gpu_tau0.zip"
+    reconstruct_and_zip(structure, cache, cls, 0.0, gpu_zip_tau0)
+    cpu_zip_tau0, _ = _run(tmp_path)
+    assert gpu_zip_tau0.read_bytes() == cpu_zip_tau0.read_bytes()
+
+    # tau!=0 경우
+    gpu_zip_tau05 = tmp_path / "gpu_tau05.zip"
+    reconstruct_and_zip(structure, cache, cls, 0.5, gpu_zip_tau05)
+    cpu_zip_tau05, _ = _run(tmp_path, "--tau", "0.5")
+    assert gpu_zip_tau05.read_bytes() == cpu_zip_tau05.read_bytes()
