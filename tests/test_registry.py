@@ -1,4 +1,6 @@
 """실험 기록소 — 선보고 강제와 지표 도메인 일치 판정이 핵심 계약."""
+import json
+
 import pytest
 
 from ai_co_scientist import registry
@@ -297,3 +299,40 @@ def test_cli_result_merges_by_default_and_refuses_silent_overwrite(tmp_path, mon
     out = run("result", rid, "--val", '{"run": "a"}', "--replace")
     assert "WARNING: 버려짐 wall_clock" in out
     assert registry.get(rid, path=p)["val"] == {"run": "a"}
+
+
+def test_new_report_records_source_when_given(tmp_path):
+    """워커 브랜치에서 돈 실험은 그 브랜치/커밋으로 기록돼야 한다 — 코디네이터의 HEAD가 아니라."""
+    path = tmp_path / "r.jsonl"
+    rec = registry.new_report(
+        title="t", x_domain="real", x_desc="x", y_source="real_group_label", y_desc="y",
+        model="m", method="me", purpose="p", metric_name="acc",
+        metric_x_domain="real", metric_y_source="real_group_label",
+        source_branch="feature/postproc-k", source_commit="deadbeef", path=path)
+    assert rec["source"] == {"branch": "feature/postproc-k", "commit": "deadbeef"}
+    assert registry.get(rec["report_id"], path)["source"]["branch"] == "feature/postproc-k"
+
+
+def test_new_report_source_is_none_when_omitted(tmp_path):
+    """optional 필드다 — 기존 호출부는 바뀌지 않는다."""
+    path = tmp_path / "r.jsonl"
+    rec = registry.new_report(
+        title="t", x_domain="sim", x_desc="x", y_source="sim_depth_gt", y_desc="y",
+        model="m", method="me", purpose="p", metric_name="rmse",
+        metric_x_domain="sim", metric_y_source="sim_depth_gt", path=path)
+    assert rec["source"] is None
+
+
+def test_records_without_source_still_load(tmp_path):
+    """기존 20건에는 source 키가 없다 — 로드가 깨지면 안 된다."""
+    path = tmp_path / "r.jsonl"
+    path.write_text(json.dumps({
+        "report_id": "EXP-001", "created": "2026-07-30T00:00:00", "title": "old",
+        "x": {"domain": "sim", "desc": "d"}, "y": {"source": "sim_depth_gt", "desc": "d"},
+        "model": "m", "method": "me", "purpose": "p",
+        "metric": {"name": "rmse", "x_domain": "sim", "y_source": "sim_depth_gt",
+                   "matches_target": False, "warning": "w"},
+        "val": None, "lb": None, "verdict": "",
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+    assert registry.get("EXP-001", path)["title"] == "old"
+    assert registry.load_all(path)[0].get("source") is None

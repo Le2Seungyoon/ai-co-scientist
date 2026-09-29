@@ -117,7 +117,8 @@ def _require(name: str, value: str) -> str:
 
 
 def new_report(*, title, x_domain, x_desc, y_source, y_desc, model, method, purpose,
-               metric_name, metric_x_domain, metric_y_source, path=None) -> dict:
+               metric_name, metric_x_domain, metric_y_source,
+               source_branch="", source_commit="", path=None) -> dict:
     """선보고 등록. 5항목 + 지표 도메인이 모두 있어야 report_id를 발급한다."""
     if x_domain not in X_DOMAINS:
         raise ValueError(f"x_domain은 {X_DOMAINS} 중 하나여야 한다: {x_domain}")
@@ -151,6 +152,11 @@ def new_report(*, title, x_domain, x_desc, y_source, y_desc, model, method, purp
                        "matches_target": matches, "warning": warning},
             "val": None,
             "lb": None,
+            # 실험을 낸 코드의 출처. 병렬 워크트리에서는 기록하는 쪽(코디네이터)과 실행한
+            # 쪽(워커 브랜치)이 다르므로, 기록자의 HEAD를 쓰면 조용히 틀린다. 워커가 자기
+            # 트리에서 읽은 값을 그대로 넣는다. 기존 레코드에는 이 키가 없다 — optional이다.
+            "source": ({"branch": source_branch, "commit": source_commit}
+                       if (source_branch or source_commit) else None),
             "verdict": "",
         }
         _write_all(records + [record], path)
