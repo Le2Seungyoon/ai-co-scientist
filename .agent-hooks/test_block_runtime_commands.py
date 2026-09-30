@@ -104,6 +104,8 @@ def main():
     check("deny names the rule file", "architecture.md" in out, out[:120])
     check("registry deny does NOT name the escape hatch -- there is none for it",
           "ACS_RUNTIME_EXEMPT" not in out, out[:120])
+    check("registry deny names the bootstrap path (fresh clone / re-imaged / lost runtime/)",
+          "bootstrap" in out and "mkdir -p runtime" in out, out[:300])
 
     out, _ = run(worktree, "uv run python scripts/train_level.py")
     check("exclusive deny names the rule file", "architecture.md" in out, out[:120])

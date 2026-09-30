@@ -7,7 +7,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch.nn as nn
+
+# 워크트리는 dev 그룹만 sync하므로 torch가 없다 -- collection 단계에서 ImportError로 죽는
+# 대신 스킵으로 넘겨 `uv run pytest -q`가 거기서도 끝까지 돈다.
+pytest.importorskip("torch")
+import torch.nn as nn  # noqa: E402
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))

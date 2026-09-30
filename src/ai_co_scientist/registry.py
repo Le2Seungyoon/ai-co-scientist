@@ -320,6 +320,8 @@ def render_markdown(path=None) -> str:
                 f"(X={r['metric']['x_domain']}, y={r['metric']['y_source']})"]
         if r["metric"]["warning"]:
             out.append(f"  - ⚠️ {r['metric']['warning']}")
+        if r.get("source"):
+            out.append(f"- **출처**: `{r['source']['branch']}` @ `{r['source']['commit']}`")
         val_line = json.dumps(r["val"], ensure_ascii=False) if r["val"] else "(미실행)"
         lb_line = "(미제출)"
         if r["lb"]:

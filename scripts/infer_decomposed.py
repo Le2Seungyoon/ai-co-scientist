@@ -10,8 +10,11 @@
   qda        13개 픽셀 통계 QDA, 사이트홀드아웃 89.8퍼센트 (EXP-004)
   mean_only  평균 intensity 1개, 50.4퍼센트 — 예산 공식 LB ≈ √(구조² + (1−p)·61.6)의 검증용.
              p가 크게 다른 두 점이 있어야 공식이 맞는지 확인된다.
+  cnn        LevelCNN, 사이트홀드아웃 98.06퍼센트 (EXP-013) — QDA 대비 +8.23pp로 리더보드
+             신기록에 쓰인 arm (EXP-014, EXP-019).
 
-standalone(패키지 import 없음). 형제 스크립트 import는 기존 패턴을 따른다
+`ai_co_scientist`를 import한다(adabn·config·sem·submission) — standalone이 아니다. 형제
+스크립트(train_level.py, train_structure.py) import는 기존 패턴을 따른다
 (pseudo_pipeline.py → train_avgcond.py).
 """
 import argparse
@@ -108,7 +111,7 @@ def fit_predict_levels(data_dir: Path, cache: Path, source: str, level_ckpt: str
     if return_proba:
         if proba is None:
             raise ValueError(f"--level-source {source}는 사후확률을 내지 않는다 — "
-                             "--level-hmm은 cnn 또는 qda에서만 쓸 수 있다")
+                             "--level-hmm / --dump-level-proba는 cnn 또는 qda에서만 쓸 수 있다")
         return pred, _diag(source, pred), proba
     return pred, _diag(source, pred)
 

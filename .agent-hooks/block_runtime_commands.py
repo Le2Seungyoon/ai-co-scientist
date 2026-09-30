@@ -67,12 +67,19 @@ EXEMPT_VAR = "ACS_RUNTIME_EXEMPT"
 SENTINEL = os.path.join("runtime", "registry.jsonl")
 
 REASON_REGISTRY = (
-    "This tree has no {sentinel} -- it is a git worktree, and `runtime/` is gitignored so it "
-    "was never copied. Running `{hit}` here would fork the registry: report_id comes from "
-    "len(records), so a second tree starts over at 1 and the two truths can never be merged. "
-    "Run registry commands in the MAIN worktree, where the registry lives. "
-    "There is NO escape hatch for this one: writing here would create {sentinel} and thereby "
-    "unlock every other gate in this tree for good. "
+    "This tree has no {sentinel}. Two situations look identical to this gate -- tell them "
+    "apart yourself: "
+    "(1) This is a git worktree: `runtime/` is gitignored so it was never copied here. "
+    "Running `{hit}` here would fork the registry -- report_id comes from len(records), so a "
+    "second tree starts over at 1 and the two truths can never be merged. Run registry "
+    "commands in the MAIN worktree, where the registry lives. "
+    "(2) This already IS the main worktree -- a fresh clone, a re-imaged machine, or a "
+    "`runtime/` lost to cleanup -- and there is no other tree to defer to. That is a "
+    "bootstrap, not a fork: create the sentinel yourself, outside this gate, with an empty "
+    "file (`mkdir -p runtime && touch {sentinel}`, no `{hit}` involved); the next `{hit}` run "
+    "then sees zero existing records and starts at report_id 1, same as any other first run. "
+    "There is NO escape hatch through this gate for either case: letting `{hit}` itself "
+    "create {sentinel} would unlock every other gate in this tree for good. "
     "-- .agents/rules/architecture.md -> Parallel execution contract"
 )
 

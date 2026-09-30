@@ -323,6 +323,27 @@ def test_new_report_source_is_none_when_omitted(tmp_path):
     assert rec["source"] is None
 
 
+def test_render_markdown_shows_source_when_present(tmp_path):
+    """워커 브랜치/커밋이 렌더된 markdown에도 남아야 한다 -- runtime/는 백업이 없어서
+    docs/experiment-registry.md가 유일한 사본이다."""
+    p = tmp_path / "reg.jsonl"
+    registry.new_report(path=p, **{
+        **BASE, "source_branch": "feature/postproc-k", "source_commit": "deadbeef"})
+    md = registry.render_markdown(path=p)
+    assert "feature/postproc-k" in md
+    assert "deadbeef" in md
+
+
+def test_render_markdown_omits_source_line_when_absent(tmp_path):
+    """source가 없는(기존 20건 포함) 레코드는 렌더가 이전과 똑같아야 한다 -- 빈 줄도,
+    "None"도 나오면 안 된다."""
+    p = tmp_path / "reg.jsonl"
+    registry.new_report(path=p, **BASE)
+    md = registry.render_markdown(path=p)
+    assert "출처" not in md
+    assert "None" not in md
+
+
 def test_records_without_source_still_load(tmp_path):
     """기존 20건에는 source 키가 없다 — 로드가 깨지면 안 된다."""
     path = tmp_path / "r.jsonl"
