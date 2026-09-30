@@ -1,4 +1,4 @@
-# 실험 하네스 설정. 에이전트 포트·mock 스위치는 A2A 구조와 함께 제거됨.
+# 실험 하네스 설정.
 paths:
   registry: "runtime/registry.jsonl"        # 실험 기록소 (단일 진실)
   registry_doc: "docs/experiment-registry.md"

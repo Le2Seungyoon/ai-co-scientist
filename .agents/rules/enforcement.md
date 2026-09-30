@@ -134,7 +134,8 @@ says who *owns* a script, never who may run it.
 |---|---|---|---|
 | PR gate | PreToolUse hook (`settings.json`) | `origin/main` is merged into the branch before `git push` | none — deny |
 | Commit-attribution gate | PreToolUse hook | no `Co-Authored-By` / `Generated with` trailer in `git commit` | none — deny |
-| Runtime-command gate | PreToolUse hook (`block_runtime_commands.py`) | the six experiment scripts run only where `runtime/registry.jsonl` exists | `ACS_RUNTIME_EXEMPT="<reason>"` |
+| Registry-write gate | PreToolUse hook (`block_runtime_commands.py`) | `scripts/exp.py` runs only where `runtime/registry.jsonl` exists | none — deny (an exemption here would create the sentinel and unlock the tree) |
+| Exclusive-resource gate | PreToolUse hook (`block_runtime_commands.py`) | the four GPU / submission-quota scripts run only where `runtime/registry.jsonl` exists | `ACS_RUNTIME_EXEMPT="<reason>"` |
 | File-size budget | PostToolUse hook (`check_rules_size.py`) | instruction files stay under the ~150-line soft budget | advisory, never blocks |
 | Rule-link scan | test (`tests/test_harness_generated.py` → `check_rule_links.py`) | every path a rules file or lane definition names still exists | none |
 | Generated-lane freshness | test (`tests/test_harness_generated.py` → `build-agents.py --check`) | `.claude/**` and `.codex/**` lanes and skills match their `.agents/` sources | none — regenerate |

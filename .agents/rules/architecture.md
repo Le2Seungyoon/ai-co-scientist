@@ -62,10 +62,34 @@ training, so the parallel gain is in analysis, criticism, proposals, and prepari
 experiments still queued.
 
 `engineer` and `executor` hold the SAME tools. What separates them is
-`.agent-hooks/block_runtime_commands.py`, which denies the six experiment scripts wherever
-`runtime/registry.jsonl` is absent. That hook cannot see which sub-agent issued a command, so
-it only makes the boundary real in a worktree — **the engineer lane must run in a worktree**,
-or its contract is prose alone.
+`.agent-hooks/block_runtime_commands.py`, which guards five scripts in two tiers — `exp.py` as
+a registry writer, and `train_level.py` / `train_structure.py` / `infer_decomposed.py` /
+`dacon_submit.py` as exclusive-resource scripts — wherever `runtime/registry.jsonl` is absent
+(`probe_level.py` was released: read-only, no `runtime/` writes). That hook cannot see which
+sub-agent issued a command, so it only makes the boundary real in a worktree — **the engineer
+lane must run in a worktree**, or its contract is prose alone.
+
+**CPU reassembly is a fourth class.** `scripts/assemble_submission.py` rebuilds a submission from
+a dumped ŝ and level posterior with numpy and stdlib only -- no torch, no cv2, so it runs in a
+worktree, whose `uv sync` brings the dev group alone. Level post-processing (`--level-smooth`,
+`--level-hmm`, `--tau`) moves no structure component, so N of these run in parallel off ONE GPU
+inference. They write into their own tree and never call `scripts/exp.py`: the coordinator issues
+the pre-report, dispatches the `report_id`, and records the result, so `report_id = len(records)`
+has no fork path across trees. A worker reports its own `git rev-parse HEAD` and branch, and the
+coordinator records THOSE -- never its own.
+
+**Never create `runtime/registry.jsonl` in a worktree.** That file's existence IS the runtime
+gate's sentinel; once it exists the gate is unlocked in that tree for good. This is why the
+escape hatch does not cover `scripts/exp.py` (`enforcement.md` -> This project's gates).
+
+**Workers build submissions; they never submit one.** The leaderboard is the only verdict and its
+slots are finite, so N parallel zips cannot all be spent. A worker runs `verify_submission()` in
+its own tree -- that one is not guarded, and it catches a broken zip before a slot pays for it --
+and reports its pre-selection numbers. Ranking for the level axis is real train + `site_split`
+holdout accuracy, which is real->real and is how `k=9` was chosen; it **ranks, it does not
+judge** (real has 2,836 runs against test's 1,046, so the optimum does not transfer). The
+coordinator submits the top one. One sweep is ONE pre-report: `exp.py result` merges into the
+existing `val` by default, so per-arm numbers stack without a new schema.
 
 **Shared-state race conditions** — both were measured and fixed:
 
@@ -88,9 +112,3 @@ concurrent pre-report writes. Mechanics: `orca-parallel.md`.
 
 Panes in one worktree **share its branch** — a second session cannot be on a different one. Split
 the worktree, not the pane, when experiments need separate branches.
-
-## No protocol layer
-
-The A2A / MCP-server layout was stripped on 2026-07-30 and stays out: the competition asks for
-autonomous collaboration, not a protocol. `tests/test_config.py::test_no_a2a_leftovers` holds the
-config half; the rest is judgment about what to build next.

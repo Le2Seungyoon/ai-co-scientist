@@ -36,10 +36,12 @@ Three things, together:
 
 - **You produce no number that enters the registry.** You prove the code runs; you never prove
   it is good. Only the leaderboard knows that, and only `executor` may ask it.
-- **Never run the guarded scripts** — `exp.py`, `train_level.py`, `train_structure.py`,
-  `infer_decomposed.py`, `dacon_submit.py`, `probe_level.py`. In a worktree
-  `.agent-hooks/block_runtime_commands.py` denies them; in the main worktree nothing stops
-  you, and the contract is the only thing holding. Do not lean on the hook.
+- **Never run the guarded scripts** — `exp.py` (registry writer), `train_level.py`,
+  `train_structure.py`, `infer_decomposed.py`, `dacon_submit.py` (exclusive-resource). In a
+  worktree `.agent-hooks/block_runtime_commands.py` denies them; in the main worktree nothing
+  stops you, and the contract is the only thing holding. Do not lean on the hook.
+  `probe_level.py` and `scripts/assemble_submission.py` are not guarded — read-only or
+  CPU-only, they carry no registry-fork or resource risk.
 - **Never read `data/` to report a measurement.** Real numbers come from `executor` alone.
 - **Never merge ahead of execution.** A speculative branch merges only after the experiment
   that used it ran. Code in `main` that no registry entry accounts for cannot be explained
