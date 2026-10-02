@@ -8,13 +8,12 @@ sim SEM→sim depth 지표를 real validation으로 착각해 여러 실험을 �
 저장: JSONL 1줄 = 실험 1건. 갱신은 load-modify-write (건수가 수백 규모라 단순함이 이득).
 """
 import json
-import os
-import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 from ai_co_scientist.config import load_config, project_root
+from ai_co_scientist.locks import ResourceBusy, file_lock
 
 LOCK_TIMEOUT = 30.0  # 초. 학습이 아니라 JSONL 갱신이므로 이보다 오래 걸릴 일이 없다
 LOCK_STALE = 120.0  # 이보다 오래된 락은 죽은 프로세스가 남긴 것으로 보고 회수한다
@@ -56,37 +55,17 @@ def locked(path=None):
     발급하고, 나중 write가 앞선 선보고를 통째로 덮어쓴다(실측 확인). `_write_all`이 파일 전체를
     다시 쓰는 load-modify-write이므로 락 없이는 append조차 안전하지 않다.
 
-    `O_CREAT|O_EXCL`은 POSIX·Windows 모두에서 원자적이라 별도 의존성이 필요 없다.
+    획득 루프는 `locks.file_lock`에 있다. **경로는 의도적으로 트리별이다** — 기록소는 워크트리가
+    복제하지 않는 자원이고, 기계 단위 자원은 `locks.resource_lock`이 맡는다.
     """
-    lock = _path(path).with_suffix(".lock")
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + LOCK_TIMEOUT
-    fd = None
-    while fd is None:
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except (FileExistsError, PermissionError):
-            # PermissionError는 **Windows 전용 경로**다. 막 unlink된 파일이 delete-pending
-            # 상태면 O_CREAT|O_EXCL이 EEXIST가 아니라 EACCES를 던진다 — POSIX 가정으로 짜면
-            # 놓친다. 8스레드 x 40회 타격에서 재현됐고, 잡지 않으면 그 스레드의 선보고가
-            # 통째로 소실된다(실측 7/8).
-            # `exists()` 후 `stat()` 사이에 락이 해제되면 FileNotFoundError가 난다(TOCTOU).
-            try:
-                age = time.time() - lock.stat().st_mtime
-            except FileNotFoundError:
-                continue  # 방금 해제됐다 — 즉시 재시도
-            if age > LOCK_STALE:
-                lock.unlink(missing_ok=True)  # 죽은 프로세스가 남긴 락 회수
-                continue
-            if time.monotonic() > deadline:
-                raise TimeoutError(f"기록소 락 대기 초과({LOCK_TIMEOUT}초): {lock}")
-            time.sleep(0.05)
     try:
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        yield
-    finally:
-        lock.unlink(missing_ok=True)
+        with file_lock(_path(path).with_suffix(".lock"), timeout=LOCK_TIMEOUT,
+                       stale=LOCK_STALE):
+            yield
+    except ResourceBusy as e:
+        # 역호환성: 기존 호출부는 TimeoutError를 기대한다
+        raise TimeoutError(f"기록소 락 대기 초과({LOCK_TIMEOUT}초): {_path(path).with_suffix('.lock')}"
+                           ) from e
 
 
 def load_all(path=None) -> list[dict]:
