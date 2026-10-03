@@ -96,9 +96,10 @@ def _require(name: str, value: str) -> str:
 
 
 def new_report(*, title, x_domain, x_desc, y_source, y_desc, model, method, purpose,
-               metric_name, metric_x_domain, metric_y_source,
+               metric_name, metric_x_domain, metric_y_source, hypothesis,
                source_branch="", source_commit="", path=None) -> dict:
-    """선보고 등록. 5항목 + 지표 도메인이 모두 있어야 report_id를 발급한다."""
+    """선보고 등록. 5항목 + 지표 도메인이 모두 있어야 report_id를 발급한다.
+    가설 id(`hypothesis`)는 필수다 — 조인 없는 레코드는 조인에 보이지 않는다."""
     if x_domain not in X_DOMAINS:
         raise ValueError(f"x_domain은 {X_DOMAINS} 중 하나여야 한다: {x_domain}")
     if y_source not in Y_SOURCES:
@@ -107,6 +108,8 @@ def new_report(*, title, x_domain, x_desc, y_source, y_desc, model, method, purp
         raise ValueError(f"metric_x_domain은 {X_DOMAINS} 중 하나여야 한다: {metric_x_domain}")
     if metric_y_source not in Y_SOURCES:
         raise ValueError(f"metric_y_source는 {Y_SOURCES} 중 하나여야 한다: {metric_y_source}")
+
+    hypothesis = _require("hypothesis", hypothesis)
 
     matches = metric_matches_target(metric_x_domain, metric_y_source)
     warning = "" if matches else (
@@ -120,6 +123,9 @@ def new_report(*, title, x_domain, x_desc, y_source, y_desc, model, method, purp
         record = {
             "report_id": f"EXP-{len(records) + 1:03d}",
             "created": datetime.now().isoformat(timespec="seconds"),
+            # 가설 ↔ 실행 조인 키. 다대다다 — 한 실행이 여러 가설에 답할 수 있고, 한 가설이
+            # 여러 실행을 갖는다. 손으로 유지하는 표를 대신하므로 선택이 아니라 필수다.
+            "hypothesis": hypothesis,
             "title": _require("title", title),
             "x": {"domain": x_domain, "desc": _require("x_desc", x_desc)},
             "y": {"source": y_source, "desc": _require("y_desc", y_desc)},
