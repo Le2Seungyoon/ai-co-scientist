@@ -77,3 +77,27 @@ def test_resource_lock_excludes_by_name(tmp_path):
                 pass
         with resource_lock("dacon-slot", root=tmp_path):  # 다른 자원은 막히지 않는다
             pass
+
+
+def test_holder_does_not_delete_replacement_lock(tmp_path):
+    """락이 회수되면 새 보유자가 그 파일을 들고 있다. 원래 보유자가 빠져나갈 때
+    unlink하면 새 보유자의 락을 깨트린다 — 토큰 검증으로 방지한다."""
+    lock = tmp_path / "resource.lock"
+    with file_lock(lock, timeout=0.0):
+        # 일반적인 상황: 보유 중 다른 진행이 락을 회수하고 획득한다
+        new_token = "replaced_token"
+        lock.write_text(new_token, encoding="utf-8")
+    # 원래 보유자가 빠져나갔지만, unlink하지 않았어야 한다 (토큰 불일치)
+    assert lock.exists(), "새 보유자의 락이 원래 보유자에 의해 삭제됐다"
+    assert lock.read_text(encoding="utf-8") == new_token
+
+
+def test_resource_lock_default_stale_exceeds_registry_stale():
+    """자원의 스테일은 레지스트리보다 훨씬 커야 한다. 레지스트리는 밀리초 규모 작업이고,
+    GPU는 시간 규모 작업이다."""
+    from ai_co_scientist.locks import LOCK_STALE, LOCK_STALE_RESOURCE
+
+    assert LOCK_STALE_RESOURCE > LOCK_STALE, (
+        f"LOCK_STALE_RESOURCE({LOCK_STALE_RESOURCE}) should exceed "
+        f"LOCK_STALE({LOCK_STALE})"
+    )
