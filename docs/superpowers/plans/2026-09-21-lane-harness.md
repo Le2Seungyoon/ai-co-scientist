@@ -484,9 +484,9 @@ was rejected. A dispatched hypothesis moves to its own file and is closed there.
 ## The join key
 
 Every pre-report carries `hypothesis=<id>`, so the link is queryable both ways: which runs tested
-H12, and why a run exists at all. The relation is many-to-many — one execution can answer several
-hypotheses (EXP-010 recorded a 3-arm sweep as one entry). `registry.new_report` refuses without
-it, and `tests/test_registry.py` pins that — an untagged record is invisible to the join and
+H12, and why a run exists at all. A report names exactly one hypothesis; a hypothesis accumulates
+many reports (EXP-010 recorded a 3-arm sweep as one entry, under one id).
+`registry.new_report` refuses without it, and `tests/test_registry.py` pins that — an untagged record is invisible to the join and
 nothing else notices, which is why it is a refusal and not a convention.
 
 ## Write the "don't run" condition too
@@ -1093,13 +1093,20 @@ git commit -m "Record the measured Orca round trip on 1.4.206"
 
 **Orca 코디네이터 세션에서만.** 여기가 이 계획의 인수 시험이다.
 
+> **개정 (Task 3 리뷰가 드러낸 계획 결함, 2026-09-21).** 최초 계획은 레인 둘이 **같은 H12
+> 파일**의 결과 절을 쓰게 했다. 그것은 `experiment-ledger.md`가 "dispatch 버그"로 규정한
+> 바로 그 경우이고 — 검증 실험이 검증 대상 규칙을 위반한다 — 머지 충돌이 구조적으로 발생해
+> Task 9의 통과 조건(충돌 0)이 성립하지 않는다. **가설을 둘로 쪼갠다**: 레인 하나당 가설 하나,
+> 파일 하나. 검증은 오히려 강해진다 — 서로 다른 파일을 쓰는 두 레인의 머지가 자동이어야 한다.
+
 **Files:**
-- Create: `docs/experiment/H12-level-smoothing-window.md`
-- 레인이 자기 섹션을 쓴다
+- Create: `docs/experiment/H12-level-smoothing-window.md` (레인 A가 결과를 쓴다)
+- Create: `docs/experiment/H13-viterbi-vs-mode-filter.md` (레인 B가 결과를 쓴다)
+- 각 레인은 **자기 파일만** 건드린다
 
 **Interfaces:**
 - Consumes: Task 3의 템플릿 · Task 5·6의 스크립트 · Task 7의 실측된 lifecycle
-- Produces: 두 레인의 결과가 담긴 가설 파일
+- Produces: 각자 자기 레인의 결과가 담긴 가설 파일 두 개
 
 - [ ] **Step 1: 사후확률을 덤프한다 (main, GPU 1회)**
 
@@ -1129,23 +1136,33 @@ PY
 
 - [ ] **Step 2: 가설 파일을 dispatch 전에 커밋한다**
 
-`docs/experiment/H12-level-smoothing-window.md`를 템플릿에서 만들고 **질문 · 조건 · 무엇이 답인가**만 채운다. 사전등록은 커밋 순서로 증명되므로 **dispatch 전에 커밋한다.**
+템플릿에서 **두 개**를 만들고 각각 **질문 · 조건 · 무엇이 답인가**만 채운다. 사전등록은 커밋 순서로 증명되므로 **dispatch 전에 커밋한다.**
 
-「무엇이 답인가」에 반드시 들어갈 것:
-- 읽는 것은 **arm 사이의 순위**이지 절대 정확도가 아니다 — 사후확률은 in-sample이고, 이 프록시는 두 번 다 낙관이었다(2.55pp, 3.55pp)
+| 파일 | 질문 | arm |
+|---|---|---|
+| `H12-level-smoothing-window.md` | 최빈값 필터의 최적 창이 EXP-019가 쓴 k=9인가 | `--arm smooth --values 3,5,7,9,11` |
+| `H13-viterbi-vs-mode-filter.md` | Viterbi 복호가 고정폭 최빈값 필터를 이기는가 | `--arm hmm --values 0.95,0.974,0.99` |
+
+H13이 별개 가설인 근거는 코드에 이미 있다 — `viterbi_levels`의 독스트링이 *"최빈값 필터는 창 크기를 통해 '런은 최소 k/2보다 길다'를 **강제**하므로 경계에서 손해를 본다(k=31이 k=9보다 나쁜 이유). Viterbi는 같은 사전지식을 **비용**으로 넣는다"*라고 적고, `a`의 기본값 0.974를 *"실측이 아니라 실험이 스윕할 하이퍼파라미터"*라고 명시한다. 기전이 다르므로 판정도 따로 난다.
+
+**두 파일 모두의 「무엇이 답인가」에 반드시 들어갈 것:**
+- 읽는 것은 **arm 사이의 순위**이지 절대 정확도가 아니다 — 사후확률은 real train에 대한 in-sample 예측이고, 이 프록시는 두 번 다 낙관이었다(2.55pp, 3.55pp)
 - **돌리지 않을 조건**: `run_count`가 test의 1,046과 자릿수가 다르면 비교 가능성이 없으므로 그대로 닫는다
 - 리더보드에 올리지 않는다 — 제출 슬롯 0
 
+H13에만 추가로: 두 arm은 **같은 사후확률 덤프**를 읽으므로 비교가 성립한다. 다른 덤프를 읽었다면 그 사실을 「미검증」에 적고 판정하지 않는다.
+
 ```bash
-git add docs/experiment/H12-level-smoothing-window.md
-git commit -m "Pre-register H12 before dispatching its lanes"
+git add docs/experiment/H12-level-smoothing-window.md docs/experiment/H13-viterbi-vs-mode-filter.md
+git commit -m "Pre-register H12 and H13 before dispatching their lanes"
 ```
 
 - [ ] **Step 3: 레인 둘을 띄운다**
 
 각 spec은 승인 범위로 시작하고, **자기 arm과 자기가 쓸 파일만** 말한다. 원장을 복사해 넣지 않는다 — 분기점이 이미 스냅샷이다.
 
-레인 A(`--arm smooth --values 3,5,7,9,11`)와 레인 B(`--arm hmm --values 0.95,0.974,0.99`)를 각각:
+레인 A(H12, `--arm smooth --values 3,5,7,9,11`)와 레인 B(H13, `--arm hmm --values 0.95,0.974,0.99`)를
+각각 — **각 레인은 자기 가설 파일 하나만 건드린다**:
 
 ```bash
 orca orchestration worker-start --spec "<레인별 spec>" --agent claude \
@@ -1153,14 +1170,16 @@ orca orchestration worker-start --spec "<레인별 spec>" --agent claude \
   --name lane-h12-smooth --display-name feature/h12-smooth --setup run --json
 ```
 
-레인 spec 전문 (레인 A 기준 — B는 `--arm hmm --values 0.95,0.974,0.99`와 자기 브랜치명으로 바꾼다):
+레인 spec 전문 (레인 A 기준 — B는 arm·가설 파일·브랜치명을 H13 쪽으로 바꾼다):
 
 ```
 ## 사용자 승인이 났다
 승인됨: 이 워크트리 안에서 읽기·쓰기, `uv run python scripts/sweep_level_smoothing.py` 실행,
-        docs/experiment/H12-level-smoothing-window.md의 「결과」·「관찰」·「판정 · 미검증」
-        세 절에 쓰기, 이 워크트리 브랜치에 commit, `git push` (feature/h12-smooth).
-승인되지 않음: 다른 절(질문·조건·무엇이 답인가·이관 범위) 수정, 다른 파일 수정,
+        **자기 가설 파일 하나**(레인 A는 docs/experiment/H12-level-smoothing-window.md,
+        레인 B는 docs/experiment/H13-viterbi-vs-mode-filter.md)의 「결과」·「관찰」·
+        「판정 · 미검증」 세 절에 쓰기, 이 워크트리 브랜치에 commit, `git push`.
+승인되지 않음: 다른 절(질문·조건·무엇이 답인가·이관 범위) 수정, **다른 레인의 가설 파일**을
+        포함한 다른 파일 수정,
         scripts/exp.py 호출, train_*/infer_decomposed/dacon_submit 실행, runtime/ 쓰기,
         리더보드 제출, main 또는 다른 레인 브랜치에 대한 어떤 작업.
 새 질문은 preamble의 `ask`로 코디네이터에게 보낸다 — 자기 창에서 묻지 않는다.
@@ -1174,7 +1193,7 @@ orca orchestration worker-start --spec "<레인별 spec>" --agent claude \
 (경로가 맞지 않으면 추측하지 말고 `ask`로 묻는다. np.load가 시끄럽게 실패하므로 조용한
 오염 경로는 없다.)
 
-결과 JSON을 docs/experiment/H12-level-smoothing-window.md의 「결과」 표에 옮기고,
+결과 JSON을 자기 가설 파일(레인 A: H12-level-smoothing-window.md)의 「결과」 표에 옮기고,
 「관찰」과 「판정 · 미검증」을 쓴다. report_id는 EXP-<코디네이터가 발급한 번호>다 —
 이미 발급돼 있으니 scripts/exp.py를 부르지 않는다.
 
@@ -1218,7 +1237,7 @@ PY
 ### Task 9: 머지와 판정
 
 **Files:**
-- Modify: `docs/experiment/H12-level-smoothing-window.md` (이관 범위)
+- Modify: `docs/experiment/H12-level-smoothing-window.md` · `docs/experiment/H13-viterbi-vs-mode-filter.md` (각각 이관 범위)
 - Modify: `.agents/rules/orca-parallel.md` (병렬 실측)
 
 **Interfaces:**
@@ -1230,7 +1249,7 @@ PY
 ```bash
 git fetch origin
 git merge --no-ff feature/h12-smooth
-git merge --no-ff feature/h12-hmm
+git merge --no-ff feature/h13-hmm
 ```
 
 **충돌이 나면 그것이 발견이다** — 단일 작성자 분할이 성립하지 않았다는 뜻이므로, 해결하지 말고 어느 절을 누가 썼는지 기록한다. 충돌 0이 이 시험의 통과 조건이다.
@@ -1255,8 +1274,8 @@ orca worktree rm --worktree "path:<각 워크트리>" --force
 ```
 
 ```bash
-git add docs/experiment/H12-level-smoothing-window.md .agents/rules/orca-parallel.md
-git commit -m "Record the H12 verdict and the measured parallel lane run"
+git add docs/experiment/H12-level-smoothing-window.md docs/experiment/H13-viterbi-vs-mode-filter.md \n        .agents/rules/orca-parallel.md
+git commit -m "Record the H12 and H13 verdicts and the measured parallel lane run"
 ```
 
 ---
