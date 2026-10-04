@@ -123,8 +123,9 @@ def new_report(*, title, x_domain, x_desc, y_source, y_desc, model, method, purp
         record = {
             "report_id": f"EXP-{len(records) + 1:03d}",
             "created": datetime.now().isoformat(timespec="seconds"),
-            # 가설 ↔ 실행 조인 키. 다대다다 — 한 실행이 여러 가설에 답할 수 있고, 한 가설이
-            # 여러 실행을 갖는다. 손으로 유지하는 표를 대신하므로 선택이 아니라 필수다.
+            # 가설 ↔ 실행 조인 키. 다대일이다 — 한 가설이 여러 실행을 가질 수 있으나(3-arm
+            # sweep도 한 실행), 한 실행은 가설 하나만 가리킨다. 손으로 유지하는 표를 대신하므로
+            # 선택이 아니라 필수다.
             "hypothesis": hypothesis,
             "title": _require("title", title),
             "x": {"domain": x_domain, "desc": _require("x_desc", x_desc)},

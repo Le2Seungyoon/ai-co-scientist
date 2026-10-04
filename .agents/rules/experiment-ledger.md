@@ -10,11 +10,16 @@ side and the join between them.
 not a date** — a hypothesis is revisited, and a date would lie about when it was last true
 (specs keep dates: they are decisions made at one moment and never edited again).
 
-| Section | Written by | When |
+| Section / front-matter field | Written by | When |
 |---|---|---|
-| 질문 · 조건 · 무엇이 답인가 | orchestrator | before dispatch, on `main` |
-| 결과 · 관찰 · 판정 · 미검증 | the lane | during/after its run |
-| 이관 범위 | orchestrator | after merge |
+| 질문 · 조건 · 무엇이 답인가, `status: 계획` | orchestrator | before dispatch, on `main` |
+| 결과 · 관찰 · 판정 · 미검증, `status: 진행중 → 측정됨 → 판정`, `verdict` | the lane | during/after its run |
+| 이관 범위, `registry` (append the issued id) | orchestrator | after merge |
+
+**`registry: []` is appended, not drafted.** `EXP-0NN` ids are issued by `new_report` against
+`runtime/registry.jsonl` — the same single-writer reasoning that keeps the registry the original
+(above) puts landing the confirmed id in front-matter on the orchestrator, after merge. The
+lane's own 결과 table may already name the id it expects; this field is the reconciled copy.
 
 **A lane touches only its own hypothesis file.** Not another lane's, not the backlog. Two lanes
 therefore never edit the same path, so git merges them without a conflict — the property depends
@@ -43,9 +48,10 @@ was rejected. A dispatched hypothesis moves to its own file and is closed there.
 
 ## The join key
 
-Every pre-report carries `hypothesis=<id>`, so the link is queryable both ways: which runs tested
-H12, and why a run exists at all. The relation is many-to-many — one execution can answer several
-hypotheses (EXP-010 recorded a 3-arm sweep as one entry). `registry.new_report` refuses without
+Every pre-report carries `hypothesis=<id>` — one id, a plain string — so the link is queryable
+both ways: which runs tested H12, and why a run exists at all. The relation is many-to-one: a
+hypothesis accumulates many reports (EXP-010 recorded a 3-arm sweep as one report against one
+hypothesis), but one report names exactly one hypothesis. `registry.new_report` refuses without
 it, and `tests/test_registry.py` pins that — an untagged record is invisible to the join and
 nothing else notices, which is why it is a refusal and not a convention.
 
