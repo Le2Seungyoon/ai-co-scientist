@@ -1,145 +1,68 @@
 # Orca — running experiments across parallel sessions
 
-> **Orca-only**, and measured on **Orca 1.4.197 / Windows, 2026-09-08** against a second live Claude
-> Code session in this repo. Unmeasured claims say so — do not promote one without re-running it.
-> Sub-agents stay the default (no Orca in the path); reach for a second *session* only when the work
-> must outlive a turn, hold its own approval gate, or hold the GPU while this session keeps planning.
+> **Orca-only**, CLI surface read on **1.4.206 / Windows, 2026-09-21**. Behaviour claims carry
+> their own measurement date; anything unmeasured says so. Sub-agents stay the default — reach
+> for a second *session* only when the work must outlive a turn, hold its own approval gate, or
+> hold the GPU while this session keeps planning.
 
-## The only lifecycle that works
-
-```bash
-orca orchestration run-create --objective "<what this batch of experiments is for>" --json
-orca orchestration task-create --run <run_id> --task-title EXP-0NN-arm --spec "<spec>" --json
-orca orchestration dispatch --task <task_id> --to <worker handle> --run <run_id> --inject --json
-# worker runs; then, in the coordinator:
-orca orchestration check --terminal <coordinator handle> --json     # worker_done lands here
-```
-
-Measured: dispatch→`worker_done` round trip **~40 s**, `injected: true`, and `worker_done`
-**auto-completes both the dispatch and the task** — no `task-update` needed.
-
-**Do not address a worker by its `term_…` handle.** That mailbox still accepts `send` and shows the
-message in `inbox`, but `reply` is refused (`Legacy orchestration messages are inspect-only; no
-reply was applied`) and the send itself warns `legacy_terminal_recipient` — not durable past the
-terminal's life. A round trip cannot be built on it. Address `run:<id>` / `dispatch:<id>`.
-
-## The empty-inbox trap — the one that will cost you a run
-
-`worker_done` is addressed to `run:<run_id>`, **not** to the coordinator's terminal. So:
-
-```
-orca orchestration inbox --terminal <coordinator handle>   → count: 0    # mail exists, unseen
-orca orchestration inbox --full        /  orchestration check           → count: 2    # here it is
-```
-
-Both were true at the same instant in the probe. `inbox` has **no `--run` flag**; the Run is taken
-from this terminal's binding, and `--terminal` *narrows* it to a mailbox the lifecycle never uses.
-
-**Rule: poll with `check` or `inbox --full`. Never conclude "the worker is silent" from a
-`--terminal` query.** Cross-check with `dispatch-show --task <id>` — a `status: completed` there
-with an empty inbox means you queried the wrong scope, not that the worker died.
-
-## Delivery is pull-only; `--inject` is the only push
-
-A plain `orchestration send` to a running session is **stored and never announced**: measured 30
-polls over ~20 s with `read=0`, `delivered_at=null`, and the recipient's TUI cursor frozen. The
-other session only acted once text was typed into it.
-
-`dispatch --inject` is the exception — it delivers the preamble as input with **zero keystrokes**
-(the worker reported so itself), and it reaches a Codex pane as readily as a Claude one. So a worker
-never notices mid-task mail on its own: anything it must react to belongs in the **spec**, or
-arrives as a fresh `--inject`. Silence stays unreadable — no `worker_done` means unknown, never
-"fine". Preview what will be injected with `dispatch --dry-run --return-preamble`.
-
-## Two-way mid-task: `ask` ↔ `reply`
-
-Measured end to end. The worker blocks on `ask`; the question reaches the coordinator's Run mailbox
-in ~3 s; `reply --id <msg_id>` unblocks it and the body arrives verbatim.
+## The lifecycle
 
 ```bash
-# worker (the preamble hands it the exact command — see below)
-orca orchestration ask --from <worker handle> --question "<q>" --timeout-ms 300000
-# coordinator
-orca orchestration reply --id <question msg_id> --from <coordinator handle> --body "<answer>"
+orca orchestration run-create --objective "<what this batch is for>" --json   # binds THIS terminal
+orca orchestration worker-start --spec "<task spec>" --agent claude \
+    --worktree new-top-level --repo path:<repo> --base-branch <ref> \
+    --name lane-<x> --display-name <branch> --setup run --json
+orca orchestration check --wait --timeout-ms 45000 --json                     # collect
+orca orchestration worker-release --dispatch <dispatch_id> --json             # after it settles
 ```
 
-The reply is sent **from `run:<id>` to `dispatch:<id>`**, threaded on the question's id — another
-reason coordinator polling must be `check` / `inbox --full`.
+`worker-start` creates the worktree, launches the agent and injects the spec in one action —
+there is no separate "open a terminal, then dispatch into it" step. `coordinator-start` is
+retired; the worker contract now arrives as an Orca skill.
 
-- **A timed-out `ask` leaves the question pending**; the worker resumes with
-  `ask --resume <message_id>`, never a fresh question. An unanswered gate still means the worker
-  finishes wrong — treat gate latency as urgent.
-- **Do not paste literal CLI commands into a spec.** The probe's spec spelled out the `ask` line and
-  the worker's first attempt **failed for a missing `--dispatch-capability`** — a token the preamble
-  supplies and a spec cannot know. It recovered by using the preamble's version. Specs describe
-  *what to ask*, never *how to call the CLI*.
+**The coordinator is a terminal, not a person.** `run-create` binds the terminal that runs it,
+so every later `check` reads that Run. `$ORCA_TERMINAL_HANDLE` names it; after a reconnect,
+resolve it from `orca terminal list` instead of trusting the variable.
 
-## What `--inject` already tells the worker
+## Reading the waiter
 
-The preamble is generated, so **do not restate it in the spec**: `worker_done` exactly once with an
-`--outcome`; a heartbeat every 5 minutes; `ask` for questions; stop at idle once done. It also
-carries the ban that matters most here — **a worker must never call `AskUserQuestion`**, because
-that opens a local TUI prompt the coordinator cannot see or answer, and the session hangs forever.
+`check --wait` emits JSON keepalive lines on **stderr** every 15 s (`_keepalive`), which is how a
+caller tells a live wait from a hung one. Filter them out when merging streams. `_heartbeat` is a
+deprecated alias.
 
-Put in the spec only the task, the domain limits, and the file domain it owns.
+**Read `ok` before the payload.** A Run holds one active waiter; a second `check --wait` is
+refused, and a parser that reaches straight for the count renders that refusal as "nothing has
+arrived yet".
 
-## Mutations are idempotent — do not hand-roll create-then-verify
+## A silent wait is the coordinator's failure
 
-Every mutating call returns `mutation: {requestId, replayed}` and accepts `--retry-request <id>`,
-"only for exact recovery after an unknown mutation result". Re-issue with the returned id instead of
-the old read-back-and-match-by-name dance. Blind re-running without `--retry-request` still
-double-creates.
+While the coordinator blocks, the person who asked sees nothing and cannot tell a running lane
+from a stuck one. **Bound every wait and report at each expiry** — elapsed time, the lane's
+liveness verdict, and, when it needs something, the one action that unblocks it. Never re-enter
+a wait silently. An unverifiable verdict means *unknown*, never *running*.
 
-## Reading a worker's screen
+**A permission prompt is the one thing waiting cannot resolve.** While one is open the session is
+not merely unwatched but **blocked**: messages queue until its next tool round, which does not
+come until a person answers. Surface it the moment it appears.
 
-Claude Code runs in the alternate screen buffer, so the two reads are **the opposite** of what a
-plain terminal would give:
+## What goes in a spec
 
-| Call | `source` | Measured |
-|---|---|---|
-| `terminal read --terminal <h>` | `screen` | 40 lines — the live TUI, including the agent's answer |
-| `terminal read … --cursor 0 --limit 400` | `stream` | 3 lines — pre-TUI shell output only |
+**Open with the approval scope.** State that the user approved this lane, list what is approved
+and what is not, and tell the lane to route new questions through the preamble's `ask`. Measured
+in the sibling repo (custflow, 2026-09-21, same worker-start and one variable): without the scope
+both lanes **asked at their own window and sat idle**; with it both started within a minute.
 
-For a Claude Code worker the **bare read is the useful one**; the cursor/scrollback path is empty by
-construction. Any prompt- or state-detector built on the scrollback finds nothing.
+**Approval relayed after the fact does not work, and the lane is right to refuse it** — it is a
+quote the lane cannot verify, and a coordinator rule that makes its own relays authoritative is
+an agent granting itself authority. The scope arrives as part of the task, never as a correction
+to it.
 
-Non-ASCII is mangled to `?��` in both reads. **Write anything a detector must match in ASCII** —
-Korean is fine for human-facing prose in the spec, never for a match target.
-
-Before typing into a session (`terminal send`), confirm it is idle: `status: running`, no
-`Do you want to` on screen, and `latestCursor` unchanged across two reads. A keystroke sent to a
-working agent interrupts its command.
-
-## When the agent-hook path is blocked (`agent_prompt_blocked`)
-
-Submitting a prompt to an agent pane goes through Orca's agent hook; raw pty writes do not. Measured
-on a Codex pane whose hook was failing (`Hook failed — hook exited with code 1` on every submit):
-
-| Call | Result |
-|---|---|
-| `dispatch --inject` | `agent_prompt_blocked` |
-| `terminal send --text <t> --enter` | `agent_prompt_blocked` |
-| `terminal send --text <t>` then `terminal send --enter` (two calls) | both accepted; the prompt ran |
-
-So **`agent_prompt_blocked` does not mean "a modal is on screen"** — it persisted across a full agent
-restart with an idle composer. It is hook state. The two-call split is the fallback when a worker is
-otherwise unreachable; it lost the leading token of the text once, so put nothing load-bearing first.
-
-`agentIdentity` in `terminal list` lags the pane in both directions (showed `claude` for a running
-Codex, and again after a Codex restart). Do not branch on it.
+Put in the spec only the task, the domain limits, the file domain it owns, and the hypothesis
+file it writes (`experiment-ledger.md`). **Do not copy the ledger in** — the branch point is
+already the snapshot.
 
 ## Not measured — treat as open
 
-Everything above was measured in one sitting on a healthy app; a fault that needs hours or a
-reconnect to appear could not be. Open: heartbeat visibility, `terminal create` for a *new*
-session, anything across worktrees or hosts, and a **Codex round trip** (injection reached it; its
-account was rate-limited, so no reply was ever observed). Ordering between dispatched tasks would
-be `task-create --deps <json_array>` — until that is measured, serialize by not dispatching the
-second task.
-
-Two symptoms whose causes were dismissed on one healthy app, so treat them as dormant, not gone:
-
-- **Calls returning `EPIPE`, or exiting 0 having printed only a handshake line** — a latching
-  relay. **Validate the JSON body, never the exit code**, and reconnect the workspace between runs.
-- **`$ORCA_TERMINAL_HANDLE` no longer matching after a reconnect** — resolve the handle from
-  `terminal list` instead; one call.
+Everything above is the CLI surface plus the sibling repo's measurements. **This repo has not yet
+measured a round trip on 1.4.206.** Until it has, no claim here about delivery, injection or
+worker lifetime is this repo's own.

@@ -97,7 +97,7 @@ Harness-dependent text goes in the rule it modifies as a labelled paragraph, nev
 | `.agents/rules/enforcement.md` | turning a rule into a hook / test / deny — and before promoting any check |
 | `.agents/rules/harness.md` | **before changing anything that configures an agent** — instructions, rules, hooks, registrations |
 | `.agents/rules/self-review.md` | at the end of every task, before declaring done |
-| `.agents/rules/orca-parallel.md` | dispatching work to a **second Orca session** (not sub-agents) |
+| `.agents/rules/orca-parallel.md` | starting a **second Orca worker session** (not sub-agents) |
 | `.agents/rules/experiment-ledger.md` | when writing `docs/experiment/**`, dispatching an experiment lane, or asking where a result or judgment belongs — one hypothesis one file, the single-writer sections, the join key |
 
 ## Sub-agent roster
