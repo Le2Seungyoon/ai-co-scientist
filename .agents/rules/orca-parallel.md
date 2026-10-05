@@ -72,9 +72,11 @@ lifecycle that has since changed. Treat as likely-true, not confirmed.
   `inbox --full`; never conclude silence from a `--terminal`-scoped query.
 - **Delivery is pull-only.** A plain `send` to a running session sat unread
   (`delivered_at: null`) for 20 s; only injection reached the pane with zero keystrokes typed.
-- **Screen vs stream.** A Claude Code pane's bare terminal read returned only pre-TUI shell
-  output (3 lines); the screen-rendered read returned the live TUI (40 lines, including the
-  answer). Bears directly on `worker-read --source terminal` today.
+- **Screen vs stream.** For a Claude Code pane, the **bare** `terminal read` had `source: screen`
+  and returned 40 lines — the live TUI, including the agent's answer; adding `--cursor`/`--limit`
+  switched to `source: stream` and returned 3 lines of pre-TUI shell output only, empty by
+  construction. The bare read is the useful one. `worker-read --source terminal` exists on
+  1.4.206; whether this same split holds under it is unmeasured.
 - **Non-ASCII is mangled** (`?��`) in terminal reads — write a detector's match target in ASCII;
   this matters more here than in the sibling repo, since this repo's specs are Korean.
 - **`agent_prompt_blocked` is hook state, not a modal.** It persisted across a full agent restart
