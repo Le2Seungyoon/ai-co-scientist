@@ -37,6 +37,20 @@ def test_level_cnn_gets_no_adabn():
 
 
 
+def test_predict_levels_cnn_takes_a_source_array():
+    # 레벨 사후확률을 real에서도 뽑을 수 있어야 CPU 레인이 스윕할 입력이 생긴다
+    source = _script("infer_decomposed.py")
+    fn = source.split("def predict_levels_cnn(")[1].split("\ndef ")[0]
+    assert "npy" in fn, "소스 배열을 고를 수 없다 — test_sem.npy에 고정돼 있다"
+
+
+def test_dump_level_proba_declares_its_domain():
+    # real train SEM → real group label. 리더보드 타깃(real_depth_gt)이 아니다
+    source = _script("dump_level_proba.py")
+    assert '"x_domain": "real"' in source
+    assert '"y_source": "real_group_label"' in source
+
+
 def test_train_level_does_not_normalize_per_image():
     # 신호는 밝기가 아니라 절대 intensity 분포 형태다(그룹간 간격 1.7 < 그룹내 std 1.9).
     # 이미지별 표준화나 InstanceNorm은 그 신호를 파괴한다 — 들어오면 성능이 무너진다
