@@ -30,9 +30,9 @@ resolve it from `orca terminal list` instead of trusting the variable.
 caller tells a live wait from a hung one. Filter them out when merging streams. `_heartbeat` is a
 deprecated alias.
 
-**Read `ok` before the payload.** A Run holds one active waiter; a second `check --wait` is
-refused, and a parser that reaches straight for the count renders that refusal as "nothing has
-arrived yet".
+**Read `ok` before the payload.** Measured in the sibling repo (custflow-pipeline, 2026-09-16): a
+Run holds one active waiter, and a second `check --wait` is refused — a parser that reaches
+straight for the count renders that refusal as "nothing has arrived yet".
 
 ## A silent wait is the coordinator's failure
 
@@ -41,9 +41,10 @@ from a stuck one. **Bound every wait and report at each expiry** — elapsed tim
 liveness verdict, and, when it needs something, the one action that unblocks it. Never re-enter
 a wait silently. An unverifiable verdict means *unknown*, never *running*.
 
-**A permission prompt is the one thing waiting cannot resolve.** While one is open the session is
-not merely unwatched but **blocked**: messages queue until its next tool round, which does not
-come until a person answers. Surface it the moment it appears.
+**A permission prompt is the one thing waiting cannot resolve.** Measured in the sibling repo
+(custflow-pipeline, 2026-09-16): while one is open the session is not merely unwatched but
+**blocked** — messages queue until its next tool round, which does not come until a person
+answers. Surface it the moment it appears.
 
 ## What goes in a spec
 
@@ -60,6 +61,33 @@ to it.
 Put in the spec only the task, the domain limits, the file domain it owns, and the hypothesis
 file it writes (`experiment-ledger.md`). **Do not copy the ledger in** — the branch point is
 already the snapshot.
+
+## Measured on 1.4.197 — not re-verified on 1.4.206
+
+These cost a probe to learn and nothing on 1.4.206 contradicts them; they just sit below a
+lifecycle that has since changed. Treat as likely-true, not confirmed.
+
+- **The empty-inbox trap.** `inbox --terminal <handle>` read `count: 0` while `worker_done` mail
+  already existed — it's addressed to `run:<id>`, not the terminal. Poll with `check` or
+  `inbox --full`; never conclude silence from a `--terminal`-scoped query.
+- **Delivery is pull-only.** A plain `send` to a running session sat unread
+  (`delivered_at: null`) for 20 s; only injection reached the pane with zero keystrokes typed.
+- **Screen vs stream.** A Claude Code pane's bare terminal read returned only pre-TUI shell
+  output (3 lines); the screen-rendered read returned the live TUI (40 lines, including the
+  answer). Bears directly on `worker-read --source terminal` today.
+- **Non-ASCII is mangled** (`?��`) in terminal reads — write a detector's match target in ASCII;
+  this matters more here than in the sibling repo, since this repo's specs are Korean.
+- **`agent_prompt_blocked` is hook state, not a modal.** It persisted across a full agent restart
+  with an idle composer, on a pane whose agent hook was failing.
+- **`agentIdentity` in `terminal list` lags the pane** in both directions — do not branch on it.
+- **Two dormant symptoms, causes unexplained:** calls returning `EPIPE`, or exiting 0 after only
+  a handshake line (validate the JSON body, never the exit code); a terminal-handle variable no
+  longer matching after a reconnect (resolve it via `terminal list` instead).
+- **`ask` ↔ `reply`.** A timed-out `ask` leaves the question pending — resume with
+  `ask --resume <message_id>`, never a fresh question. Do not paste literal CLI commands into a
+  spec; the preamble supplies tokens a spec cannot know.
+- **Mutations are idempotent.** A mutating call returns `mutation: {requestId, replayed}`;
+  re-issue with `--retry-request <id>` instead of hand-rolled create-then-verify.
 
 ## Not measured — treat as open
 
