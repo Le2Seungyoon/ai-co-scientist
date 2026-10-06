@@ -91,8 +91,38 @@ lifecycle that has since changed. Treat as likely-true, not confirmed.
 - **Mutations are idempotent.** A mutating call returns `mutation: {requestId, replayed}`;
   re-issue with `--retry-request <id>` instead of hand-rolled create-then-verify.
 
+## A worker cannot start from the orchestrator workspace — measured 2026-09-21, 1.4.206
+
+**Orca's repo registry is keyed to the workspace root, and this workspace's root is the
+orchestrator container, which is not a git repository.** `orca worktree list` reports exactly one
+entry — the container — with `branch: ""` and `head: ""`. The child checkout `ai-co-scientist`,
+which *is* the git repository, is not registered, so nothing can name it:
+
+| Command | Selector | Result |
+|---|---|---|
+| `orchestration worker-start` | `--repo path:<abs forward-slash>` | `repo_not_found` |
+| `orchestration worker-start` | `--repo path:<abs backslash>` | `repo_not_found` |
+| `orchestration worker-start` | `--repo name:ai-co-scientist` | `repo_not_found` |
+| `worktree create` | `--repo path:<abs forward-slash>` | `repo_not_found` |
+
+So the failure is not a selector-format problem, and it is not about the lifecycle above: the
+dispatch never reaches it. `run-create` binds fine — a Run and a coordinator handle exist — but no
+worker can be placed.
+
+**What this costs the container layout.** The orchestrator holds the main checkout and its
+worktrees side by side so one session can drive both. Orca's model wants the **workspace to be the
+repo**: it derives worktree paths as `<base>/<repo dir basename>/<name>` from the repo it knows.
+With a non-git container as the root there is no such repo, and `--worktree new-top-level` has
+nothing to branch from. The sibling repo does not hit this because its workspace is opened on the
+repository itself.
+
+**The fix is a workspace action, not a code change**: open an Orca workspace on
+`ai-co-scientist` and run the coordinator there. Until that is done and re-measured, treat every
+lifecycle line above as unexercised in this repo.
+
 ## Not measured — treat as open
 
-Everything above is the CLI surface plus the sibling repo's measurements. **This repo has not yet
-measured a round trip on 1.4.206.** Until it has, no claim here about delivery, injection or
-worker lifetime is this repo's own.
+Everything above the section before this one is the CLI surface plus the sibling repo's
+measurements. **This repo has still not measured a round trip on 1.4.206** — the probe stopped at
+worker placement, so delivery, injection, `worker_done` auto-completion and worker lifetime remain
+this repo's open questions.
