@@ -22,8 +22,11 @@ Sub-agents call the `scripts/` CLI directly — no servers, no protocols.
 - **Tests are offline** — `uv run pytest -q` passes in full with no API keys.
 - **Logic in `src/`, `scripts/` thin** — the migration is unfinished, so **write new code in
   `src/` and do not grow logic in a script**. `.agents/rules/architecture.md`.
-- **Only `executor` is exclusive** — one at a time (GPU + submissions); the other five run in
-  parallel. `.agents/rules/architecture.md` → Parallel execution contract.
+- **The orchestrator runs no sub-agent** — it dispatches lanes, approves their plans, watches
+  them and merges them. Each lane's main agent runs its own sub-agents.
+  `.agents/rules/architecture.md` → Parallel execution contract.
+- **Exclusive per resource** — executors in several lanes may be live; the GPU is serialized by
+  the `gpu-0` lock, and DACON submission runs only in the main checkout after the user approves.
 - **The harness has one copy of everything but its registration** — rules, hooks and lane sources
   under `.agents/` and `.agent-hooks/`; the `.claude/` and `.codex/` copies are **generated, never
   hand-edited**. `uv run pytest -q` gates that, and hooks only see this session's edits.
@@ -97,33 +100,35 @@ Harness-dependent text goes in the rule it modifies as a labelled paragraph, nev
 | `.agents/rules/enforcement.md` | turning a rule into a hook / test / deny — and before promoting any check |
 | `.agents/rules/harness.md` | **before changing anything that configures an agent** — instructions, rules, hooks, registrations |
 | `.agents/rules/self-review.md` | at the end of every task, before declaring done |
-| `.agents/rules/orca-parallel.md` | starting a **second Orca worker session** (not sub-agents) |
+| `.agents/rules/orca-parallel.md` | dispatching or driving a lane |
 | `.agents/rules/orca-measured.md` | when a dispatch misbehaves in a way the rules do not name, or before trusting an Orca claim against a new build — every entry carries the version it was taken on |
 | `.agents/rules/experiment-ledger.md` | when writing `docs/experiment/**`, dispatching an experiment lane, or asking where a result or judgment belongs — one hypothesis one file, the single-writer sections, the join key |
 
 ## Sub-agent roster
 
-| Agent | Use it for | Class |
+Every agent below is called **by a lane's main agent, inside that lane** — never by the
+orchestrator.
+
+| Agent | Phase | Use it for |
 |---|---|---|
-| `researcher` | hypotheses, pre-report drafts | parallel (read) |
-| `reviewer` | audits of designs and conclusions | parallel (read) |
-| `engineer` | pipeline code an approved pre-report needs | parallel (write) |
-| `harness-manager` | rules, hooks, gates, lane definitions | parallel (write) |
-| `analyst` | interpreting results, keeping docs current | parallel (write) |
-| `executor` | running one approved experiment and recording it | **exclusive** |
+| `researcher` | Before Execution | experiment design, pre-report draft |
+| `engineer` | Before Execution | the code change and its offline tests, plus the run recipe |
+| `reviewer` | Before + After | the optimism in `researcher`'s design and `analyst`'s conclusion |
+| `executor` | Execution | running the approved recipe, value-neutral |
+| `analyst` | After Execution | interpreting results, the lane's hypothesis file |
+| `harness-manager` | After Execution | turning the lane's lessons into rules, hooks, gates |
 
-**File domains are deliberately not listed here** — two lists of one boundary drift apart.
-`.agents/rules/architecture.md` → Parallel execution contract owns them, plus `README.md`'s
-ownership and what the worktree hook can actually enforce.
+**File domains are deliberately not listed here** — `.agents/rules/architecture.md` →
+Parallel execution contract owns them.
 
-The orchestrator (main session) owns the queue, the assignment, the ranking and the
-integration, and:
+The **orchestrator** creates lane branches and worktrees off `develop`, approves each lane's plan
+(which fixes the pre-registration), issues the `report_id` and the registry link, monitors, and
+merges finished lanes into `develop`. It:
 
-- **does not execute experiments** — that bypasses the exclusivity contract and the registry path;
-- **escalates irreversible actions to the human** — submission, `git push`/`checkout`/`branch`,
-  registry corrections;
-- **does not skip `reviewer`** — judging a pre-report sound is not the same as auditing it;
-- **does not invent conclusions** — only what `analyst` and `reviewer` support;
+- **runs no sub-agent and writes no experiment code** — a lane does;
+- **asks the user** before a DACON submission, any Lightning use, and any `develop` → `main`
+  merge or remote push — and decides everything else itself;
+- **does not accept a conclusion a lane's `reviewer` did not audit**;
 - **does not rank without stated criteria** — write the criteria and their application down
   (`docs/hypotheses.md` → 순위 기준).
 

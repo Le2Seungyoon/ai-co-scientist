@@ -6,6 +6,7 @@
 sim SEM→sim depth 지표를 real validation으로 착각해 여러 실험을 헛돌린 실패의 재발 방지선.
 
 저장: JSONL 1줄 = 실험 1건. 갱신은 load-modify-write (건수가 수백 규모라 단순함이 이득).
+레인 worktree는 runtime/registry.link로 메인 기록소를 공유한다 (write_link).
 """
 import json
 from contextlib import ExitStack, contextmanager
@@ -33,9 +34,60 @@ RESET_NOTICE = (
     "인용하지 않는다. 이 파일만이 신뢰 가능한 실험 기록이다.\n"
 )
 
+LINK_NAME = "registry.link"
+
+
+def _local_path() -> Path:
+    return project_root() / load_config()["paths"]["registry"]
+
 
 def _default_path() -> Path:
-    return project_root() / load_config()["paths"]["registry"]
+    """이 트리의 기록소. 없으면 `runtime/registry.link`가 가리키는 메인 기록소.
+
+    링크는 오케스트레이터가 레인 계획을 승인하며 쓴다(`write_link`). 락 경로가 기록소 경로에서
+    나오므로(`locked`) 링크된 레인은 메인과 같은 락을 공유한다 — report_id가 갈라지지 않는다.
+    깨진 링크는 조용히 새 기록소로 떨어지지 않고 거부한다: 그러면 EXP-001부터 다시 발급된다."""
+    local = _local_path()
+    if local.exists():
+        return local
+    link = local.with_name(LINK_NAME)
+    if not link.exists():
+        return local
+    try:
+        raw = link.read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):  # UnicodeDecodeError는 ValueError — 깨진 링크로 취급
+        raw = ""
+    target = Path(raw) if raw else None
+    # 훅(block_runtime_commands.linked_registry)과 같은 규칙: 절대경로 + registry.jsonl + 파일.
+    if target is None or not (
+            target.is_absolute() and target.name == local.name and target.is_file()):
+        raise FileNotFoundError(
+            f"{link}가 가리키는 기록소가 유효하지 않다: {raw or '<empty>'} — 절대경로의 "
+            f"{local.name} 파일이어야 한다. 메인 체크아웃에서 "
+            "`scripts/exp.py link <worktree>`로 다시 발급할 것")
+    return target
+
+
+def write_link(worktree, target=None) -> Path:
+    """승인된 레인 worktree에 메인 기록소 링크를 발급한다. 링크가 곧 실행 허가다.
+
+    대상은 **이 트리의 실제 로컬 기록소**만 된다 — 링크를 따라가지 않는다. 링크된 레인이
+    다른 레인에 링크를 퍼뜨리면 오케스트레이터 승인을 우회하게 된다."""
+    target = Path(target) if target is not None else _local_path()
+    if not target.is_file():
+        raise FileNotFoundError(
+            f"링크 대상 기록소가 없다: {target} — 기록소가 있는 메인 체크아웃에서 실행할 것")
+    if not Path(worktree).is_dir():
+        raise FileNotFoundError(
+            f"링크할 worktree 디렉터리가 없다: {worktree} — 레인 worktree를 먼저 만든 뒤 발급할 것")
+    local = Path(worktree) / load_config()["paths"]["registry"]
+    if local.exists():
+        raise FileExistsError(
+            f"이 worktree에는 이미 기록소가 있다: {local} — 링크하면 둘 중 하나가 가려진다")
+    link = local.with_name(LINK_NAME)
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.write_text(str(target.resolve()) + "\n", encoding="utf-8")
+    return link
 
 
 def _path(path=None) -> Path:
@@ -55,8 +107,9 @@ def locked(path=None):
     발급하고, 나중 write가 앞선 선보고를 통째로 덮어쓴다(실측 확인). `_write_all`이 파일 전체를
     다시 쓰는 load-modify-write이므로 락 없이는 append조차 안전하지 않다.
 
-    획득 루프는 `locks.file_lock`에 있다. **경로는 의도적으로 트리별이다** — 기록소는 워크트리가
-    복제하지 않는 자원이고, 기계 단위 자원은 `locks.resource_lock`이 맡는다.
+    획득 루프는 `locks.file_lock`에 있다. **락은 해석된 기록소 경로를 따른다**(`_path`) — 링크된
+    레인은 메인 기록소로 해석되므로 메인과 같은 락을 공유하고, report_id가 갈라지지 않는다.
+    기계 단위 자원(GPU)은 `locks.resource_lock`이 맡는다.
 
     `try`는 **획득 한 줄만** 감싼다. `yield`까지 감싸면 본문 안에서 난 `ResourceBusy`(중첩된
     `resource_lock` 등)가 이 락의 타임아웃으로 잘못 보고된다 — 엉뚱한 파일 이름을 댄 채로.

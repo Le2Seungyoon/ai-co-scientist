@@ -1,7 +1,6 @@
 # Architecture
 
-Human (project lead) → main Claude (PM) → sub-agent (execution) → `scripts/` CLI → data / GPU /
-submission. No servers, no protocols. The agents share exactly one piece of state: the experiment
+User → orchestrator → lane main agent → sub-agent → `scripts/` CLI → data / GPU / submission. No servers, no protocols. The agents share exactly one piece of state: the experiment
 registry.
 
 ## Layers & dependency direction
@@ -45,77 +44,74 @@ left behind).
   manifest and the registry checks them against the target (real→real). Do not cut this wiring —
   it is what stops a sim metric from being mistaken for real validation.
 
-## Parallel execution contract (sub-agents)
+## Parallel execution contract (lanes)
 
-| Class | Agents | Domain | Why it is safe |
-|---|---|---|---|
-| **Parallel (read)** | `researcher` · `reviewer` | — | read-only by contract; Bash is not withheld |
-| **Parallel (write)** | `engineer` · `harness-manager` · `analyst` | `src/scripts/tests` · `AGENTS.md` + `.agents/**` + `.agent-hooks/**` + both registrations · `docs/` | disjoint file domains by contract; the hook covers the worktree case only |
-| **Exclusive (one)** | `executor` | `runtime/` | one 8 GB GPU · DACON quota · checkpoint writes |
+**Hierarchical Parallel-Lane.** One hypothesis is one lane: one branch off `develop`, one
+worktree, one main agent. The orchestrator talks only to lane main agents; each main agent runs
+its own sub-agents in three phases.
 
-`README.md` is human-facing and owned by no agent — it is outside every domain above, not folded
-into `harness-manager`'s. An agent may still edit it on an explicit instruction; that is not the
-same as it being anyone's standing domain.
+| Phase | Sub-agents | Output |
+|---|---|---|
+| Before Execution | `researcher`, `engineer`; `reviewer` audits `researcher` | a committed plan: design, pre-report, code, recipe |
+| — approval — | orchestrator | plan merged into `develop`, `report_id` issued, `runtime/registry.link` written |
+| Execution | `executor` | results recorded through the link, a verified zip |
+| — submission — | orchestrator, after the user approves | zip submitted from main, `exp.py lb` recorded, scores replied to the lane |
+| After Execution | `analyst`, `harness-manager`; `reviewer` audits `analyst` | hypothesis file, rule changes, one `worker_done` |
 
-Five agents may run alongside one `executor`. With a single GPU there is no way to parallelize
-training, so the parallel gain is in analysis, criticism, proposals, and preparing the code for
-experiments still queued.
+**Approval is the pre-registration.** The plan is fixed when the orchestrator merges the lane's
+plan commit into `develop` and issues the `report_id` — before any run, so commit order proves
+it. `scripts/exp.py new` runs on the orchestrator's side, in the main checkout, with the lane's
+branch and plan commit as `--source-branch/--source-commit` — never the orchestrator's own HEAD.
+An id issued once the outcome is known would be registry data pretending to be pre-registration.
 
-`engineer` and `executor` hold the SAME tools. What separates them is
-`.agent-hooks/block_runtime_commands.py`, whose `REGISTRY_WRITERS` and `EXCLUSIVE` lists own
-the governed set — registry writers and GPU / submission entry points (including posterior
-dumping) — wherever `runtime/registry.jsonl` is absent
-(`probe_level.py` was released: read-only, no `runtime/` writes). That hook cannot see which
-sub-agent issued a command, so it only makes the boundary real in a worktree — **the engineer
-lane must run in a worktree**, or its contract is prose alone.
+**The link is the execution permit.** `uv run python scripts/exp.py link <worktree>` writes
+`runtime/registry.link` — the main registry's absolute path. `registry.py` follows it, so writes
+share the main registry's lock and ids never fork. `block_runtime_commands.py` unlocks
+experiment commands only in the main checkout (`.git` a directory, registry present) or behind a
+valid link, where `exp.py` is limited to `result|show|list|verdict`; a dangling link is denied
+with its own reason. **A lane never writes, edits or copies `runtime/registry.link`** — only
+`scripts/exp.py link`, run by the orchestrator from the main checkout, does. **Never create
+`runtime/registry.jsonl` in a worktree** — it would shadow the link; the hook denies every guarded
+command there. A lane never sets `ACS_RUNTIME_EXEMPT`; that hatch is the user's or the
+orchestrator's decision.
 
-The hook's companion test enumerates direct `resource_lock()` callers in `scripts/` and checks
-that they match `EXCLUSIVE`. The hook controls where commands run; `src/ai_co_scientist/locks.py`
-controls simultaneous ownership across checkouts through canonical `GPU_LOCK` and `DACON_LOCK`
-names in a shared temporary directory. CLI parsing and CPU validation precede acquisition;
-H6 structure-cache provenance and manifest hashes are verified before the GPU lock. DACON zip
-verification and `--verify-only` stay outside the lock; only the backend submit holds its slot.
+**File domains inside a lane.** `engineer`: `src/ scripts/ tests/`. `harness-manager`:
+`AGENTS.md`, `.agents/**`, `.agent-hooks/**`, both registrations. `analyst`: the lane's hypothesis
+file and `docs/hypotheses.md`. `executor`: `runtime/` (through the link, and its own
+outputs). `researcher`, `reviewer`: read-only by contract. Two lanes may touch the same shared
+file (`docs/hypotheses.md`, a rule); the orchestrator resolves that at the merge into `develop`.
 
-**CPU reassembly is a fourth class.** `scripts/assemble_submission.py` rebuilds a submission from
-a dumped ŝ and level posterior with numpy and stdlib only -- no torch, no cv2, so it runs in a
-worktree, whose `uv sync` brings the dev group alone. Level post-processing (`--level-smooth`,
-`--level-hmm`, `--tau`) moves no structure component, so N of these run in parallel off ONE GPU
-inference. They write into their own tree and never call `scripts/exp.py`: the coordinator issues
-the pre-report, dispatches the `report_id`, and records the result, so `report_id = len(records)`
-has no fork path across trees. A worker reports its own `git rev-parse HEAD` and branch, and the
-coordinator records THOSE -- never its own.
+**Resources are exclusive, lanes are not.** The GPU is serialized by `locks.resource_lock("gpu-0")`,
+whose lock directory is machine-wide, so executors in several lanes queue on one card. A script
+that cannot take the lock exits before doing work. Lightning is the second GPU and needs the
+user's approval. DACON submission is `MAIN_ONLY` and sits between Execution and After Execution:
+a lane builds the zip, runs `verify_submission()`, and sends the zip path to the orchestrator
+through the preamble's `ask`, then waits. The orchestrator asks the user, submits from the main
+checkout, records the leaderboard with `exp.py lb`, and replies with the public/private scores;
+only then does the lane's `analyst` decompose with the leaderboard. If the user declines or
+defers, the analyst reports on validation/holdout only and marks the leaderboard component
+"pending".
 
-**Never create `runtime/registry.jsonl` in a worktree.** That file's existence IS the runtime
-gate's sentinel; once it exists the gate is unlocked in that tree for good. This is why the
-escape hatch does not cover `scripts/exp.py` (`enforcement.md` -> This project's gates).
-
-**Workers build submissions; they never submit one.** The leaderboard is the only verdict and its
-slots are finite, so N parallel zips cannot all be spent. A worker runs `verify_submission()` in
-its own tree -- that one is not guarded, and it catches a broken zip before a slot pays for it --
-and reports its pre-selection numbers. Ranking for the level axis is real train + `site_split`
-holdout accuracy, which is real->real and is how `k=9` was chosen; it **ranks, it does not
-judge** (real has 2,836 runs against test's 1,046, so the optimum does not transfer). The
-coordinator submits the top one. One sweep is ONE pre-report: `exp.py result` merges into the
-existing `val` by default, so per-arm numbers stack without a new schema.
+**Execution environment.** A lane that executes needs `uv sync --group baseline` in its own
+worktree (never a shared `.venv`). Inputs (data, caches, prior checkpoints) come from the main
+checkout by the absolute paths the recipe names; outputs are named per `report_id` and written to
+the lane's own `runtime/`, kept until the lane is merged and the orchestrator copies what must
+survive — never overwrite shared paths in main. `docs/experiment-registry.md` is rendered (`scripts/exp.py
+render`) on `develop` by the orchestrator, never in a lane — two lanes rendering it would
+conflict on a generated file.
 
 **Shared-state race conditions** — both were measured and fixed:
 
 - **Registry write race**: `report_id` comes from `len(records)` and `_write_all` rewrites the whole
   file, so without a lock two agents take the same id and the later write erases the earlier
   pre-report. Under 8 concurrent registrations, **only 2 of 8 survived**. → `registry.locked()` wraps
-  read+write together. New code that touches the registry must go through it.
-- **Shared submission work dir**: every run derived its output names from the cached test_names.json
-  list, so parallel inference overwrote each other's PNGs and a zip ended up mixing two models'
-  output — **while still scoring normally**, the worst kind of failure. → split into
+  read+write together, and the link makes every lane take the same lock.
+- **Shared submission work dir**: parallel inference overwrote each other's PNGs and a zip ended
+  up mixing two models' output — **while still scoring normally**. → split into
   `submission_work/<zip stem>/`.
 
-### Extending the contract to a second Orca session
+**CPU reassembly** (`scripts/assemble_submission.py`) stays unguarded: numpy and stdlib only, so
+N level-post-processing sweeps run in lanes off one GPU inference without a link.
 
-A dispatched Orca session is a third execution class, and the contract above governs it unchanged:
-its file domain must be disjoint from every other writer, `executor` stays exclusive (Orca will
-dispatch two GPU tasks at once — nothing in its lifecycle knows about the 8 GB card), and a
-dispatched session is no exemption from the pre-report. `registry.locked()` already covers
-concurrent pre-report writes. Mechanics: `orca-parallel.md`.
-
-Panes in one worktree **share its branch** — a second session cannot be on a different one. Split
-the worktree, not the pane, when experiments need separate branches.
+Panes in one worktree **share its branch** — split the worktree, not the pane, when experiments
+need separate branches. Mechanics of dispatching and watching a lane: `orca-parallel.md`.

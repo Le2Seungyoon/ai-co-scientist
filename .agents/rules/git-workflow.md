@@ -10,18 +10,33 @@ For any request that changes files, **before writing the first file**:
 
 1. `git branch --show-current`
 2. Ask the user: "You're on `<branch>`. Continue here? / new branch name? / update
-   `main` first?"
+   `develop` first?"
 
 Don't skip this even for "small" changes or doc edits.
+
+**Exception:** the orchestrator's lane lifecycle (creating a lane branch off `develop` and its
+worktree) and a lane working inside its own branch do not ask. Everyone else still asks.
 
 ## Branch Naming
 
 - New feature: `feature/<name>` · bug fix: `fix/<name>`
 
+## Branch model: `main` protected, `develop` for agents
+
+- `main` is protected: only the user approves a `develop` → `main` merge, and any remote push.
+- `develop` is the agents' integration branch. The orchestrator merges finished lanes into it
+  on its own; the main checkout sits on `develop`.
+- A lane branch (`feature/<name>`) is cut from `develop`, never from `main` or from whatever the
+  main checkout happens to hold.
+
 ## Protected Commands
 
-Do not run without explicit confirmation: `git checkout`/`switch`, `git pull`/`push`, branch
-creation (`checkout -b`, `branch`), `git reset`/`rebase`.
+Do not run without explicit confirmation: `git checkout`/`switch` in the main checkout,
+`git pull`/`push`, `git reset`/`rebase`, and any merge into `main`. **The orchestrator may, on
+its own:** create a lane branch off `develop` and its worktree, and merge a lane into `develop` —
+these are the lane lifecycle, and asking for each would put the user back in the loop the
+contract takes them out of. The merge into `develop` runs in the main checkout, which already sits
+on `develop`, so no checkout is needed.
 
 **Why prose and not `permissions.deny`**: this is a collaboration convention that protects a shared
 repo — it doesn't hold in every context. A solo admin who authorizes direct git on their own
@@ -48,10 +63,14 @@ write `docs/*` + `!docs/<file>`.
   a `Co-Authored-By` / `Generated with` trailer.
 - Default: **stage + diff only, the developer runs `git commit`**. Exception: in a solo session
   where the admin has explicitly authorized direct git, Claude may commit during that session.
+  That authorization stands for the lane lifecycle: the orchestrator and lanes commit within their
+  own branches. The no-attribution rule and its hook are unchanged.
 
-## Syncing main into a feature branch
+## Syncing a feature branch
 
-`git fetch origin main && git merge origin/main`. On conflict, check
+A lane branch syncs from `develop` (`git merge develop`), not from `origin/main`. The
+`git fetch origin main && git merge origin/main` step belongs to the user-approved
+`develop` → `main` PR: run it into `develop` before opening that PR. On conflict, check
 **which side deleted vs. modified** the file before resolving automatically:
 - Deleted on `main`, modified on the branch → the modification usually wins; decide
   intent, then `git add <path>` to keep it (or `git rm <path>` if the deletion should stand).
@@ -59,9 +78,11 @@ write `docs/*` + `!docs/<file>`.
 Don't resolve by reflex (`git checkout --ours/--theirs`) — a delete/modify conflict is almost
 always an intent decision, not a textual one.
 
-## Merge main before opening a PR (required)
+## Merge the base before opening a PR (required)
 
-1. Sync `main` into the feature branch (see "Syncing main" above) — resolve conflicts
+For a lane, the base is `develop`; for the `develop` → `main` PR it is `origin/main`.
+
+1. Sync the base into the branch (see "Syncing a feature branch" above) — resolve conflicts
    locally, not at PR time.
 2. Run the verification suite (`uv run pytest -q` + `uv run ruff check src tests scripts`) and
    confirm it passes on the merged tree.
@@ -93,4 +114,5 @@ silently applies to nobody and both land.
 **PR-gate hook**: since `gh` is absent, the gate lives on `git push` — it blocks push when
 `origin/main` isn't merged into the current branch (a `main` push passes since it's its own
 ancestor). The hook fetches first, is a no-op before git init, and can't gate a web-UI PR — so
-keep "merge `main` first" as a **convention** too.
+keep "merge `main` first" as a **convention** too. Remote pushes are user-approved only, so in
+practice the gate covers the `develop` → `main` publication.

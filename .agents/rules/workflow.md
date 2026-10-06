@@ -10,8 +10,8 @@
 
 ## Experiment Pre-Report (MANDATORY before any ML experiment)
 
-Before running ANY training / validation / submission experiment, **write a pre-report and get it
-confirmed first**. No experiment runs without these five stated explicitly:
+Before running ANY training / validation / submission experiment, **write a pre-report inside the lane and get it
+approved by the orchestrator first**. No experiment runs without these five stated explicitly:
 
 1. **X** — the exact input. State the domain: **sim** SEM or **real** SEM, which subset (case? fold?).
 2. **y** — the exact target/label. **sim depth GT? real `average_depth`? model-generated pseudo-label?**
@@ -33,7 +33,8 @@ For a **new feature** or a **3+ file patch**, before writing code use `AskUserQu
 whether to apply a superpowers workflow: `brainstorming` (lock intent/design) /
 `test-driven-development` (failing test first) / `verification-before-completion` (gather evidence
 before done). If selected, actually invoke it with the `Skill` tool. Skip for trivial edits /
-1–2 lines / doc-only changes.
+1–2 lines / doc-only changes. Inside a lane, route that question through the preamble's `ask` to
+the orchestrator instead — `AskUserQuestion` there would block the lane on a prompt nobody sees.
 
 ## Bug Fixing
 

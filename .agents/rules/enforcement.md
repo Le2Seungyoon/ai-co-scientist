@@ -134,8 +134,9 @@ says who *owns* a script, never who may run it.
 |---|---|---|---|
 | PR gate | PreToolUse hook (`settings.json`) | `origin/main` is merged into the branch before `git push` | none — deny |
 | Commit-attribution gate | PreToolUse hook | no `Co-Authored-By` / `Generated with` trailer in `git commit` | none — deny |
-| Registry-write gate | PreToolUse hook (`block_runtime_commands.py`) | `scripts/exp.py` runs only where `runtime/registry.jsonl` exists | none — deny (an exemption here would create the sentinel and unlock the tree) |
-| Exclusive-resource gate | PreToolUse hook (`block_runtime_commands.py`) | its `EXCLUSIVE` GPU / submission entry points run only where `runtime/registry.jsonl` exists; the companion test enumerates direct lock callers to catch coverage drift | `ACS_RUNTIME_EXEMPT="<reason>"` |
+| Registry-write gate | PreToolUse hook (`block_runtime_commands.py`) | `scripts/exp.py` runs only where the real registry or a valid `runtime/registry.link` exists; a dangling link is denied | none — deny (an exemption here would create the sentinel and unlock the tree) |
+| Exclusive-resource gate | PreToolUse hook (`block_runtime_commands.py`) | its `EXCLUSIVE` GPU entry points run only where the real registry or a valid link exists; the companion test enumerates direct lock callers against `EXCLUSIVE` + `MAIN_ONLY` | `ACS_RUNTIME_EXEMPT="<reason>"` |
+| Submission gate | PreToolUse hook (`block_runtime_commands.py`) | `MAIN_ONLY` (`dacon_submit.py`) runs only in the main checkout — a link does not unlock it | none — submission is the user's decision |
 | File-size budget | PostToolUse hook (`check_rules_size.py`) | instruction files stay under the ~150-line soft budget | advisory, never blocks |
 | Rule-link scan | test (`tests/test_harness_generated.py` → `check_rule_links.py`) | every path a rules file or lane definition names still exists | none |
 | Generated-lane freshness | test (`tests/test_harness_generated.py` → `build-agents.py --check`) | `.claude/**` and `.codex/**` lanes and skills match their `.agents/` sources | none — regenerate |
