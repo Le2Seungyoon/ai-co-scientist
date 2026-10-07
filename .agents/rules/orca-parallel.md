@@ -10,7 +10,7 @@
 ```bash
 orca orchestration run-create --objective "<what this batch is for>" --json   # binds THIS terminal
 orca orchestration worker-start --spec "<task spec>" --agent claude \
-    --worktree new-top-level --repo path:<repo> --base-branch <ref> \
+    --worktree new-top-level --repo id:<repoId> --base-branch <ref> \
     --name lane-<x> --display-name <branch> --setup run --json
 orca orchestration check --wait --timeout-ms 45000 --json                     # collect
 orca orchestration worker-release --dispatch <dispatch_id> --json             # after it settles
@@ -91,38 +91,56 @@ lifecycle that has since changed. Treat as likely-true, not confirmed.
 - **Mutations are idempotent.** A mutating call returns `mutation: {requestId, replayed}`;
   re-issue with `--retry-request <id>` instead of hand-rolled create-then-verify.
 
-## A worker cannot start from the orchestrator workspace — measured 2026-09-21, 1.4.206
+## Placing a worker — measured 2026-09-21, 1.4.206, Windows
 
-**Orca's repo registry is keyed to the workspace root, and this workspace's root is the
-orchestrator container, which is not a git repository.** `orca worktree list` reports exactly one
-entry — the container — with `branch: ""` and `head: ""`. The child checkout `ai-co-scientist`,
-which *is* the git repository, is not registered, so nothing can name it:
+**The repo must be registered with Orca, and the orchestrator container does not count.** Orca's
+repo registry is keyed to opened workspaces. With only the container open, `orca worktree list`
+showed one entry — the container — with `branch: ""`, because it is not a git repository. Every
+attempt to name the child failed with `repo_not_found`: `--repo path:<abs>` in forward- and
+backslash form, `--repo name:ai-co-scientist`, and `worktree create` with the same. Not a selector
+format problem; the dispatch never reaches the lifecycle. Opening a workspace on the child
+registered it, after which `--repo id:<repoId>` placed a worker first try. `run-create` binds and
+succeeds either way, so a bound Run proves nothing about placement.
 
-| Command | Selector | Result |
-|---|---|---|
-| `orchestration worker-start` | `--repo path:<abs forward-slash>` | `repo_not_found` |
-| `orchestration worker-start` | `--repo path:<abs backslash>` | `repo_not_found` |
-| `orchestration worker-start` | `--repo name:ai-co-scientist` | `repo_not_found` |
-| `worktree create` | `--repo path:<abs forward-slash>` | `repo_not_found` |
+**The worktree path is `<base>/<repo dir basename>/<name>`, and only `<base>` is configurable.**
+It is Orca's `workspaceDir` setting, which on this host is still the default
+`C:/Users/user/orca/workspaces` — so a lane lands in Orca's own tree, not beside the repository.
+The sibling repo points its `workspaceDir` at `.worktrees`, which is why its rule describes
+`.worktrees/custflow-pipeline/<name>`. Nothing in the repo controls this; it is an app setting.
+Read the path out of the `worker-start` result rather than assuming either layout.
 
-So the failure is not a selector-format problem, and it is not about the lifecycle above: the
-dispatch never reaches it. `run-create` binds fine — a Run and a coordinator handle exist — but no
-worker can be placed.
+**The git branch is `--name`; `--display-name` only labels the pane.** A worker started with
+`--name lane-probe --display-name feature/lane-probe` reported its branch as `lane-probe` — the
+prefix does not reach git on its own.
 
-**What this costs the container layout.** The orchestrator holds the main checkout and its
-worktrees side by side so one session can drive both. Orca's model wants the **workspace to be the
-repo**: it derives worktree paths as `<base>/<repo dir basename>/<name>` from the repo it knows.
-With a non-git container as the root there is no such repo, and `--worktree new-top-level` has
-nothing to branch from. The sibling repo does not hit this because its workspace is opened on the
-repository itself.
+**`--setup run` with no hook configured is not a failure**: it reports
+`hookFound: false, state: not_configured` and proceeds. The worktree then has no `.venv`, and
+`uv run` builds one on demand — measured 484 ms for 18 packages, CPython 3.12.8. A CPU-only lane
+needs no setup hook; a torch lane would.
 
-**The fix is a workspace action, not a code change**: open an Orca workspace on
-`ai-co-scientist` and run the coordinator there. Until that is done and re-measured, treat every
-lifecycle line above as unexercised in this repo.
+## The first dispatch into a new worktree is eaten by the trust prompt
 
-## Not measured — treat as open
+**Measured 2026-09-21.** A new worktree is a folder Claude Code has never seen, so it opens its
+workspace-trust prompt ("Is this a project you created or one you trust?"). Orca injects the spec
+while that prompt is up and **the injection is lost**: the start result carried
+`turnStart: "permission"`, and once a person answered, the agent sat at an **empty prompt** with
+no task. `--dangerously-skip-permissions` does **not** cover workspace trust. This is the same
+shape the sibling repo measured for Codex hook trust (custflow-pipeline, its runtime rules),
+now confirmed for
+Claude Code — and it is why **a lane keeps its worktree**: the same path is not asked again.
 
-Everything above the section before this one is the CLI surface plus the sibling repo's
-measurements. **This repo has still not measured a round trip on 1.4.206** — the probe stopped at
-worker placement, so delivery, injection, `worker_done` auto-completion and worker lifetime remain
-this repo's open questions.
+Recovering from it is a specific sequence, because the obvious commands refuse:
+
+| Call | Result |
+|---|---|
+| `worker-release --dispatch <id>` | `dispatch_inactive` — only a **settled** worker can be released |
+| `worker-stop --dispatch <id>` | `stop_unknown`, `processAction: none` — the terminal became `user_owned` once a person answered the prompt, and Orca will not close it |
+| `worker-start … --terminal <handle>` (dispatch still active) | fails at `agent_readiness`: *terminal already has an active dispatch* |
+| **`worker-abandon --dispatch <id>`** | `abandoned` — fences it, warns that live resources were retained |
+
+So: **abandon, then re-dispatch into the same terminal.** And when the coordinator is bound to a
+different worktree, `--terminal` alone is refused with `terminal_worktree_mismatch` — pass
+`--worktree` alongside it. The retry then reported `turnStart: observed` and the round trip
+completed: **`worker_done` in ~37 s**, carrying the worker's outcome verbatim, collected by a
+single `check --wait`.
+
