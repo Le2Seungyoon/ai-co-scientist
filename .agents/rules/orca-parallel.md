@@ -62,6 +62,36 @@ Put in the spec only the task, the domain limits, the file domain it owns, and t
 file it writes (`experiment-ledger.md`). **Do not copy the ledger in** — the branch point is
 already the snapshot.
 
+## A Codex lane: injection and work land, the return leg does not — measured 2026-09-21
+
+Dispatched into an **already-trusted** Codex pane on the main checkout (`--worktree path:<repo>`
+plus `--terminal <handle>`), the start reported `turnStart: observed` on the first try — no trust
+prompt, because that path was already trusted. The preamble and the spec both rendered in the
+pane, and Codex **did the work**: it ran the three approved read-only commands and composed a
+correct `worker_done` with the right `--dispatch-capability`, task id and dispatch id.
+
+**It could not send it.** The call failed in Codex's own shell with
+`'orca' ... is not recognized as a cmdlet, function, script file, or executable program`. The
+lane then spun — `Working (4m 40s)` — with no way to report, and the coordinator saw only
+`count: 0, timedOut: true` on every bounded `check --wait`. Silence at the coordinator meant a
+**finished** lane, not a stalled one.
+
+`orca.exe` does resolve in a plain PowerShell started from the coordinator's environment, so this
+is an environment gap in that pane rather than a missing install. The leading explanation is a
+pane whose environment predates the Orca upgrade performed during the session; **unverified** —
+another process's environment was not inspected. Either way the operational rule is the same:
+
+- **Before trusting a Codex lane to report, prove `orca` runs in its shell.** One read-only probe
+  whose entire task is `orca orchestration send --type heartbeat` is enough, and it costs seconds.
+- **A worker that never reports is indistinguishable from one still working.** Bound the wait,
+  and when it expires read the pane (`terminal read`) instead of waiting again — the failure was
+  visible there minutes before any timeout would have suggested it.
+
+Separately, that pane logged `Hook failed — hook exited with code 1` on every turn. The sibling
+repo measured the same class of failure for untrusted Codex project hooks. It did **not** stop the
+injection here: the spec arrived and was acted on. Hook state and dispatch delivery are
+independent.
+
 ## Measured on 1.4.197 — not re-verified on 1.4.206
 
 These cost a probe to learn and nothing on 1.4.206 contradicts them; they just sit below a
