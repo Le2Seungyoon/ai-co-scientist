@@ -76,10 +76,25 @@ lane then spun — `Working (4m 40s)` — with no way to report, and the coordin
 `count: 0, timedOut: true` on every bounded `check --wait`. Silence at the coordinator meant a
 **finished** lane, not a stalled one.
 
-`orca.exe` does resolve in a plain PowerShell started from the coordinator's environment, so this
-is an environment gap in that pane rather than a missing install. The leading explanation is a
-pane whose environment predates the Orca upgrade performed during the session; **unverified** —
-another process's environment was not inspected. Either way the operational rule is the same:
+**The cause was measured, and it is not PATH.** Three probes, read back off the pane:
+
+| Probe | Result |
+|---|---|
+| `$env:PATH -split ';'` filtered for orca | the bin directory **is** there, twice, behind a Codex `arg0` shim dir |
+| `where.exe orca` | `INFO: Could not find files for the given pattern(s).` |
+| `Test-Path '<abs>\orca.exe'` | **`Access is denied`** → `False` |
+| `& '<abs>\orca.exe' --version` | `CommandNotFoundException` |
+
+The file is on disk — the coordinator lists it, and a plain PowerShell started from the
+coordinator's environment resolves it. Codex's own process cannot even `Test-Path` it. So **the
+Orca CLI sits outside Codex's execution sandbox on this host**, and neither PATH nor an absolute
+path reaches it. This is the Windows form of what the sibling repo hit on Linux, where Codex's
+sandbox could not start at all: *a dispatched agent needs the coordinator CLI itself reachable,
+and it lives outside the worktree.*
+
+**Consequence: a Codex lane on this host is receive-only.** It reads its spec, does the work, and
+composes a correct `worker_done` it can never send. Do not dispatch one expecting a report until
+the sandbox grants that path. The operational rules:
 
 - **Before trusting a Codex lane to report, prove `orca` runs in its shell.** One read-only probe
   whose entire task is `orca orchestration send --type heartbeat` is enough, and it costs seconds.
