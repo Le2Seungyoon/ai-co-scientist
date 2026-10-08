@@ -92,9 +92,22 @@ path reaches it. This is the Windows form of what the sibling repo hit on Linux,
 sandbox could not start at all: *a dispatched agent needs the coordinator CLI itself reachable,
 and it lives outside the worktree.*
 
-**Consequence: a Codex lane on this host is receive-only.** It reads its spec, does the work, and
-composes a correct `worker_done` it can never send. Do not dispatch one expecting a report until
-the sandbox grants that path. The operational rules:
+The boundary is visible in Codex's own config: `[windows] sandbox = "elevated"`, with
+`trust_level = "trusted"` on the project roots and **nothing for Orca's install directory**.
+
+**Consequence: a Codex lane cannot report through the Orca CLI here.** It reads its spec, does the
+work, and composes a correct `worker_done` it can never send — the first probe spent 5 minutes
+retrying and the coordinator saw only `count: 0`.
+
+**A Codex lane still works if it reports through a file.** Measured 2026-09-21: given a spec that
+(a) names an output path **inside a trusted root** and (b) says plainly not to attempt
+`orca orchestration send` because the CLI is unreachable here, Codex wrote a complete, correct
+JSON report on the first try, with no human intervention, and the coordinator read it. Use
+`runtime/` — it is gitignored, so a lane report leaves the tree clean. Telling the lane *why* the
+CLI is off-limits matters: the preamble instructs it to use `orca`, and without a contradicting
+line in the spec it will burn minutes obeying the preamble.
+
+The operational rules:
 
 - **Before trusting a Codex lane to report, prove `orca` runs in its shell.** One read-only probe
   whose entire task is `orca orchestration send --type heartbeat` is enough, and it costs seconds.
