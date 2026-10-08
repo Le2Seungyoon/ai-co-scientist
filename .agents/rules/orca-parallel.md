@@ -160,7 +160,22 @@ format problem; the dispatch never reaches the lifecycle. Opening a workspace on
 registered it, after which `--repo id:<repoId>` placed a worker first try. `run-create` binds and
 succeeds either way, so a bound Run proves nothing about placement.
 
-**The worktree path is `<base>/<repo dir basename>/<name>`, and only `<base>` is configurable.**
+**A hand-made worktree works, and it is the better default here.** `git worktree add
+../.worktrees/ai-co-scientist/<name> -b <branch> <base>` creates one the repo's own container
+layout expects; Orca does **not** list it, but `worker-start --worktree path:<that path>` adopts
+it — the start result reports `action: "reused"`, opens a terminal there, and the round trip
+completed first try. The sibling repo's rule says a hand-made checkout leaves Orca with no record
+and is therefore invisible to dispatch; on 1.4.206 that is **half true**: invisible to
+`worktree list`, but dispatchable by path.
+
+**It also avoids the trust prompt.** A worktree under the already-trusted projects tree opened no
+Claude Code workspace-trust prompt, where one under Orca's default `workspaceDir` did (see below).
+The likely reason is an already-trusted parent directory; **unverified** — trust bookkeeping was
+not inspected. Either way the measured difference is large: one path costs a human, the other
+does not.
+
+**When Orca creates the worktree, the path is `<base>/<repo dir basename>/<name>`, and only
+`<base>` is configurable.**
 It is Orca's `workspaceDir` setting, which on this host is still the default
 `C:/Users/user/orca/workspaces` — so a lane lands in Orca's own tree, not beside the repository.
 The sibling repo points its `workspaceDir` at `.worktrees`, which is why its rule describes
