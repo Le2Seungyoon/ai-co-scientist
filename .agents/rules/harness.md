@@ -61,6 +61,23 @@ Two consequences:
   interpreter. No `tomllib`, no match statements.
 - **Their tests may use 3.12** — run them with `uv run python`, which is the project venv.
 
+## Codex cannot reach the Orca CLI on this machine
+
+Measured 2026-09-21. Codex runs under `[windows] sandbox = "elevated"` with `trust_level`
+granted to the project roots and **nothing for Orca's install directory**, so a dispatched Codex
+lane cannot execute `orca` — by PATH or by absolute path. The file is on disk and a plain
+PowerShell resolves it; Codex's own process cannot stat it. The four probes:
+`orca-measured.md` → Codex cannot reach the Orca CLI.
+
+**The consequence is not that a Codex lane is useless — it is that it cannot report the usual
+way.** One read its spec, ran its commands, composed a correct `worker_done`, and spent five
+minutes failing to send it while the coordinator saw only `count: 0`. Given a spec that named an
+output path inside a trusted root and said plainly **not** to attempt `orca orchestration send`,
+the same lane wrote a complete JSON report first try, with no human intervention. Use `runtime/`
+for it — gitignored, so the tree stays clean. Saying *why* the CLI is off-limits is the part that
+matters: the injected preamble tells the lane to use it, and a spec that does not contradict that
+loses the lane to it (`orca-parallel.md` → What goes in a spec).
+
 ## `tools:` restricts a lane on Claude Code only
 
 `tools.claude` is emitted for Claude Code and generates **nothing** for Codex: measured from the
