@@ -31,6 +31,8 @@
 Level-term coefficient check (this run, offline, from the produced zip): E[(1-s)^2] measured directly from runtime/submissions/EXP-020-effb0-shuffled.zip (25,988 images, per-image L in {140,150,160,170}) gives coefficient 100*E[(1-s)^2] = 63.75867. The same measurement on runtime/submissions/EXP-019-smooth9.zip gives 63.76851. Both are within 0.0154% of the inherited PlainMLP-derived value 63.77 -- the coefficient did not move measurably when the structure backbone changed. The level term used in the back-derivation below was previously an inherited assumption from the PlainMLP run (EXP-006); this measurement confirms it is not measurably wrong for EXP-020, so using it does not add error beyond the third digit.
 
 Back-derivation with the measured EXP-020 coefficient: (1-p) = 0.0380 (level path byte-identical to EXP-019, so p unchanged) -> level_term = 0.0380 * 63.75867 = 2.42283. structure_error_real = sqrt(6.4939775022^2 - 2.42283) = 6.30467. Using sim_structure_error = 1.5186 (EXP-011's structure_depth_rmse_oracle_L, the same effb0 ckpt used here unchanged), gap = sqrt(6.30467^2 - 1.5186^2) = 6.11905. Using the inherited 63.77 coefficient instead gives gap = 6.11901 -- the two agree to the fourth digit; the pre-report's stated range under the coefficient's uncertainty was [6.01, 6.31], and 6.11905 sits inside it. |
+| EXP-021 | 최빈값 필터 창 k 스윕 (k=3,5,7,9,11) — EXP-019의 k=9가 최적인가 | real | real_group_label | holdout_site_accuracy ✅ | {"baseline_holdout_accuracy": 0.9897, "k3": 0.9995, "k5": 0.9991, "k7": 0.9988, "k9": 0.9987, "k11": 0.9986, "run_count": 1550, "test_run_count": 1046, "n": 60664, "n_holdout": 12111, "in_sample_error_rate": 0.0103, "test_error_rate_exp019": 0.0449} | - | [결론 없음] k=3이 k=9를 약 10장 차로 앞서 형식상 채택 문구를 충족하지만, 순위를 읽을 수 없다. 사전등록은 '두 arm이 같은 in-sample 편향을 공유하므로 순위는 유효하다'를 전제했는데 그 전제가 틀렸다 — 편향은 상수 오프셋이 아니라 **오류 밀도**를 바꾸고(in-sample 1.03% vs test 4.49%), 오류가 희박할수록 작은 창이 유리해지므로 최적 k 자체가 이동한다. 리더보드 미제출. |
+| EXP-022 | Viterbi 자기전이 a 스윕 (a=0.95,0.974,0.99) — 최빈값 필터를 이기는가 | real | real_group_label | holdout_site_accuracy ✅ | {"baseline_holdout_accuracy": 0.9897, "a095": 0.9998, "a0974": 1.0, "a099": 1.0, "changed": [654, 657, 658], "run_count": 1550, "test_run_count": 1046, "spread_between_a_pp": 0.02} | - | [조건부 — 축 포화] 세 a 모두 베이스라인 0.9897을 +1.01~1.03pp 앞서지만 홀드아웃이 1.0000 천장에 닿아 a의 최적점이 분해되지 않는다(a 간 변동폭 0.02pp). EXP-021과 같은 낙관 편향을 공유하므로 리더보드 이득은 투영하지 않는다. 기본값 0.974를 바꿀 근거 없음. 리더보드 미제출. |
 
 ## 상세
 
@@ -282,4 +284,30 @@ Back-derivation with the measured EXP-020 coefficient: (1-p) = 0.0380 (level pat
 Level-term coefficient check (this run, offline, from the produced zip): E[(1-s)^2] measured directly from runtime/submissions/EXP-020-effb0-shuffled.zip (25,988 images, per-image L in {140,150,160,170}) gives coefficient 100*E[(1-s)^2] = 63.75867. The same measurement on runtime/submissions/EXP-019-smooth9.zip gives 63.76851. Both are within 0.0154% of the inherited PlainMLP-derived value 63.77 -- the coefficient did not move measurably when the structure backbone changed. The level term used in the back-derivation below was previously an inherited assumption from the PlainMLP run (EXP-006); this measurement confirms it is not measurably wrong for EXP-020, so using it does not add error beyond the third digit.
 
 Back-derivation with the measured EXP-020 coefficient: (1-p) = 0.0380 (level path byte-identical to EXP-019, so p unchanged) -> level_term = 0.0380 * 63.75867 = 2.42283. structure_error_real = sqrt(6.4939775022^2 - 2.42283) = 6.30467. Using sim_structure_error = 1.5186 (EXP-011's structure_depth_rmse_oracle_L, the same effb0 ckpt used here unchanged), gap = sqrt(6.30467^2 - 1.5186^2) = 6.11905. Using the inherited 63.77 coefficient instead gives gap = 6.11901 -- the two agree to the fourth digit; the pre-report's stated range under the coefficient's uncertainty was [6.01, 6.31], and 6.11905 sits inside it.
+
+### EXP-021 — 최빈값 필터 창 k 스윕 (k=3,5,7,9,11) — EXP-019의 k=9가 최적인가
+- **생성**: 2026-09-22T18:44:01
+- **X**: `real` — real train SEM 60,664장의 EXP-013 CNN 레벨 사후확률 덤프 (runtime/cache/real-level-proba.npy). 모든 arm이 같은 덤프를 읽는다
+- **y**: `real_group_label` — 폴더명 Depth_{110,120,130,140} — 주최측 실측 라벨
+- **모델+하이퍼**: smooth_levels k in {3,5,7,9,11}, 학습 없음
+- **방법론**: 사이트 id를 시드 0으로 섞어 런을 만든 뒤 평활, sem.site_split 사이트 단위 홀드아웃(val_frac 0.2)에서 채점. GPU 미사용, 워크트리 레인에서 병렬 실행
+- **목적**: 레벨 축 후처리의 사전 선별. 리더보드에 올리지 않는다 — 이 프록시는 과거 두 번 다 낙관이었다(2.55pp, 3.55pp 할인)
+- **판정지표**: holdout_site_accuracy (X=real, y=real_group_label)
+- **출처**: `feature/lane-harness` @ `f2f8023`
+- **val**: {"baseline_holdout_accuracy": 0.9897, "k3": 0.9995, "k5": 0.9991, "k7": 0.9988, "k9": 0.9987, "k11": 0.9986, "run_count": 1550, "test_run_count": 1046, "n": 60664, "n_holdout": 12111, "in_sample_error_rate": 0.0103, "test_error_rate_exp019": 0.0449}
+- **LB**: (미제출)
+- **판정**: [결론 없음] k=3이 k=9를 약 10장 차로 앞서 형식상 채택 문구를 충족하지만, 순위를 읽을 수 없다. 사전등록은 '두 arm이 같은 in-sample 편향을 공유하므로 순위는 유효하다'를 전제했는데 그 전제가 틀렸다 — 편향은 상수 오프셋이 아니라 **오류 밀도**를 바꾸고(in-sample 1.03% vs test 4.49%), 오류가 희박할수록 작은 창이 유리해지므로 최적 k 자체가 이동한다. 리더보드 미제출.
+
+### EXP-022 — Viterbi 자기전이 a 스윕 (a=0.95,0.974,0.99) — 최빈값 필터를 이기는가
+- **생성**: 2026-09-22T18:44:01
+- **X**: `real` — real train SEM 60,664장의 EXP-013 CNN 레벨 사후확률 덤프 (runtime/cache/real-level-proba.npy). 모든 arm이 같은 덤프를 읽는다
+- **y**: `real_group_label` — 폴더명 Depth_{110,120,130,140} — 주최측 실측 라벨
+- **모델+하이퍼**: viterbi_levels a in {0.95,0.974,0.99}, 학습 없음
+- **방법론**: 사이트 id를 시드 0으로 섞어 런을 만든 뒤 평활, sem.site_split 사이트 단위 홀드아웃(val_frac 0.2)에서 채점. GPU 미사용, 워크트리 레인에서 병렬 실행
+- **목적**: 레벨 축 후처리의 사전 선별. 리더보드에 올리지 않는다 — 이 프록시는 과거 두 번 다 낙관이었다(2.55pp, 3.55pp 할인)
+- **판정지표**: holdout_site_accuracy (X=real, y=real_group_label)
+- **출처**: `feature/lane-harness` @ `f2f8023`
+- **val**: {"baseline_holdout_accuracy": 0.9897, "a095": 0.9998, "a0974": 1.0, "a099": 1.0, "changed": [654, 657, 658], "run_count": 1550, "test_run_count": 1046, "spread_between_a_pp": 0.02}
+- **LB**: (미제출)
+- **판정**: [조건부 — 축 포화] 세 a 모두 베이스라인 0.9897을 +1.01~1.03pp 앞서지만 홀드아웃이 1.0000 천장에 닿아 a의 최적점이 분해되지 않는다(a 간 변동폭 0.02pp). EXP-021과 같은 낙관 편향을 공유하므로 리더보드 이득은 투영하지 않는다. 기본값 0.974를 바꿀 근거 없음. 리더보드 미제출.
 
