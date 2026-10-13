@@ -85,6 +85,29 @@ def test_hmm_arm_runs_and_reports(tmp_path):
     assert all("holdout_accuracy" in a for a in out["arms"])
 
 
+def test_records_input_provenance_and_hash_changes_with_content(tmp_path):
+    """I-8: 길이 일치 검사만으로는 "같은 덤프"를 보장하지 못한다 — 해시가 사후 증거다.
+    내용이 바뀌면(길이는 그대로) 해시도 바뀌어야 값을 안 대조하고 넘어가는 걸 막는다."""
+    _fixture(tmp_path)
+    out1 = _run(tmp_path, "--arm", "smooth", "--values", "5")
+    for key in ("proba", "labels", "site"):
+        entry = out1["inputs"][key]
+        assert entry["sha256"]
+        assert entry["bytes"] > 0
+        assert Path(entry["path"]).name == f"{key}.npy"
+
+    proba = np.load(tmp_path / "proba.npy")
+    mutated = proba.copy()
+    mutated[0] = mutated[0][::-1]  # 같은 길이, 다른 내용
+    np.save(tmp_path / "proba.npy", mutated.astype(np.float32))
+
+    out2 = _run(tmp_path, "--arm", "smooth", "--values", "5")
+    assert out2["inputs"]["proba"]["sha256"] != out1["inputs"]["proba"]["sha256"]
+    assert out2["inputs"]["proba"]["bytes"] == out1["inputs"]["proba"]["bytes"]
+    # 안 건드린 입력의 해시는 그대로다
+    assert out2["inputs"]["labels"]["sha256"] == out1["inputs"]["labels"]["sha256"]
+
+
 def test_declares_its_domain(tmp_path):
     """real SEM → real group label. 리더보드 타깃이 아니다 — 사전 선별 지표다."""
     _fixture(tmp_path)

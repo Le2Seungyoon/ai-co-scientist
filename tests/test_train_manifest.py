@@ -38,10 +38,12 @@ def test_level_cnn_gets_no_adabn():
 
 
 def test_predict_levels_cnn_takes_a_source_array():
-    # 레벨 사후확률을 real에서도 뽑을 수 있어야 CPU 레인이 스윕할 입력이 생긴다
+    # 레벨 사후확률을 real에서도 뽑을 수 있어야 CPU 레인이 스윕할 입력이 생긴다.
+    # "npy" in fn만 보면 이 커밋이 덧붙인 docstring 한 줄("real train(real_sem.npy)에서...")
+    # 때문에 시그니처와 np.load 줄을 되돌려도 여전히 통과한다 — 실제 로드 표현식을 본다.
     source = _script("infer_decomposed.py")
     fn = source.split("def predict_levels_cnn(")[1].split("\ndef ")[0]
-    assert "npy" in fn, "소스 배열을 고를 수 없다 — test_sem.npy에 고정돼 있다"
+    assert "np.load(cache / npy" in fn, "소스 배열을 고를 수 없다 — test_sem.npy에 고정돼 있다"
 
 
 def test_dump_level_proba_declares_its_domain():

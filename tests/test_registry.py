@@ -323,6 +323,30 @@ def test_new_report_source_is_none_when_omitted(tmp_path):
     assert rec["source"] is None
 
 
+def test_source_round_trips_distinct_per_record_and_is_never_defaulted(tmp_path):
+    """실측 결함(I-1)의 회귀: 병렬 레인 둘의 기록에 코디네이터 자신의 커밋이 찍혔다 —
+    워커가 준 branch/commit이 아니라. 서로 다른 두 레코드가 각자의 값을 그대로 유지하고,
+    서로 뒤섞이거나 빈 값으로 조용히 대체되지 않아야 한다."""
+    p = tmp_path / "reg.jsonl"
+    rec_a = registry.new_report(
+        path=p, **BASE, hypothesis="H12",
+        source_branch="feature/h12-smooth", source_commit="1050d5a")
+    rec_b = registry.new_report(
+        path=p, **{**BASE, "title": "다른 레인"}, hypothesis="H13",
+        source_branch="feature/h13-hmm", source_commit="41091c8")
+
+    assert rec_a["source"] == {"branch": "feature/h12-smooth", "commit": "1050d5a"}
+    assert rec_b["source"] == {"branch": "feature/h13-hmm", "commit": "41091c8"}
+
+    # 다시 디스크에서 읽어도(round-trip) 각자의 값 그대로다 — 서로 바뀌지도, 코디네이터의
+    # 어떤 값(예: 이 프로세스가 아는 브랜치/커밋)으로 조용히 덮이지도 않는다.
+    reloaded_a = registry.get(rec_a["report_id"], p)
+    reloaded_b = registry.get(rec_b["report_id"], p)
+    assert reloaded_a["source"] == {"branch": "feature/h12-smooth", "commit": "1050d5a"}
+    assert reloaded_b["source"] == {"branch": "feature/h13-hmm", "commit": "41091c8"}
+    assert reloaded_a["source"] != reloaded_b["source"]
+
+
 def test_render_markdown_shows_source_when_present(tmp_path):
     """워커 브랜치/커밋이 렌더된 markdown에도 남아야 한다 -- runtime/는 백업이 없어서
     docs/experiment-registry.md가 유일한 사본이다."""
@@ -342,6 +366,37 @@ def test_render_markdown_omits_source_line_when_absent(tmp_path):
     md = registry.render_markdown(path=p)
     assert "출처" not in md
     assert "None" not in md
+
+
+def test_render_markdown_shows_hypothesis_in_summary_and_detail(tmp_path):
+    """가설 ↔ 실행 조인 키가 유일한 git 커밋 사본(docs/experiment-registry.md)까지 이어져야
+    한다 — runtime/registry.jsonl은 백업이 없다."""
+    p = tmp_path / "reg.jsonl"
+    registry.new_report(path=p, **BASE, hypothesis="H12")
+    md = registry.render_markdown(path=p)
+    assert "| 가설 |" in md  # 요약 표 헤더
+    assert "- **가설**: H12" in md  # 상세 블록
+    lines = [ln for ln in md.splitlines() if ln.startswith("| EXP-001 |")]
+    assert lines and "H12" in lines[0]
+
+
+def test_render_markdown_shows_dash_not_none_for_records_without_hypothesis(tmp_path):
+    """가설 도입 이전(2026-09-21 이전) 20건에는 `hypothesis` 키 자체가 없다 — 렌더가
+    깨지거나 "None"을 찍으면 안 된다."""
+    p = tmp_path / "reg.jsonl"
+    p.write_text(json.dumps({
+        "report_id": "EXP-001", "created": "2026-07-30T00:00:00", "title": "old",
+        "x": {"domain": "sim", "desc": "d"}, "y": {"source": "sim_depth_gt", "desc": "d"},
+        "model": "m", "method": "me", "purpose": "p",
+        "metric": {"name": "rmse", "x_domain": "sim", "y_source": "sim_depth_gt",
+                   "matches_target": False, "warning": "w"},
+        "val": None, "lb": None, "verdict": "",
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+    md = registry.render_markdown(path=p)
+    assert "None" not in md
+    line = next(ln for ln in md.splitlines() if ln.startswith("| EXP-001 |"))
+    hypothesis_cell = line.split("|")[2].strip()  # report_id 다음 칸
+    assert hypothesis_cell == "-"  # 빈 칸이 아니라 다른 선택 필드(val/lb)와 같은 자리표시자
 
 
 def test_records_without_source_still_load(tmp_path):
@@ -383,7 +438,8 @@ def test_new_report_refuses_a_blank_hypothesis(tmp_path):
 
 
 def test_many_runs_may_answer_one_hypothesis(tmp_path):
-    """관계는 다대다다 — EXP-010은 3-arm을 한 항목으로 기록했다."""
+    """관계는 다대일이다 — EXP-010은 3-arm을 한 항목으로 기록했다. (스키마·docstring과
+    한 번 더 맞춘다: registry.py의 new_report 주석과 experiment-ledger.md도 다대일이라 적는다.)"""
     path = tmp_path / "r.jsonl"
     a = registry.new_report(**BASE, hypothesis="H12", path=path)
     b = registry.new_report(**BASE, hypothesis="H12", path=path)

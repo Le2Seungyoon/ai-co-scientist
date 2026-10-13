@@ -10,6 +10,7 @@
 같은 자원을 두고 다투므로 기계 단위 경로여야 한다.
 """
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -24,6 +25,54 @@ _LOCK_DIRNAME = "ai-co-scientist-locks"
 
 class ResourceBusy(RuntimeError):
     """다른 보유자가 자원을 들고 있다. `timeout=0`에서는 즉시 난다."""
+
+
+def _read_pid(lock: Path) -> "int | None":
+    """락 토큰(`{uuid}:{pid}`)에서 pid를 뽑는다. 형식이 아니면 None — 회수 여부는 나이만으로 판단한다."""
+    try:
+        token = lock.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    parts = token.split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[1])
+    except ValueError:
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """pid가 아직 살아있는가. POSIX는 `kill(pid, 0)`, Windows는 `kill` 시그널 경로가 없어 `tasklist`로 잰다.
+
+    확인 자체가 실패하면(도구 없음, 권한 등) False — 나이 기반 회수로 폴백한다. 영원히 막는 것보다
+    잘못 회수하는 쪽이 덜 나쁘다: 토큰 검증이 이미 "잘못 회수돼도 새 보유자의 락은 지우지 않는다"를
+    보장한다.
+    """
+    if sys.platform == "win32":
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return str(pid) in out.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # 존재는 하지만 시그널 권한이 없다 — 살아있는 것으로 본다
+    except OSError:
+        return False
+    return True
+
+
+def _holder_still_alive(lock: Path) -> bool:
+    """스테일 판정된 락의 보유자가 여전히 살아있는가. pid를 못 읽으면 False(기존 나이 기반 동작)."""
+    pid = _read_pid(lock)
+    return pid is not None and _pid_alive(pid)
 
 
 @contextmanager
@@ -53,9 +102,11 @@ def file_lock(lock_path, *, timeout: float, stale: float = LOCK_STALE):
                 age = time.time() - lock.stat().st_mtime
             except FileNotFoundError:
                 continue  # 방금 해제됐다 — 즉시 재시도
-            if age > stale:
+            if age > stale and not _holder_still_alive(lock):
                 lock.unlink(missing_ok=True)  # 죽은 프로세스가 남긴 락 회수
                 continue
+            # age > stale인데 보유자가 살아있으면 회수하지 않는다 — 정당하게 오래 걸리거나
+            # 디버거에 멈춘 보유자가 자원을 쥔 채로 새 보유자와 부딪히는 것을 막는다.
             if time.monotonic() >= deadline:
                 raise ResourceBusy(f"자원이 사용 중이다({timeout}초 대기): {lock}")
             time.sleep(0.05)
@@ -67,14 +118,18 @@ def file_lock(lock_path, *, timeout: float, stale: float = LOCK_STALE):
         # 이 획득이 여전히 락 파일을 소유하는지 확인하고, 맞을 때만 unlink한다.
         # 스테일 판정으로 회수되면 다른 진행이 지금 이 파일을 들고 있다.
         try:
-            held_token = lock.read_text(encoding="utf-8").strip()
+            # errors="replace": 이 디렉터리는 기계 전역 공유 temp라 외부 프로세스가 남긴
+            # non-UTF-8 바이트가 닿을 수 있다. UnicodeDecodeError(ValueError)는 OSError가
+            # 아니라 아래 except를 빠져나가 본문 예외를 가리고 락을 남긴다 — 실측 결함.
+            held_token = lock.read_text(encoding="utf-8", errors="replace").strip()
             if held_token == token:
                 lock.unlink(missing_ok=True)
             else:
                 # 우리가 못 잡은 사이에 다른 진행이 획득했다. unlink하면 그것을 깨트린다.
                 print(f"경고: 락이 회수됨 (보유 중): {lock}", file=sys.stderr)
-        except (FileNotFoundError, OSError):
+        except OSError:
             # 읽기 실패는 예외로 전파하지 않는다. 이미 해제됐을 수 있다.
+            # FileNotFoundError는 OSError의 하위 클래스라 따로 잡지 않는다.
             pass
 
 

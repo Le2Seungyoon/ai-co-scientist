@@ -55,6 +55,9 @@ hypothesis), but one report names exactly one hypothesis. `registry.new_report` 
 it, and `tests/test_registry.py` pins that — an untagged record is invisible to the join and
 nothing else notices, which is why it is a refusal and not a convention.
 
+**`new_report` runs before dispatch, not after the lane reports** — an id issued once the run's
+outcome is already known is registry data pretending to be pre-registration.
+
 ## Write the "don't run" condition too
 
 A hypothesis that pins a symptom on something the optimiser or the model can absorb is usually

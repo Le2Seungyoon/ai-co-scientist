@@ -4,6 +4,8 @@
 "두 번째 획득이 실제로 거부되는가"와 "죽은 보유자의 락이 회수되는가"다.
 """
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -90,6 +92,42 @@ def test_holder_does_not_delete_replacement_lock(tmp_path):
     # 원래 보유자가 빠져나갔지만, unlink하지 않았어야 한다 (토큰 불일치)
     assert lock.exists(), "새 보유자의 락이 원래 보유자에 의해 삭제됐다"
     assert lock.read_text(encoding="utf-8") == new_token
+
+
+def test_stale_lock_with_live_pid_is_not_reclaimed(tmp_path):
+    """나이만으로 회수하면, 정당하게 오래 걸리거나 디버거에 멈춘 보유자의 락을
+    GPU를 쥔 채로 빼앗는다 — 토큰의 pid가 살아있으면 나이가 지나도 회수하지 않는다."""
+    lock = tmp_path / "gpu.lock"
+    lock.write_text(f"sometoken:{os.getpid()}", encoding="utf-8")  # 이 테스트 프로세스 자신 = 확실히 살아있다
+    old = time.time() - 10_000
+    os.utime(lock, (old, old))
+    with pytest.raises(ResourceBusy):
+        with file_lock(lock, timeout=0.0, stale=120.0):
+            pass
+
+
+def test_stale_lock_with_dead_pid_is_reclaimed(tmp_path):
+    """죽은 프로세스의 pid는 나이가 지나면 여전히 회수돼야 한다."""
+    lock = tmp_path / "gpu.lock"
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    dead_pid = proc.pid  # 이미 종료됐다 — 이 pid는 더 이상 살아있지 않다
+    lock.write_text(f"sometoken:{dead_pid}", encoding="utf-8")
+    old = time.time() - 10_000
+    os.utime(lock, (old, old))
+    with file_lock(lock, timeout=0.0, stale=120.0):
+        pass
+
+
+def test_stale_lock_with_unparseable_pid_still_reclaims_on_age(tmp_path):
+    """토큰이 `uuid:pid` 형식이 아니면(구형 락, 손상된 파일 등) pid를 판단할 수 없다 —
+    영원히 막지 않고 기존 나이 기반 회수로 되돌아간다."""
+    lock = tmp_path / "gpu.lock"
+    lock.write_text("not-a-valid-token", encoding="utf-8")
+    old = time.time() - 10_000
+    os.utime(lock, (old, old))
+    with file_lock(lock, timeout=0.0, stale=120.0):
+        pass
 
 
 def test_resource_lock_default_stale_exceeds_registry_stale():

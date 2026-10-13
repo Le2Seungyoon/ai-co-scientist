@@ -8,15 +8,15 @@ sim SEM→sim depth 지표를 real validation으로 착각해 여러 실험을 �
 저장: JSONL 1줄 = 실험 1건. 갱신은 load-modify-write (건수가 수백 규모라 단순함이 이득).
 """
 import json
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path
 
 from ai_co_scientist.config import load_config, project_root
-from ai_co_scientist.locks import ResourceBusy, file_lock
+from ai_co_scientist.locks import LOCK_STALE, ResourceBusy, file_lock
 
 LOCK_TIMEOUT = 30.0  # 초. 학습이 아니라 JSONL 갱신이므로 이보다 오래 걸릴 일이 없다
-LOCK_STALE = 120.0  # 이보다 오래된 락은 죽은 프로세스가 남긴 것으로 보고 회수한다
+# LOCK_STALE은 locks.py의 정의를 그대로 쓴다 — 같은 값을 두 곳에서 정의하면 한쪽만 바뀌는 드리프트가 생긴다
 
 X_DOMAINS = ("sim", "real")
 Y_SOURCES = ("sim_depth_gt", "real_average_depth", "real_group_label", "real_depth_gt",
@@ -57,15 +57,19 @@ def locked(path=None):
 
     획득 루프는 `locks.file_lock`에 있다. **경로는 의도적으로 트리별이다** — 기록소는 워크트리가
     복제하지 않는 자원이고, 기계 단위 자원은 `locks.resource_lock`이 맡는다.
+
+    `try`는 **획득 한 줄만** 감싼다. `yield`까지 감싸면 본문 안에서 난 `ResourceBusy`(중첩된
+    `resource_lock` 등)가 이 락의 타임아웃으로 잘못 보고된다 — 엉뚱한 파일 이름을 댄 채로.
     """
-    try:
-        with file_lock(_path(path).with_suffix(".lock"), timeout=LOCK_TIMEOUT,
-                       stale=LOCK_STALE):
-            yield
-    except ResourceBusy as e:
-        # 역호환성: 기존 호출부는 TimeoutError를 기대한다
-        raise TimeoutError(f"기록소 락 대기 초과({LOCK_TIMEOUT}초): {_path(path).with_suffix('.lock')}"
-                           ) from e
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(
+                file_lock(_path(path).with_suffix(".lock"), timeout=LOCK_TIMEOUT, stale=LOCK_STALE))
+        except ResourceBusy as e:
+            # 역호환성: 기존 호출부는 TimeoutError를 기대한다
+            raise TimeoutError(
+                f"기록소 락 대기 초과({LOCK_TIMEOUT}초): {_path(path).with_suffix('.lock')}") from e
+        yield
 
 
 def load_all(path=None) -> list[dict]:
@@ -284,19 +288,22 @@ def render_markdown(path=None) -> str:
            "> 이 파일은 `scripts/exp.py render`가 생성한다 — 직접 수정하지 말 것.",
            RESET_NOTICE,
            "## 요약", "",
-           "| report_id | 제목 | X | y | 지표(타깃일치) | val | LB pub/priv | 판정 |",
-           "|---|---|---|---|---|---|---|---|"]
+           "| report_id | 가설 | 제목 | X | y | 지표(타깃일치) | val | LB pub/priv | 판정 |",
+           "|---|---|---|---|---|---|---|---|---|"]
     for r in records:
         val = json.dumps(r["val"], ensure_ascii=False) if r["val"] else "-"
         lb = f"{r['lb']['public']} / {r['lb']['private']}" if r["lb"] else "-"
         mark = "✅" if r["metric"]["matches_target"] else "⚠️sim"
+        # 가설 20건(2026-09-21 이전)에는 이 키 자체가 없다 — 빈 칸도 "None"도 찍지 않는다.
+        hypothesis = r.get("hypothesis") or "-"
         out.append(
-            f"| {r['report_id']} | {r['title']} | {r['x']['domain']} | {r['y']['source']} "
+            f"| {r['report_id']} | {hypothesis} | {r['title']} | {r['x']['domain']} | {r['y']['source']} "
             f"| {r['metric']['name']} {mark} | {val} | {lb} | {r['verdict'] or '-'} |")
 
     out += ["", "## 상세", ""]
     for r in records:
         out += [f"### {r['report_id']} — {r['title']}", f"- **생성**: {r['created']}",
+                f"- **가설**: {r.get('hypothesis') or '-'}",
                 f"- **X**: `{r['x']['domain']}` — {r['x']['desc']}",
                 f"- **y**: `{r['y']['source']}` — {r['y']['desc']}",
                 f"- **모델+하이퍼**: {r['model']}",

@@ -15,14 +15,37 @@ torch도 cv2도 import하지 않는다(워크트리는 dev 그룹만 sync한다)
 
 **예측은 in-sample이다.** 사후확률은 real train으로 학습된 분류기가 real train에 낸 것이라
 절대 정확도는 낙관 편향돼 있다. 두 arm이 같은 편향을 공유하므로 **arm 사이의 순위**만 읽는다.
+
+**입력 출처를 결과에 찍는다.** 길이 일치 검사만으로는 "같은 덤프"를 보장하지 못한다 — 같은
+길이의 스테일하거나 재생성된 덤프도 통과한다. 세 입력 각각의 경로·바이트 크기·sha256을
+`inputs`에 남겨, 두 레인이 정말 같은 파일을 읽었는지 사후에 대조할 수 있게 한다.
 """
 import argparse
+import hashlib
 import json
+from pathlib import Path
 
 import numpy as np
 
 from ai_co_scientist.config import ensure_utf8_console
 from ai_co_scientist.sem import score_classes, site_split, smooth_levels, viterbi_levels
+
+_HASH_CHUNK = 1024 * 1024  # 스트리밍 해시 청크 — 입력이 ~200MB라 통째로 읽지 않는다
+
+
+def input_provenance(path: str) -> dict:
+    """입력 파일 하나의 출처 — 이관된 경로·바이트 크기·sha256.
+
+    두 레인이 "같은 덤프를 읽는다"는 것은 주장일 뿐 결과 JSON에는 아무 흔적도 남지 않았다.
+    같은 길이의 다른(스테일/재생성) 덤프를 읽어도 비교 가능성 검사(길이 일치)를 통과하므로,
+    파일별 해시가 유일한 사후 증거다.
+    """
+    resolved = Path(path).resolve()
+    h = hashlib.sha256()
+    with open(resolved, "rb") as f:
+        for chunk in iter(lambda: f.read(_HASH_CHUNK), b""):
+            h.update(chunk)
+    return {"path": str(resolved), "bytes": resolved.stat().st_size, "sha256": h.hexdigest()}
 
 
 def build_run_order(site: np.ndarray, seed: int) -> np.ndarray:
@@ -55,6 +78,13 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0, help="사이트 섞기 시드")
     ap.add_argument("--val-frac", type=float, default=0.2, help="사이트 단위 홀드아웃 비율")
     args = ap.parse_args()
+
+    # 길이 일치 검사보다 먼저 해시를 찍는다 — 검사를 통과해도 "같은 덤프"라는 보장은 없다.
+    provenance = {
+        "proba": input_provenance(args.proba),
+        "labels": input_provenance(args.labels),
+        "site": input_provenance(args.site),
+    }
 
     proba = np.load(args.proba)
     labels = np.load(args.labels)
@@ -93,6 +123,7 @@ def main() -> int:
         "run_count": count_runs(labels[order]),
         "baseline_holdout_accuracy": score_classes(base_cls[held], labels[held])["accuracy"],
         "arms": arms,
+        "inputs": provenance,
     }, ensure_ascii=False))
     return 0
 
