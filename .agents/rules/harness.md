@@ -71,12 +71,14 @@ PowerShell resolves it; Codex's own process cannot stat it. The four probes:
 
 **The consequence is not that a Codex lane is useless — it is that it cannot report the usual
 way.** One read its spec, ran its commands, composed a correct `worker_done`, and spent five
-minutes failing to send it while the coordinator saw only `count: 0`. Given a spec that named an
-output path inside a trusted root and said plainly **not** to attempt `orca orchestration send`,
-the same lane wrote a complete JSON report first try, with no human intervention. Use `runtime/`
-for it — gitignored, so the tree stays clean. Saying *why* the CLI is off-limits is the part that
-matters: the injected preamble tells the lane to use it, and a spec that does not contradict that
-loses the lane to it (`orca-parallel.md` → What goes in a spec).
+minutes failing to send it while the coordinator saw only `count: 0`.
+
+**So route it through the mailbox relay rather than lowering anyone's sandbox.** The lane writes
+its message into a directory its sandbox already trusts and a relay outside the sandbox puts it on
+the bus — measured 2026-09-22, and a relayed `worker_done` auto-completes its dispatch exactly as
+a self-sent one would. Running it: `orca-parallel.md` → A Codex lane reports through the mailbox.
+`sandbox_mode = "danger-full-access"` also works (`orca-measured.md`) but removes the sandbox from
+**every** command that lane runs to buy the one thing the relay buys alone.
 
 ## `tools:` restricts a lane on Claude Code only
 

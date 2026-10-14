@@ -62,6 +62,32 @@ Recovery is a specific sequence, because the obvious calls refuse:
 worktree, `--terminal` alone is refused with `terminal_worktree_mismatch` — pass `--worktree`
 alongside it.
 
+## A Codex lane reports through the mailbox
+
+A Codex lane here cannot execute `orca` at all (`harness.md` → Codex cannot reach the Orca CLI),
+so it writes its message to a file and a relay outside the sandbox sends it:
+
+```bash
+uv run python .agent-hooks/orca_mailbox_relay.py --mailbox <dir> --interval 3   # coordinator side
+```
+
+**`--mailbox` has no default, deliberately.** One directory has to be shared by every lane and the
+coordinator, so a path derived from `__file__` would break it per worktree — the flaw
+`architecture.md` names for `registry.locked()`. It must also sit under a root the lane's sandbox
+trusts, which is why a machine-level temp directory is wrong here and right in `locks.py`.
+`runtime/lane-mailbox/` works: gitignored, so lane traffic never dirties the tree.
+
+The lane writes one JSON object — `from`, `dispatch_capability`, `type`, `task_id`, `dispatch_id`
+required, `subject`/`body`/`outcome`/`phase` optional — **atomically**, `.tmp` then rename, or the
+relay reads a half-written message. All four ids come from the injected preamble; a spec must tell
+the lane to copy them rather than invent them, and must say plainly **not** to call `orca`, since
+the preamble instructs otherwise (→ What goes in a spec).
+
+**Delivery is at-least-once and says so.** A message moves to `sending/` before the send and
+`sent/` after; a crash in between leaves it visible in `sending/` rather than lost, and the relay
+never retries on its own — a silent re-send would put a second `worker_done` on the bus and settle
+a dispatch that had not finished. Recovering one is a person's call.
+
 ## Reading the waiter
 
 `check --wait` emits JSON keepalive lines on **stderr** every 15 s (`_keepalive`), which is how a

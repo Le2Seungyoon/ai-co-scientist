@@ -80,6 +80,34 @@ the send while the coordinator saw `count: 0` on every bounded wait; a second, t
 it and given a path inside a trusted root, wrote a complete JSON report on the first try with no
 human intervention.
 
+## The sandbox denies process creation, not reads — 1.4.206, 2026-09-22
+
+`codex sandbox` runs a command under the same restricted token a lane gets, which makes the
+failure reproducible without dispatching anything:
+
+| Attempt | Result |
+|---|---|
+| `codex sandbox -- <abs>\orca.exe --version` | `CreateProcessAsUserW failed: 5 (access denied)` |
+| `-c 'sandbox_permissions=["disk-full-read-access"]'` | **still denied** |
+| `-c 'sandbox_mode="danger-full-access"'` | `1.4.206` — works |
+
+So the block is at **process creation**, not at a read: granting full read access changes nothing.
+`codex doctor` shows why the two are separable — `filesystem sandbox: restricted`,
+`sandbox backend: elevated`, `denied-read restrictions: false`. Only dropping the sandbox lifted
+it, which is what the sibling repo's host chose; the relay below avoids needing to.
+
+**A relayed message is indistinguishable from a self-sent one.** A Codex lane wrote its
+`worker_done` to the mailbox, `orca_mailbox_relay.py` forwarded it from the coordinator, and the
+Run delivered it with the dispatch moving to `status: completed`, `completedAt` set, worker
+`succeeded`/`settled`. The bus authenticates the capability token and the ids, not the sender's
+process. (This also settles, on 1.4.206, the 1.4.197 note that `worker_done` auto-completes both
+the dispatch and its task.)
+
+**Two config files, one of them a decoy.** `codex doctor` reports `CODEX_HOME` as Orca's own
+`codex-runtime-home\home`, so that is the `config.toml` an Orca-launched lane reads — editing
+`~/.codex/config.toml` changes nothing for it, and both files currently hold identical content,
+which makes the wrong one easy to pick.
+
 ## Measured on 1.4.197, not re-verified on 1.4.206
 
 These cost a probe to learn and nothing since has contradicted them; they sit below a lifecycle
