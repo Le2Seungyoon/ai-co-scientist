@@ -9,6 +9,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+# Worktrees intentionally install only the dev dependency group.  Keep the
+# baseline-only regression test visible there, but skip it instead of failing
+# collection when the training stack is absent.
+pytest.importorskip("cv2")
+pytest.importorskip("torch")
+
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from train_structure import CASE_LEVEL, StructureDataset  # noqa: E402
