@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -67,7 +68,9 @@ def test_resource_lock_default_root_is_outside_the_repo(tmp_path):
 
     from ai_co_scientist.config import project_root
 
-    with resource_lock("probe-default-root") as held:
+    # The default lock directory is intentionally shared by every checkout.  A unique probe
+    # name keeps independent pytest processes from testing each other instead of this contract.
+    with resource_lock(f"probe-default-root-{uuid.uuid4().hex}") as held:
         assert Path(tempfile.gettempdir()).resolve() in Path(held).resolve().parents
         assert project_root() not in Path(held).resolve().parents
 

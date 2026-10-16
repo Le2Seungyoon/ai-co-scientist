@@ -39,7 +39,8 @@ def run(root, command, env_extra=None, raw=None):
 
 def run_no_project_dir(command, env_extra=None):
     """Same as run(), but with CLAUDE_PROJECT_DIR unset -- exercises the __file__ fallback in
-    project_root(). Falls back to the real repo root, which HAS runtime/registry.jsonl."""
+    project_root(). The real repo root may be the main checkout (registry present) or a linked
+    worktree (registry absent), so the expected decision follows that sentinel."""
     env = dict(os.environ)
     env.pop("CLAUDE_PROJECT_DIR", None)
     if env_extra:
@@ -164,15 +165,18 @@ def main():
 
     print("finding 5a -- project_root() __file__ fallback")
     out, rc = run_no_project_dir("uv run python scripts/train_structure.py --arch mlp")
-    check("no CLAUDE_PROJECT_DIR: falls back to real repo root (has registry) -> passes",
-          not denied(out), out[:120])
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(HOOK)))
+    fallback_has_registry = os.path.isfile(
+        os.path.join(repo_root, "runtime", "registry.jsonl")
+    )
+    check("no CLAUDE_PROJECT_DIR: decision follows fallback root registry sentinel",
+          denied(out) is not fallback_has_registry, out[:120])
     check("no CLAUDE_PROJECT_DIR: exits 0", rc == 0, f"rc={rc}")
 
     print("finding 3 -- GUARDED stays tied to reality")
     hook_mod = load_hook_module()
     guarded = hook_mod.GUARDED
     check("GUARDED is non-empty", bool(guarded), "GUARDED is empty")
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(HOOK)))
     for script in guarded:
         path = os.path.join(repo_root, *script.split("/"))
         check(f"GUARDED entry exists on disk: {script}", os.path.isfile(path), path)
