@@ -101,7 +101,8 @@ def deliver_one(path, mailbox, orca="orca", runner=None):
         return False, "이동 실패(다른 릴레이가 가져갔을 수 있다): {0}".format(exc)
 
     try:
-        with open(staged, encoding="utf-8") as fh:
+        # Accept both plain UTF-8 and the BOM-prefixed UTF-8 commonly emitted by PowerShell.
+        with open(staged, encoding="utf-8-sig") as fh:
             msg = json.load(fh)
         argv = build_command(msg, orca)
     except (ValueError, OSError) as exc:

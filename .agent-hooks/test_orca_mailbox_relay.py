@@ -94,6 +94,19 @@ with tempfile.TemporaryDirectory() as mb:
     check(not os.path.exists(path), "deliver_one: 원본이 남아 재전송될 수 있다")
     check(sent_argv and sent_argv[0][:2] == ["orca", "orchestration"], "deliver_one: orca를 부르지 않았다")
 
+# Windows PowerShell's common UTF-8 writer includes a BOM. A lane message with that encoding is
+# still valid JSON and must not be stranded in failed/ before Orca ever sees it.
+with tempfile.TemporaryDirectory() as mb:
+    path = os.path.join(mb, "m-bom.json")
+    with open(path, "w", encoding="utf-8-sig") as fh:
+        json.dump(GOOD, fh, ensure_ascii=False)
+    called = []
+    ok, detail = relay.deliver_one(path, mb, runner=lambda a: called.append(a) or FakeProc(0))
+    check(ok, "deliver_one: UTF-8 BOM message failed ({0})".format(detail))
+    check(bool(called), "deliver_one: UTF-8 BOM message never reached Orca")
+    check(os.path.isfile(os.path.join(mb, "sent", "m-bom.json")),
+          "deliver_one: UTF-8 BOM message did not move to sent/")
+
 with tempfile.TemporaryDirectory() as mb:
     path = write_msg(mb, "m2.json", GOOD)
     ok, detail = relay.deliver_one(path, mb, runner=lambda a: FakeProc(1, "waiter_exists"))
