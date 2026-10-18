@@ -28,6 +28,23 @@ def _import_script(name: str):
     return importlib.import_module(name)
 
 
+# arm 설정 테스트용 sim 입력 기록 — 해시 형식만 맞으면 된다(파일 재해시는 plan CLI 테스트가 본다)
+_SIM_INPUTS = {name: {"file": f"{name}.npy", "sha256": ch * 64, "shape": [4], "dtype": "uint8"}
+               for name, ch in (("sim_sem", "1"), ("sim_depth", "2"), ("sim_case", "3"))}
+
+
+def _control_sampler(n_sim, seed, extra=None):
+    """sim-only 대조군 샘플러 — 라운드마다 sim 전량 + 비복원 추가 sim(기본 n_sim//2)."""
+    extra = max(1, n_sim // 2) if extra is None else extra
+    return st.RealSamplerSpec.build(n_sim, 0, real_per_epoch=0, seed=seed,
+                                    extra_sim_per_epoch=extra)
+
+
+# compare가 재현을 주장하려면 깨끗한 커밋과 실행 환경 기록이 필요하다 (build CLI가 항상 채운다)
+_BUILD_PROVENANCE = {"source_commit": "c0ffee",
+                     "runtime": {"device": "cuda", "torch": "2.x", "cuda": "12.4"}}
+
+
 def _synthetic_pseudo_files(tmp_path, n=6, subdir=""):
     """real_sem.npy(uint8) + labels.npy(float32 [0,1]) + teacher.pt(임의 바이트)를 만든다."""
     base = tmp_path / subdir if subdir else tmp_path
@@ -355,11 +372,11 @@ def test_pseudo_manifest_build_is_reproducible_across_different_paths(tmp_path):
     m1 = st.build_pseudo_manifest(labels_path=src / "labels.npy",
                                   source_path=src / st.REAL_TRAIN_NPY,
                                   teacher_ckpt=src / "teacher.pt", expected_n=5,
-                                  source_commit="c1")
+                                  **_BUILD_PROVENANCE)
     m2 = st.build_pseudo_manifest(labels_path=dup / "labels.npy",
                                   source_path=dup / st.REAL_TRAIN_NPY,
                                   teacher_ckpt=dup / "teacher.pt", expected_n=5,
-                                  source_commit="c1")
+                                  **_BUILD_PROVENANCE)
 
     assert m1["labels"]["path"] != m2["labels"]["path"]  # 경로 자체는 실제로 다르다
     assert st.compare_pseudo_manifests(m1, m2) == []
@@ -381,15 +398,15 @@ def test_compare_pseudo_manifests_reports_content_diff(tmp_path):
 
 
 def test_require_reproduced_raises_on_diff(tmp_path):
-    base = _synthetic_pseudo_files(tmp_path, n=3)
-    m1 = st.build_pseudo_manifest(labels_path=base / "labels.npy",
-                                  source_path=base / st.REAL_TRAIN_NPY,
-                                  teacher_ckpt=base / "teacher.pt", expected_n=3,
-                                  source_commit="c1")
-    m2 = st.build_pseudo_manifest(labels_path=base / "labels.npy",
-                                  source_path=base / st.REAL_TRAIN_NPY,
-                                  teacher_ckpt=base / "teacher.pt", expected_n=3,
-                                  source_commit="c2")
+    ms = []
+    for sub, commit in (("a", "c1"), ("b", "c2")):  # 독립된 두 빌드 — 커밋만 다르다
+        base = _synthetic_pseudo_files(tmp_path, n=3, subdir=sub)
+        ms.append(st.build_pseudo_manifest(labels_path=base / "labels.npy",
+                                           source_path=base / st.REAL_TRAIN_NPY,
+                                           teacher_ckpt=base / "teacher.pt", expected_n=3,
+                                           source_commit=commit,
+                                           runtime=_BUILD_PROVENANCE["runtime"]))
+    m1, m2 = ms
     with pytest.raises(st.ContractError, match="source_commit"):
         st.require_reproduced(m1, m2)
 
@@ -573,8 +590,8 @@ def test_student_config_sim_only_forbids_real_sampling():
 
 
 def test_student_config_sim_only_forbids_pseudo_manifest():
-    sampler = st.RealSamplerSpec.build(n_sim=10, n_real=0, real_per_epoch=0, seed=42)
-    with pytest.raises(st.ContractError):
+    sampler = _control_sampler(10, 42)
+    with pytest.raises(st.ContractError, match="pseudo_manifest"):
         st.student_config("arm0", sampler, pseudo_manifest_sha256="a" * 64, source_commit="c1")
 
 
@@ -591,9 +608,9 @@ def test_student_config_sim_pseudo_requires_pseudo_manifest_sha():
 
 
 def test_student_config_matches_arms_hparams_and_fingerprint_is_deterministic():
-    sampler = st.RealSamplerSpec.build(n_sim=10, n_real=0, real_per_epoch=0, seed=42)
-    cfg1 = st.student_config("arm0", sampler, source_commit="c1")
-    cfg2 = st.student_config("arm0", sampler, source_commit="c1")
+    sampler = _control_sampler(10, 42)
+    cfg1 = st.student_config("arm0", sampler, source_commit="c1", sim_inputs=_SIM_INPUTS)
+    cfg2 = st.student_config("arm0", sampler, source_commit="c1", sim_inputs=_SIM_INPUTS)
     assert cfg1 == cfg2  # 같은 입력 → 같은 config (config_fingerprint 포함)
     assert cfg1["lr"] == 1e-3 and cfg1["epochs"] == 15 and cfg1["init"] == "scratch"
     assert cfg1["config_fingerprint"] == st.fingerprint(
@@ -601,8 +618,8 @@ def test_student_config_matches_arms_hparams_and_fingerprint_is_deterministic():
 
 
 def test_student_config_fingerprint_changes_when_seed_changes():
-    sampler_a = st.RealSamplerSpec.build(n_sim=10, n_real=0, real_per_epoch=0, seed=42)
-    sampler_b = st.RealSamplerSpec.build(n_sim=10, n_real=0, real_per_epoch=0, seed=43)
+    sampler_a = _control_sampler(10, 42)
+    sampler_b = _control_sampler(10, 43)
     cfg_a = st.student_config("arm0", sampler_a, source_commit="c1")
     cfg_b = st.student_config("arm0b", sampler_b, source_commit="c1")
     assert cfg_a["config_fingerprint"] != cfg_b["config_fingerprint"]
@@ -611,13 +628,13 @@ def test_student_config_fingerprint_changes_when_seed_changes():
 # ── check_arm_parity ─────────────────────────────────────────
 
 def _three_arm_configs(n_sim=20, n_real=20, source_commit="c1", lr_override=None):
-    s0 = st.RealSamplerSpec.build(n_sim, n_real, real_per_epoch=0, seed=42)
-    s0b = st.RealSamplerSpec.build(n_sim, n_real, real_per_epoch=0, seed=43)
+    s0 = _control_sampler(n_sim, 42, extra=5)
+    s0b = _control_sampler(n_sim, 43, extra=5)
     s1 = st.RealSamplerSpec.build(n_sim, n_real, real_per_epoch=5, seed=42)
-    cfg0 = st.student_config("arm0", s0, source_commit=source_commit)
-    cfg0b = st.student_config("arm0b", s0b, source_commit=source_commit)
+    cfg0 = st.student_config("arm0", s0, source_commit=source_commit, sim_inputs=_SIM_INPUTS)
+    cfg0b = st.student_config("arm0b", s0b, source_commit=source_commit, sim_inputs=_SIM_INPUTS)
     cfg1 = st.student_config("arm1", s1, pseudo_manifest_sha256="a" * 64,
-                             source_commit=source_commit)
+                             source_commit=source_commit, sim_inputs=_SIM_INPUTS)
     if lr_override is not None:
         cfg0b = dict(cfg0b)
         cfg0b["lr"] = lr_override
@@ -635,19 +652,19 @@ def test_check_arm_parity_rejects_lr_change():
 
 
 def test_check_arm_parity_rejects_different_source_commit():
-    s0 = st.RealSamplerSpec.build(20, 20, real_per_epoch=0, seed=42)
-    s0b = st.RealSamplerSpec.build(20, 20, real_per_epoch=0, seed=43)
-    cfg0 = st.student_config("arm0", s0, source_commit="commit-a")
-    cfg0b = st.student_config("arm0b", s0b, source_commit="commit-b")
+    s0 = _control_sampler(20, 42)
+    s0b = _control_sampler(20, 43)
+    cfg0 = st.student_config("arm0", s0, source_commit="commit-a", sim_inputs=_SIM_INPUTS)
+    cfg0b = st.student_config("arm0b", s0b, source_commit="commit-b", sim_inputs=_SIM_INPUTS)
     with pytest.raises(st.ContractError, match="source_commit"):
         st.check_arm_parity([cfg0, cfg0b])
 
 
 def test_check_arm_parity_rejects_empty_source_commit():
-    s0 = st.RealSamplerSpec.build(20, 20, real_per_epoch=0, seed=42)
-    s0b = st.RealSamplerSpec.build(20, 20, real_per_epoch=0, seed=43)
-    cfg0 = st.student_config("arm0", s0, source_commit="")
-    cfg0b = st.student_config("arm0b", s0b, source_commit="")
+    s0 = _control_sampler(20, 42)
+    s0b = _control_sampler(20, 43)
+    cfg0 = st.student_config("arm0", s0, source_commit="", sim_inputs=_SIM_INPUTS)
+    cfg0b = st.student_config("arm0b", s0b, source_commit="", sim_inputs=_SIM_INPUTS)
     with pytest.raises(st.ContractError, match="source_commit"):
         st.check_arm_parity([cfg0, cfg0b])
 
@@ -658,10 +675,11 @@ def test_check_arm_parity_requires_at_least_two_configs():
 
 
 def test_check_arm_parity_rejects_mismatched_n_sim():
-    s0 = st.RealSamplerSpec.build(n_sim=20, n_real=20, real_per_epoch=0, seed=42)
-    s0b = st.RealSamplerSpec.build(n_sim=21, n_real=20, real_per_epoch=0, seed=43)
-    cfg0 = st.student_config("arm0", s0, source_commit="c1")
-    cfg0b = st.student_config("arm0b", s0b, source_commit="c1")
+    # 한 라운드 노출 수(25)는 같게 맞춰 두고 n_sim만 다르게 — n_sim 검사 자체를 겨냥한다
+    s0 = _control_sampler(20, 42, extra=5)
+    s0b = _control_sampler(21, 43, extra=4)
+    cfg0 = st.student_config("arm0", s0, source_commit="c1", sim_inputs=_SIM_INPUTS)
+    cfg0b = st.student_config("arm0b", s0b, source_commit="c1", sim_inputs=_SIM_INPUTS)
     with pytest.raises(st.ContractError, match="n_sim"):
         st.check_arm_parity([cfg0, cfg0b])
 
@@ -735,10 +753,10 @@ def test_cli_compare_reports_ok_for_reproduced_build(tmp_path, capsys):
 
     m1 = st.write_manifest(src / "m.json", st.build_pseudo_manifest(
         labels_path=src / "labels.npy", source_path=src / st.REAL_TRAIN_NPY,
-        teacher_ckpt=src / "teacher.pt", expected_n=4))
+        teacher_ckpt=src / "teacher.pt", expected_n=4, **_BUILD_PROVENANCE))
     m2 = st.write_manifest(dup / "m.json", st.build_pseudo_manifest(
         labels_path=dup / "labels.npy", source_path=dup / st.REAL_TRAIN_NPY,
-        teacher_ckpt=dup / "teacher.pt", expected_n=4))
+        teacher_ckpt=dup / "teacher.pt", expected_n=4, **_BUILD_PROVENANCE))
 
     bpl.main(["compare", str(m1), str(m2)])
     last = capsys.readouterr().out.strip().splitlines()[-1]
@@ -795,12 +813,13 @@ def test_cli_train_out_is_byte_copy_of_teacher_exits_2(tmp_path, capsys):
 
 def _write_arm_manifest(path, arm, n_sim=5, n_real=5, source_commit="deadbeef", lr=None):
     spec = st.arm_spec(arm)
-    real_per_epoch = 3 if spec["data"] == "sim_pseudo" else 0
-    sampler = st.RealSamplerSpec.build(n_sim, n_real, real_per_epoch=real_per_epoch,
-                                       seed=spec["seed"])
+    if spec["data"] == "sim_pseudo":
+        sampler = st.RealSamplerSpec.build(n_sim, n_real, real_per_epoch=3, seed=spec["seed"])
+    else:
+        sampler = _control_sampler(n_sim, spec["seed"], extra=3)
     pseudo_sha = "a" * 64 if spec["data"] == "sim_pseudo" else None
     cfg = st.student_config(arm, sampler, pseudo_manifest_sha256=pseudo_sha,
-                            source_commit=source_commit)
+                            source_commit=source_commit, sim_inputs=_SIM_INPUTS)
     if lr is not None:
         cfg = dict(cfg)
         cfg["lr"] = lr
@@ -854,14 +873,13 @@ def test_cli_help_exits_0(name):
 
 
 def _train_format_manifest(path, arm):
-    """`train`이 실제로 디스크에 쓰는 형태 — cfg + out/x_domain/y_source/metric/note."""
+    """`train`이 실제로 디스크에 쓰는 형태 — `build_student_manifest`가 만드는 그대로."""
     cfg = json.loads(_write_arm_manifest(path, arm).read_text(encoding="utf-8"))
-    is_arm1 = cfg["data"] == "sim_pseudo"
-    cfg.update({"out": str(path.with_suffix(".pt")),
-                "x_domain": "sim+real" if is_arm1 else "sim",
-                "y_source": "sim_depth_gt+pseudo_label" if is_arm1 else "sim_depth_gt",
-                "metric": None, "note": "judged by leaderboard only"})
-    path.write_text(json.dumps(cfg), encoding="utf-8")
+    out = path.parent / f"{arm}.pt"
+    out.write_bytes(f"student-{arm}".encode())
+    m = st.build_student_manifest(cfg, out=out, runtime={"device": "cuda", "torch": "2.x"},
+                                  optimizer_steps_done=cfg["total_optimizer_steps"])
+    path.write_text(json.dumps(m), encoding="utf-8")
     return path
 
 
@@ -879,8 +897,9 @@ def test_cli_parity_accepts_manifests_in_train_output_format(tmp_path, capsys):
 def test_check_arm_parity_rejects_dirty_commit():
     # 같은 커밋 해시라도 작업트리가 dirty면 arm마다 코드가 달랐을 수 있다 — "같은 구현 commit"
     # 조건은 깨끗한 트리에서만 성립한다.
-    cfgs = [st.student_config(a, st.RealSamplerSpec.build(5, 0, seed=st.ARMS[a]["seed"]),
-                              source_commit="abc" + st.DIRTY_SUFFIX) for a in ("arm0", "arm0b")]
+    cfgs = [st.student_config(a, _control_sampler(5, st.ARMS[a]["seed"]),
+                              source_commit="abc" + st.DIRTY_SUFFIX, sim_inputs=_SIM_INPUTS)
+            for a in ("arm0", "arm0b")]
     with pytest.raises(st.ContractError, match="dirty"):
         st.check_arm_parity(cfgs)
 
@@ -985,8 +1004,9 @@ def test_pseudo_manifest_records_adabn_recipe_and_runtime(tmp_path):
 def _cfg(arm, commit="deadbeef"):
     spec = st.arm_spec(arm)
     n_real = 5 if spec["data"] == "sim_pseudo" else 0
-    sampler = st.RealSamplerSpec.build(5, n_real, seed=spec["seed"])
-    return st.student_config(arm, sampler, source_commit=commit,
+    sampler = (st.RealSamplerSpec.build(5, n_real, seed=spec["seed"]) if n_real
+               else _control_sampler(5, spec["seed"], extra=5))
+    return st.student_config(arm, sampler, source_commit=commit, sim_inputs=_SIM_INPUTS,
                              pseudo_manifest_sha256="a" * 64 if n_real else None)
 
 
@@ -1022,8 +1042,15 @@ def plan_env(tmp_path, monkeypatch):
     monkeypatch.setattr(tst, "git_head", lambda cwd=None: "c0ffee")
     monkeypatch.setattr(tst, "sim_train_indices",
                         lambda case: st.sim_train_indices(case, expected_n=None))
+    monkeypatch.setattr(tst, "ROUND_EXTRA_N", 4)  # 합성 real 4장 = 라운드당 추가 노출 4
     base = _synthetic_pseudo_files(tmp_path, n=4)
-    np.save(base / "sim_case.npy", _synthetic_case())
+    case = _synthetic_case()
+    np.save(base / "sim_case.npy", case)
+    rng = np.random.default_rng(1)
+    np.save(base / "sim_sem.npy",
+            rng.integers(0, 255, size=(len(case), *st.IMAGE_SHAPE), dtype=np.uint8))
+    np.save(base / "sim_depth.npy",
+            rng.random((len(case), *st.IMAGE_SHAPE)).astype(np.float32))
     m = st.build_pseudo_manifest(labels_path=base / "labels.npy",
                                  source_path=base / st.REAL_TRAIN_NPY,
                                  teacher_ckpt=base / "teacher.pt", expected_n=4)
@@ -1224,3 +1251,383 @@ def test_cli_build_test_source_never_takes_gpu_lock(build_env):
     with pytest.raises(SystemExit):
         bpl.main([*argv, "--source", str(base / st.TEST_NPY)])
     assert rec.events == []
+
+
+# ══════════════════════════════════════════════════════════════
+# 통합 차단 요소 수정 — (1) arm 간 optimizer step·노출 수 동일화 (2) sim 입력·출력 ckpt 해시
+# (3) --resume fail-closed (4) compare가 파일과 핵심 계약 필드를 재검증 · 원자적 쓰기
+# ══════════════════════════════════════════════════════════════
+
+# ── (1) 노출 라운드 동일화 ───────────────────────────────────
+# 회귀: 대조군은 epoch당 138,648장, arm1은 199,312장을 봐서 arm1만 optimizer step이 ~44%
+# 더 많았다 — pseudo-label 효과와 학습량 차이가 섞인다. 대조군은 라운드마다 sim을 비복원으로
+# 60,664장 더 본다.
+
+def test_control_sampler_adds_nonreplacement_extra_sim_each_round():
+    spec = _control_sampler(15, 7, extra=9)
+    for epoch in range(4):
+        idx = spec.epoch_indices(epoch)
+        assert len(idx) == 24 and idx.max() < 15  # real 인덱스는 없다
+        counts = np.bincount(idx, minlength=15)
+        assert counts.min() == 1  # sim 전량은 한 번씩
+        assert int((counts == 2).sum()) == 9 and counts.max() == 2  # 추가분 9장은 비복원
+
+
+def _extra_draw(spec, epoch):
+    return sorted(np.where(np.bincount(spec.epoch_indices(epoch)) == 2)[0].tolist())
+
+
+def test_extra_sim_draw_depends_on_extra_sampler_seed_and_epoch():
+    a = st.RealSamplerSpec.build(15, 0, real_per_epoch=0, seed=7, extra_sim_per_epoch=5,
+                                 extra_sampler_seed=1)
+    b = st.RealSamplerSpec.build(15, 0, real_per_epoch=0, seed=7, extra_sim_per_epoch=5,
+                                 extra_sampler_seed=2)
+    assert _extra_draw(a, 0) != _extra_draw(b, 0)
+    assert _extra_draw(a, 0) != _extra_draw(a, 1)
+    assert _control_sampler(15, 7, extra=5).extra_sampler_seed == 7  # 기본값은 arm seed
+
+
+@pytest.mark.parametrize("kw", [{"extra_sim_per_epoch": -1}, {"extra_sim_per_epoch": 16}])
+def test_extra_sim_per_epoch_must_fit_without_replacement(kw):
+    with pytest.raises(st.ContractError, match="extra_sim_per_epoch"):
+        st.RealSamplerSpec.build(15, 0, real_per_epoch=0, seed=1, **kw)
+
+
+def test_sampler_rejects_real_and_extra_sim_together():
+    with pytest.raises(st.ContractError, match="extra_sim_per_epoch"):
+        st.RealSamplerSpec.build(15, 10, real_per_epoch=5, seed=1, extra_sim_per_epoch=5)
+
+
+def test_sampler_to_dict_records_extra_draw():
+    d = _control_sampler(15, 7, extra=9).to_dict()
+    assert d["extra_sim_per_epoch"] == 9 and d["extra_sampler_seed"] == 7
+    assert d["presentations_per_epoch"] == 24 and d["replacement"] is False
+
+
+def test_exposure_plan_matches_preregistered_h5_numbers():
+    arm1 = st.RealSamplerSpec.build(138648, 60664, seed=42)
+    ctrl = st.RealSamplerSpec.build(138648, 0, real_per_epoch=0, seed=43,
+                                    extra_sim_per_epoch=60664)
+    e1 = st.exposure_plan(arm1, epochs=15, batch_size=128)
+    e0 = st.exposure_plan(ctrl, epochs=15, batch_size=128)
+    assert e1 == {"exposure_rounds": 15, "presentations_per_round": 199312,
+                  "steps_per_round": 1558, "total_optimizer_steps": 23370,
+                  "sim_presentations": 2079720, "real_presentations": 909960,
+                  "extra_sampler_seed": 42}
+    assert e0 == {**e1, "sim_presentations": 2989680, "real_presentations": 0,
+                  "extra_sampler_seed": 43}
+
+
+def test_student_config_records_equalized_exposure():
+    cfg = st.student_config("arm0", _control_sampler(20, 42, extra=5), source_commit="c1",
+                            sim_inputs=_SIM_INPUTS)
+    assert cfg["presentations_per_round"] == 25 and cfg["steps_per_round"] == 1
+    assert cfg["total_optimizer_steps"] == 15
+    assert cfg["sim_presentations"] == 375 and cfg["real_presentations"] == 0
+    assert cfg["extra_sampler_seed"] == 42
+    assert cfg["schedule_step"] == "optimizer_step"
+
+
+def test_student_config_sim_only_requires_extra_sim_equalization():
+    bare = st.RealSamplerSpec.build(10, 0, real_per_epoch=0, seed=42)
+    with pytest.raises(st.ContractError, match="extra_sim_per_epoch"):
+        st.student_config("arm0", bare, source_commit="c1", sim_inputs=_SIM_INPUTS)
+
+
+def test_check_arm_parity_rejects_unequal_round_presentations():
+    cfg0 = st.student_config("arm0", _control_sampler(20, 42, extra=3), source_commit="c1",
+                             sim_inputs=_SIM_INPUTS)
+    cfg1 = st.student_config("arm1", st.RealSamplerSpec.build(20, 20, real_per_epoch=5, seed=42),
+                             pseudo_manifest_sha256="a" * 64, source_commit="c1",
+                             sim_inputs=_SIM_INPUTS)
+    with pytest.raises(st.ContractError, match="presentations_per_round"):
+        st.check_arm_parity([cfg0, cfg1])
+
+
+def _refingerprint(c: dict) -> dict:
+    c["config_fingerprint"] = st.fingerprint(
+        {k: v for k, v in c.items() if k != "config_fingerprint"})
+    return c
+
+
+def test_check_arm_parity_rejects_exposure_fields_inconsistent_with_sampler():
+    # 세 arm 모두 같은 거짓 step 수를 적고 지문까지 다시 계산 — 값 비교로는 안 잡힌다.
+    forged = [_refingerprint(dict(c, total_optimizer_steps=1)) for c in _three_arm_configs()]
+    with pytest.raises(st.ContractError, match="total_optimizer_steps"):
+        st.check_arm_parity(forged)
+
+
+def test_check_arm_parity_requires_sim_input_hashes():
+    cfgs = [_refingerprint(dict(c, sim_inputs=None)) for c in _three_arm_configs()]
+    with pytest.raises(st.ContractError, match="sim_inputs"):
+        st.check_arm_parity(cfgs)
+
+
+def test_train_script_schedules_cosine_over_global_optimizer_steps():
+    # 학습 루프는 GPU가 있어야 돈다 — 계약만 소스로 고정한다 (test_train_manifest.py 방식).
+    src = (SCRIPTS_DIR / "train_self_training.py").read_text(encoding="utf-8")
+    assert 'CosineAnnealingLR(opt, T_max=cfg["total_optimizer_steps"])' in src
+    loop = src[src.index("for x, y in loader:"):src.index('print(f"epoch {ep}')]
+    assert "sched.step()" in loop and "global_step += 1" in loop
+    assert 'global_step != cfg["total_optimizer_steps"]' in src
+
+
+# ── (2) sim 입력 해시 · 출력 ckpt 해시 ───────────────────────
+
+def test_sim_inputs_record_hashes_the_three_cache_arrays(tmp_path):
+    for name in st.SIM_INPUT_NAMES:
+        np.save(tmp_path / f"{name}.npy", np.arange(6, dtype=np.int64).reshape(2, 3))
+    rec = st.sim_inputs_record(tmp_path)
+    assert set(rec) == {"sim_sem", "sim_depth", "sim_case"}
+    for name, r in rec.items():
+        assert r["file"] == f"{name}.npy"
+        assert r["sha256"] == hashlib.sha256((tmp_path / f"{name}.npy").read_bytes()).hexdigest()
+        assert r["shape"] == [2, 3] and r["dtype"] == "int64"
+
+
+def test_sim_inputs_record_missing_file_is_contract_error(tmp_path):
+    np.save(tmp_path / "sim_case.npy", np.zeros(2))
+    with pytest.raises(st.ContractError, match="sim_sem"):
+        st.sim_inputs_record(tmp_path)
+
+
+def test_cli_plan_records_sim_inputs_and_train_rejects_changed_cache(plan_env, capsys):
+    tst, base = plan_env
+    tst.main(["plan", *_arm_args(base, "arm0"), "--write", str(base / "arm0.plan.json")])
+    plan = st.load_manifest(base / "arm0.plan.json")
+    assert plan["sim_inputs"]["sim_depth"]["sha256"] == st.sha256_file(base / "sim_depth.npy")
+    assert plan["sampler"]["extra_sim_per_epoch"] == 4
+    np.save(base / "sim_depth.npy", np.zeros((40, *st.IMAGE_SHAPE), dtype=np.float32))
+    with pytest.raises(SystemExit) as exc:
+        tst.main(["train", *_arm_args(base, "arm0"), "--plan", str(base / "arm0.plan.json")])
+    assert exc.value.code == 2
+    assert "--plan과 지금 설정이 다르다" in capsys.readouterr().err
+
+
+def test_cli_plan_rejects_pseudo_count_not_matching_round_extra(plan_env, monkeypatch, capsys):
+    tst, base = plan_env
+    monkeypatch.setattr(tst, "ROUND_EXTRA_N", 3)
+    with pytest.raises(SystemExit) as exc:
+        tst.main(["plan", *_arm_args(base, "arm1"), "--write", str(base / "p.json")])
+    assert exc.value.code == 2
+    assert "ROUND_EXTRA_N" in capsys.readouterr().err
+
+
+def test_build_student_manifest_hashes_out_and_requires_all_steps(tmp_path):
+    cfg = _cfg("arm0")
+    out = tmp_path / "arm0.pt"
+    out.write_bytes(b"student")
+    m = st.build_student_manifest(cfg, out=out, runtime={"device": "cuda"},
+                                  optimizer_steps_done=cfg["total_optimizer_steps"])
+    assert m["out_sha256"] == hashlib.sha256(b"student").hexdigest()
+    assert m["optimizer_steps_done"] == cfg["total_optimizer_steps"]
+    assert m["x_domain"] == "sim" and m["metric"] is None
+    with pytest.raises(st.ContractError, match="optimizer_steps_done"):
+        st.build_student_manifest(cfg, out=out, runtime={},
+                                  optimizer_steps_done=cfg["total_optimizer_steps"] - 1)
+
+
+def test_cli_parity_rejects_student_manifest_whose_ckpt_changed(tmp_path, capsys):
+    tst = _import_script("train_self_training")
+    paths = [_train_format_manifest(tmp_path / f"{a}.manifest.json", a)
+             for a in ("arm0", "arm0b", "arm1")]
+    (tmp_path / "arm0b.pt").write_bytes(b"swapped-after-training")
+    with pytest.raises(SystemExit) as exc:
+        tst.main(["parity", *map(str, paths)])
+    assert exc.value.code == 2
+    assert "out_sha256" in capsys.readouterr().err
+
+
+# ── (3) --resume fail-closed ────────────────────────────────
+
+@pytest.fixture
+def train_env(plan_env, monkeypatch):
+    """plan까지 만든 뒤 GPU 구간을 (resume 여부만 기록하는) 가짜로 바꾼다."""
+    tst, base = plan_env
+    tst.main(["plan", *_arm_args(base, "arm0"), "--write", str(base / "arm0.plan.json")])
+    rec = _LockRecorder()
+    monkeypatch.setattr(tst, "resource_lock", rec)
+    monkeypatch.setattr(tst, "_train_on_gpu", lambda *a, **k: rec.events.append(("gpu", a[-1])))
+    argv = ["train", *_arm_args(base, "arm0"), "--plan", str(base / "arm0.plan.json")]
+    return tst, base, rec, argv
+
+
+def test_cli_train_resume_without_resume_state_fails_closed(train_env, capsys):
+    # 회귀: --resume인데 재개 파일이 없으면 조용히 1 epoch부터 새로 학습했다.
+    tst, base, rec, argv = train_env
+    with pytest.raises(SystemExit) as exc:
+        tst.main([*argv, "--resume"])
+    assert exc.value.code == 2
+    assert "재개 상태가 없다" in capsys.readouterr().err
+    assert rec.events == []
+
+
+def test_cli_train_existing_resume_state_without_flag_is_not_overwritten(train_env, capsys):
+    tst, base, rec, argv = train_env
+    resume = st.student_resume_path(base / "arm0.pt")
+    resume.write_bytes(b"epoch-7-state")
+    with pytest.raises(SystemExit) as exc:
+        tst.main(argv)
+    assert exc.value.code == 2
+    assert "--resume" in capsys.readouterr().err
+    assert resume.read_bytes() == b"epoch-7-state" and rec.events == []
+
+
+def test_cli_train_resume_refuses_existing_out(train_env, capsys):
+    tst, base, rec, argv = train_env
+    st.student_resume_path(base / "arm0.pt").write_bytes(b"state")
+    (base / "arm0.pt").write_bytes(b"finished")
+    with pytest.raises(SystemExit) as exc:
+        tst.main([*argv, "--resume"])
+    assert exc.value.code == 2
+    assert "--out이 이미 존재한다" in capsys.readouterr().err
+    assert (base / "arm0.pt").read_bytes() == b"finished" and rec.events == []
+
+
+def test_cli_train_resume_with_state_reaches_gpu_as_resume(train_env):
+    tst, base, rec, argv = train_env
+    st.student_resume_path(base / "arm0.pt").write_bytes(b"state")
+    tst.main([*argv, "--resume"])
+    assert rec.events == ["acquire:gpu-0", ("gpu", True), "release:gpu-0"]
+
+
+def test_cli_train_fresh_reaches_gpu_as_fresh(train_env):
+    tst, base, rec, argv = train_env
+    tst.main(argv)
+    assert rec.events == ["acquire:gpu-0", ("gpu", False), "release:gpu-0"]
+
+
+def test_resume_state_checks_are_ordered_and_fail_closed(tmp_path):
+    out = tmp_path / "s.pt"
+    resume, manifest = st.student_resume_path(out), st.student_manifest_path(out)
+    assert st.check_resume_state(out, resume=False) is False
+    with pytest.raises(st.ContractError, match="재개 상태가 없다"):
+        st.check_resume_state(out, resume=True)
+    resume.write_bytes(b"x")
+    assert st.check_resume_state(out, resume=True) is True
+    with pytest.raises(st.ContractError, match="--resume"):
+        st.check_resume_state(out, resume=False)
+    manifest.write_text("{}", encoding="utf-8")
+    with pytest.raises(st.ContractError, match="manifest가 이미 존재한다"):
+        st.check_resume_state(out, resume=True)
+
+
+# ── (4) compare / verify 재검증 ─────────────────────────────
+
+def _reproduced_pair(tmp_path, mutate=None):
+    """경로만 다른 두 빌드의 manifest를 쓴다 — mutate가 있으면 양쪽에 똑같이 적용한다."""
+    paths = []
+    for sub in ("a", "b"):
+        base = _synthetic_pseudo_files(tmp_path, n=4, subdir=sub)
+        m = st.build_pseudo_manifest(labels_path=base / "labels.npy",
+                                     source_path=base / st.REAL_TRAIN_NPY,
+                                     teacher_ckpt=base / "teacher.pt", expected_n=4,
+                                     **_BUILD_PROVENANCE)
+        if mutate:
+            mutate(m)
+        paths.append(st.write_manifest(base / "m.json", m))
+    return paths
+
+
+def test_cli_compare_rejects_artifact_changed_after_build(tmp_path, capsys):
+    # 회귀: compare는 manifest JSON만 비교해서, 라벨 파일이 바뀌어도 "재현됨"을 주장했다.
+    bpl = _import_script("build_pseudo_labels")
+    a, b = _reproduced_pair(tmp_path)
+    raw = bytearray((b.parent / "labels.npy").read_bytes())
+    raw[-1] ^= 0xFF
+    (b.parent / "labels.npy").write_bytes(bytes(raw))
+    with pytest.raises(SystemExit) as exc:
+        bpl.main(["compare", str(a), str(b)])
+    assert exc.value.code == 2
+    assert "labels.sha256" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("mutate,needle", [
+    (lambda m: m.update(source_commit=""), "source_commit"),
+    (lambda m: m.update(source_commit="c0ffee" + st.DIRTY_SUFFIX), "source_commit"),
+    (lambda m: m.update(runtime={}), "runtime"),
+    (lambda m: m["teacher"].pop("sha256"), "teacher.sha256"),
+])
+def test_require_reproduced_rejects_missing_critical_fields_on_both_sides(tmp_path, mutate,
+                                                                          needle):
+    # 양쪽이 똑같이 비어 있으면 diff는 비지만 재현을 주장할 근거가 없다.
+    a, b = _reproduced_pair(tmp_path, mutate)
+    with pytest.raises(st.ContractError, match=needle.replace(".", r"\.")):
+        st.require_reproduced(st.load_manifest(a), st.load_manifest(b))
+
+
+def test_require_reproduced_rejects_two_manifests_of_the_same_build(tmp_path):
+    base = _synthetic_pseudo_files(tmp_path, n=4)
+    m = st.build_pseudo_manifest(labels_path=base / "labels.npy",
+                                 source_path=base / st.REAL_TRAIN_NPY,
+                                 teacher_ckpt=base / "teacher.pt", expected_n=4,
+                                 **_BUILD_PROVENANCE)
+    with pytest.raises(st.ContractError, match="같은 labels"):
+        st.require_reproduced(m, dict(m))
+
+
+@pytest.mark.parametrize("field,value", [
+    (("labels", "mean"), 0.123), (("labels", "max"), 1.0), (("labels", "shape"), [4, 1, 1]),
+    (("teacher", "adabn_batch"), 256), (("teacher", "adabn_drop_last"), True)])
+def test_verify_rejects_stat_and_recipe_claims_not_matching_files(tmp_path, field, value):
+    base = _synthetic_pseudo_files(tmp_path, n=4)
+    m = st.build_pseudo_manifest(labels_path=base / "labels.npy",
+                                 source_path=base / st.REAL_TRAIN_NPY,
+                                 teacher_ckpt=base / "teacher.pt", expected_n=4)
+    m[field[0]][field[1]] = value
+    path = st.write_manifest(base / "m.json", m)
+    with pytest.raises(st.ContractError, match=".".join(field).replace(".", r"\.")):
+        st.verify_pseudo_manifest(path)
+
+
+def test_verify_missing_section_is_contract_error_not_keyerror(tmp_path):
+    base = _synthetic_pseudo_files(tmp_path, n=4)
+    m = st.build_pseudo_manifest(labels_path=base / "labels.npy",
+                                 source_path=base / st.REAL_TRAIN_NPY,
+                                 teacher_ckpt=base / "teacher.pt", expected_n=4)
+    del m["source"]
+    path = st.write_manifest(base / "m.json", m)
+    with pytest.raises(st.ContractError, match="source"):
+        st.verify_pseudo_manifest(path)
+
+
+# ── 원자적 쓰기 ─────────────────────────────────────────────
+
+def test_atomic_write_refuses_existing_target_and_leaves_no_temp(tmp_path):
+    target = tmp_path / "x.json"
+    target.write_text("old", encoding="utf-8")
+    with pytest.raises(st.ContractError, match="덮어쓰지 않는다"):
+        st.atomic_write(target, lambda tmp: tmp.write_text("new", encoding="utf-8"))
+    assert target.read_text(encoding="utf-8") == "old"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["x.json"]
+
+
+def test_atomic_write_failure_leaves_neither_target_nor_temp(tmp_path):
+    def half_then_die(tmp):
+        tmp.write_bytes(b"partial")
+        raise RuntimeError("crash mid-write")
+    with pytest.raises(RuntimeError):
+        st.atomic_write(tmp_path / "ckpt.pt", half_then_die)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_atomic_write_temp_keeps_suffix_for_np_save(tmp_path):
+    # np.save는 .npy가 아닌 경로에 .npy를 덧붙인다 — 임시 파일도 원래 확장자로 끝나야 한다.
+    st.atomic_write(tmp_path / "labels.npy", lambda tmp: np.save(tmp, np.ones(3)))
+    assert np.array_equal(np.load(tmp_path / "labels.npy"), np.ones(3))
+    assert [p.name for p in tmp_path.iterdir()] == ["labels.npy"]
+
+
+def test_atomic_write_overwrite_replaces_in_place(tmp_path):
+    target = tmp_path / "s.resume.pt"
+    target.write_bytes(b"epoch1")
+    st.atomic_write(target, lambda tmp: tmp.write_bytes(b"epoch2"), overwrite=True)
+    assert target.read_bytes() == b"epoch2"
+    assert [p.name for p in tmp_path.iterdir()] == ["s.resume.pt"]
+
+
+def test_scripts_write_checkpoints_and_labels_atomically():
+    tst_src = (SCRIPTS_DIR / "train_self_training.py").read_text(encoding="utf-8")
+    bpl_src = (SCRIPTS_DIR / "build_pseudo_labels.py").read_text(encoding="utf-8")
+    assert tst_src.count("torch.save(") == tst_src.count("lambda tmp: torch.save(") == 2
+    assert "atomic_write(out_path" in bpl_src

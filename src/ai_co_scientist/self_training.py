@@ -12,8 +12,10 @@ H5 사전보고(`docs/experiment/H5-self-training-pseudo-label.md`)의 "실행 �
 """
 import hashlib
 import json
+import math
 import os
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,11 +38,20 @@ TEACHER_ADABN_DROP_LAST = False
 # seed 대조군이 데이터 구성 차이를 섞는다. 홀드아웃은 X를 정의할 뿐 선택에 쓰지 않는다.
 SIM_SPLIT = {"val_frac": 0.2, "seed": 42}
 EXPECTED_SIM_TRAIN_N = 138648
+# student 학습이 읽는 sim 캐시 배열 — plan/train config에 각각의 sha256을 박는다
+SIM_INPUT_NAMES = ("sim_sem", "sim_depth", "sim_case")
+# 한 노출 라운드(=epoch)에 sim 전량 뒤에 더 보는 장수. arm1은 real pseudo 전량 60,664장,
+# 대조군은 sim을 같은 수만큼 비복원으로 더 본다 — 세 arm의 노출 수·optimizer step 수가 같아야
+# pseudo-label 효과가 학습량 차이와 섞이지 않는다 (라운드당 199,312장, 15라운드 23,370 step).
+ROUND_EXTRA_N = EXPECTED_REAL_N
 
 STUDENT_HPARAMS = {
     "arch": "mlp", "width": 32, "loss": "l1", "optimizer": "adamw", "lr": 1e-3,
     "schedule": "cosine", "epochs": 15, "batch_size": 128, "init": "scratch",
     "blur_sigma": 0.0, "checkpoint": "final_epoch",
+    # cosine은 전역 optimizer step 단위로 T_max=total_optimizer_steps까지 내려간다. 라운드의
+    # 마지막 배치는 버리지 않는다(drop_last=False) — 모든 노출이 학습에 들어간다.
+    "schedule_step": "optimizer_step", "drop_last": False,
 }  # holdout 선택 없음 — 마지막 epoch을 그대로 쓴다 (사전보고 "student" 절)
 
 ARMS = {
@@ -51,9 +62,12 @@ ARMS = {
 
 # arm 사이에 달라도 되는 키. x_domain/y_source는 `data`를 도메인 라벨로 다시 적은 것뿐이라
 # 여기 있다 — 빠지면 train이 실제로 쓰는 student manifest에서 parity가 항상 실패한다.
+# sim/real_presentations·extra_sampler_seed는 sampler(허용 차이)에서 유도되는 값이라 여기 있고,
+# 유도가 맞는지는 `check_arm_parity`가 따로 재계산한다. out_sha256은 arm마다 다른 산출물이다.
 PARITY_ALLOWED_DIFFS = frozenset({
     "arm", "seed", "data", "sampler", "pseudo_manifest", "pseudo_labels_sha256", "out",
-    "config_fingerprint", "x_domain", "y_source",
+    "config_fingerprint", "x_domain", "y_source", "sim_presentations", "real_presentations",
+    "extra_sampler_seed", "out_sha256",
 })
 DIRTY_SUFFIX = "+dirty"
 # 두 GPU 진입점(라벨 생성·학습)이 잡는 기계 단위 락 이름 — `locks.resource_lock`
@@ -136,6 +150,24 @@ def sim_subset_record(idx: np.ndarray) -> dict:
     a = np.ascontiguousarray(idx, dtype=np.int64)
     return {"split": "map_level_split", **SIM_SPLIT, "n": int(len(a)),
             "indices_sha256": hashlib.sha256(a.tobytes()).hexdigest()}
+
+
+def sim_inputs_record(cache_dir) -> dict:
+    """student가 읽는 sim 캐시 3종(`SIM_INPUT_NAMES`)의 sha256·shape·dtype.
+
+    경로는 넣지 않는다 — 같은 내용이면 어느 캐시에서 plan을 만들어도 지문이 같아야 하고,
+    plan 뒤에 캐시 내용이 바뀌면 train의 지문 비교가 그것을 잡는다.
+    """
+    rec = {}
+    for name in SIM_INPUT_NAMES:
+        path = Path(cache_dir) / f"{name}.npy"
+        if not path.is_file():
+            raise ContractError(f"sim 입력 파일이 없다 ({name}): {path}")
+        arr = np.load(path, mmap_mode="r")
+        rec[name] = {"file": path.name, "sha256": sha256_file(path),
+                     "shape": [int(d) for d in arr.shape], "dtype": str(arr.dtype)}
+        del arr  # Windows: mmap 핸들이 남으면 같은 파일을 다시 쓰지 못한다
+    return rec
 
 
 # ── 입력 경로 계약 ──────────────────────────────────────────
@@ -269,15 +301,45 @@ def build_pseudo_manifest(*, labels_path, source_path, teacher_ckpt, expected_n,
     }
 
 
+def atomic_write(path, write_fn, *, overwrite: bool = False) -> Path:
+    """`write_fn(tmp)`이 같은 디렉터리의 임시 파일에 다 쓴 뒤에만 `path`로 드러낸다.
+
+    도중에 죽으면 `path`는 없거나(새 파일) 이전 내용 그대로다 — 반쯤 쓴 ckpt/라벨이 다음
+    실행에 "이미 존재함"이나 재개 상태로 읽히지 않는다. 임시 파일은 원래 확장자로 끝난다
+    (`np.save`가 `.npy`를 덧붙이지 않게).
+
+    overwrite=False: 하드링크로 드러낸다 — 대상이 이미 있으면 링크가 원자적으로 실패하므로
+    확인과 쓰기 사이에 끼어든 파일도 덮어쓰지 않는다. overwrite=True: `os.replace`.
+    """
+    p = Path(path)
+    if not overwrite and p.exists():
+        raise ContractError(f"이미 존재한다 — 덮어쓰지 않는다: {p}")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f".{p.stem}.{os.getpid()}-{uuid.uuid4().hex[:12]}.tmp{p.suffix}")
+    try:
+        write_fn(tmp)
+        if overwrite:
+            os.replace(tmp, p)
+        else:
+            try:
+                os.link(tmp, p)
+            except FileExistsError:
+                raise ContractError(f"이미 존재한다 — 덮어쓰지 않는다: {p}") from None
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+    return p
+
+
 def write_manifest(path, manifest: dict) -> Path:
-    """manifest를 JSON으로 쓴다. **덮어쓰지 않는다** — 이미 있으면 ContractError."""
+    """manifest를 JSON으로 원자적으로 쓴다. **덮어쓰지 않는다** — 이미 있으면 ContractError."""
     p = Path(path)
     if p.exists():
         raise ContractError(f"manifest가 이미 존재한다 — 덮어쓰지 않는다: {p}")
-    p.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    p.write_text(text, encoding="utf-8")
-    return p
+    return atomic_write(p, lambda tmp: tmp.write_text(text, encoding="utf-8"))
 
 
 def load_manifest(path) -> dict:
@@ -285,8 +347,20 @@ def load_manifest(path) -> dict:
 
 
 def verify_pseudo_manifest(manifest_path, *, teacher_ckpt=None) -> dict:
-    """manifest가 가리키는 파일들을 다시 해싱·검증해 변조/누락을 잡는다."""
+    """manifest가 가리키는 파일들을 다시 해싱·검증해 변조/누락을 잡는다.
+
+    해시만이 아니라 manifest의 **주장**도 본다: H5가 고정한 AdaBN 레시피, 그리고 라벨
+    통계(shape·min·max·mean)가 파일에서 다시 계산한 값과 같은지. 필드가 빠진 manifest는
+    KeyError 트레이스백이 아니라 ContractError다.
+    """
     manifest = load_manifest(manifest_path)
+    try:
+        return _verify_pseudo_manifest(manifest, teacher_ckpt)
+    except (KeyError, TypeError, AttributeError) as e:
+        raise ContractError(f"pseudo-label manifest에 필수 필드가 없다: {e!r}") from None
+
+
+def _verify_pseudo_manifest(manifest: dict, teacher_ckpt) -> dict:
     if manifest.get("schema") != PSEUDO_SCHEMA:
         raise ContractError(
             f"manifest schema가 {PSEUDO_SCHEMA}가 아니다 — 받은 {manifest.get('schema')}")
@@ -297,6 +371,10 @@ def verify_pseudo_manifest(manifest_path, *, teacher_ckpt=None) -> dict:
                                        TEACHER_ADABN_SOURCE),
               "teacher.adabn_shuffle": (manifest["teacher"].get("adabn_shuffle"),
                                         TEACHER_ADABN_SHUFFLE),
+              "teacher.adabn_batch": (manifest["teacher"].get("adabn_batch"),
+                                      TEACHER_ADABN_BATCH),
+              "teacher.adabn_drop_last": (manifest["teacher"].get("adabn_drop_last"),
+                                          TEACHER_ADABN_DROP_LAST),
               "labels.n": (manifest["labels"].get("n"), manifest["source"].get("n"))}
     for key, (got, want) in claims.items():
         if got != want:
@@ -323,7 +401,13 @@ def verify_pseudo_manifest(manifest_path, *, teacher_ckpt=None) -> dict:
         raise ContractError(f"teacher.sha256 불일치 — 파일이 변조됐다: {teacher_path}")
 
     labels = np.load(labels_path, mmap_mode="r")
-    validate_pseudo_labels(labels, manifest["labels"]["n"])
+    stats = validate_pseudo_labels(labels, manifest["labels"]["n"])
+    del labels  # Windows: mmap 핸들이 남으면 같은 파일을 옮기거나 지우지 못한다
+    for key, got in stats.items():
+        claimed = manifest["labels"].get(key, _MISSING)
+        if claimed != got:
+            raise ContractError(f"manifest labels.{key}가 파일에서 다시 계산한 값과 다르다: "
+                                f"{claimed!r} != {got!r}")
 
     if teacher_ckpt is not None:
         want = sha256_file(Path(teacher_ckpt))
@@ -363,7 +447,32 @@ def compare_pseudo_manifests(a: dict, b: dict) -> list:
     return sorted(diffs)
 
 
+# 재현을 주장하려면 양쪽 manifest에 **비어 있지 않게** 있어야 하는 필드 — 양쪽이 똑같이
+# 빠져 있으면 diff는 비지만, 무엇이 재현됐는지 말할 근거가 없다.
+_REPRO_REQUIRED = ("schema", "labels.path", "labels.sha256", "labels.n", "source.sha256",
+                   "teacher.sha256", "teacher.adabn_source", "teacher.adabn_shuffle",
+                   "teacher.adabn_batch", "batch_size", "source_commit", "runtime.device",
+                   "runtime.torch")
+
+
 def require_reproduced(a: dict, b: dict) -> None:
+    """a, b가 **경로만 다른 두 번의 독립 빌드**이고 내용이 같음을 강제한다.
+
+    파일 재해시는 여기서 하지 않는다 — CLI `compare`가 먼저 양쪽을 `verify_pseudo_manifest`로
+    통과시킨 뒤 부른다.
+    """
+    for name, m in (("A", a), ("B", b)):
+        flat = _flatten(m)
+        missing = [k for k in _REPRO_REQUIRED if flat.get(k, _MISSING) in (None, "", _MISSING)]
+        if missing:
+            raise ContractError(f"{name} manifest에 재현 판정에 필요한 필드가 없다: "
+                                f"{', '.join(missing)}")
+        if str(m["source_commit"]).endswith(DIRTY_SUFFIX):
+            raise ContractError(f"{name} manifest의 source_commit이 dirty다: "
+                                f"{m['source_commit']}")
+    if Path(a["labels"]["path"]).resolve() == Path(b["labels"]["path"]).resolve():
+        raise ContractError("두 manifest가 같은 labels 파일을 가리킨다 — 독립된 두 빌드가 "
+                            "아니면 재현이라 부를 수 없다")
     diffs = compare_pseudo_manifests(a, b)
     if diffs:
         raise ContractError(f"동일 명령 재현 실패 — 달라진 필드: {', '.join(diffs)}")
@@ -407,21 +516,49 @@ def student_manifest_path(out) -> Path:
     return Path(out).with_suffix(".manifest.json")
 
 
+def check_resume_state(out, *, resume: bool) -> bool:
+    """train이 GPU 락을 잡기 **전에** 부른다. 반환: 재개 상태에서 이어갈지.
+
+    fail-closed — 어느 쪽으로도 조용히 넘어가지 않는다:
+      * student manifest나 out이 이미 있으면 거부 (끝난 실행이거나 남의 파일이다)
+      * --resume인데 재개 파일이 없으면 거부 (처음부터 새로 학습하지 않는다)
+      * --resume이 없는데 재개 파일이 있으면 거부 (중단된 실행의 상태를 덮어쓰지 않는다)
+    """
+    out = Path(out)
+    resume_path, manifest_path = student_resume_path(out), student_manifest_path(out)
+    if manifest_path.exists():
+        raise ContractError(f"학생 manifest가 이미 존재한다 (덮어쓰지 않는다): {manifest_path}")
+    if out.exists():
+        raise ContractError(f"--out이 이미 존재한다 (덮어쓰지 않는다): {out}")
+    if resume and not resume_path.is_file():
+        raise ContractError(f"--resume인데 재개 상태가 없다: {resume_path} — 새로 시작하려면 "
+                            f"--resume 없이 실행할 것")
+    if not resume and resume_path.exists():
+        raise ContractError(f"중단된 실행의 재개 상태가 있다: {resume_path} — 이어가려면 "
+                            f"--resume, 버리려면 직접 치울 것 (덮어쓰지 않는다)")
+    return resume
+
+
 # ── 샘플러 ──────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class RealSamplerSpec:
-    """sim 전량 + real 일부를 매 epoch 섞는 샘플러의 명세.
+    """sim 전량 + 추가분(real pseudo 또는 sim 비복원 추가 표집)을 매 라운드 섞는 샘플러 명세.
 
     real이 sim을 과대표집하지 않도록(사전보고 "arm 1") ``real_per_epoch <= n_sim``을 강제한다.
+    대조군은 ``extra_sim_per_epoch``만큼 sim을 비복원으로 한 번 더 봐서 arm1과 라운드당 노출
+    수를 맞춘다. 추가분은 `extra_sampler_seed` 스트림, 섞기는 `seed` 스트림에서 뽑는다.
     """
     n_sim: int
     n_real: int
     real_per_epoch: int
     seed: int
+    extra_sim_per_epoch: int = 0
+    extra_sampler_seed: int = 42
 
     @classmethod
-    def build(cls, n_sim: int, n_real: int, real_per_epoch=None, seed: int = 42):
+    def build(cls, n_sim: int, n_real: int, real_per_epoch=None, seed: int = 42,
+              extra_sim_per_epoch: int = 0, extra_sampler_seed=None):
         if n_sim <= 0:
             raise ContractError(f"n_sim은 양수여야 한다 — 받은 {n_sim}")
         if real_per_epoch is None:
@@ -437,28 +574,61 @@ class RealSamplerSpec:
                 f"sim을 과대표집하지 않도록 epoch당 n_sim 이하로 제한한다")
         if n_real == 0 and real_per_epoch > 0:
             raise ContractError("n_real이 0인데 real_per_epoch가 0보다 크다")
-        return cls(n_sim=n_sim, n_real=n_real, real_per_epoch=real_per_epoch, seed=seed)
+        if not 0 <= extra_sim_per_epoch <= n_sim:
+            raise ContractError(
+                f"extra_sim_per_epoch({extra_sim_per_epoch})는 0 이상 n_sim({n_sim}) 이하여야 "
+                f"한다 — 라운드 안에서 비복원 추가 표집이다")
+        if extra_sim_per_epoch and real_per_epoch:
+            raise ContractError("real_per_epoch와 extra_sim_per_epoch를 함께 쓸 수 없다 — "
+                                "추가분은 real pseudo(arm1) 또는 sim(대조군) 한쪽이다")
+        return cls(n_sim=n_sim, n_real=n_real, real_per_epoch=real_per_epoch, seed=seed,
+                   extra_sim_per_epoch=extra_sim_per_epoch,
+                   extra_sampler_seed=seed if extra_sampler_seed is None else extra_sampler_seed)
+
+    @property
+    def presentations_per_epoch(self) -> int:
+        return self.n_sim + self.real_per_epoch + self.extra_sim_per_epoch
 
     def to_dict(self) -> dict:
         return {"n_sim": self.n_sim, "n_real": self.n_real,
                 "real_per_epoch": self.real_per_epoch, "seed": self.seed,
-                "replacement": False, "rng": "numpy.default_rng([seed, epoch])"}
+                "extra_sim_per_epoch": self.extra_sim_per_epoch,
+                "extra_sampler_seed": self.extra_sampler_seed,
+                "presentations_per_epoch": self.presentations_per_epoch,
+                "replacement": False,
+                "rng": "extra: numpy.default_rng([extra_sampler_seed, epoch, 1]); "
+                       "order: numpy.default_rng([seed, epoch])"}
 
     def epoch_indices(self, epoch: int) -> np.ndarray:
-        """이 epoch의 인덱스 배열 — sim은 전량 정확히 한 번, real은 비복원 표집.
+        """이 라운드의 인덱스 배열 — sim 전량 정확히 한 번 + 추가분(비복원) 한 번.
 
-        `[seed, epoch]`를 시드로 쓰므로 (spec, epoch)에 대해 결정적이고, epoch이 다르면
-        (일반적으로) 다른 순열이 나온다.
+        real 추가분은 `n_sim + j`, sim 추가분은 sim 인덱스 그대로다. (spec, epoch)에 대해
+        결정적이고 epoch이 다르면 (일반적으로) 다른 추가분·순서가 나온다.
         """
-        rng = np.random.default_rng([self.seed, epoch])
-        sim_part = np.arange(self.n_sim, dtype=np.int64)
+        extra_rng = np.random.default_rng([self.extra_sampler_seed, epoch, 1])
+        parts = [np.arange(self.n_sim, dtype=np.int64)]
         if self.real_per_epoch > 0:
-            chosen = rng.choice(self.n_real, self.real_per_epoch, replace=False)
-            real_part = self.n_sim + chosen.astype(np.int64)
-            combined = np.concatenate([sim_part, real_part])
-        else:
-            combined = sim_part
-        return rng.permutation(combined).astype(np.int64)
+            chosen = extra_rng.choice(self.n_real, self.real_per_epoch, replace=False)
+            parts.append(self.n_sim + chosen.astype(np.int64))
+        if self.extra_sim_per_epoch > 0:
+            parts.append(extra_rng.choice(self.n_sim, self.extra_sim_per_epoch,
+                                          replace=False).astype(np.int64))
+        rng = np.random.default_rng([self.seed, epoch])
+        return rng.permutation(np.concatenate(parts)).astype(np.int64)
+
+
+def exposure_plan(sampler: RealSamplerSpec, *, epochs: int, batch_size: int) -> dict:
+    """노출 라운드 수와 배치 크기로 정해지는 학습량 — 세 arm의 step 수가 같다는 근거.
+
+    라운드마다 DataLoader가 `ceil(presentations/batch)` step을 돈다 (drop_last=False).
+    """
+    ppr = sampler.presentations_per_epoch
+    steps = math.ceil(ppr / batch_size)
+    return {"exposure_rounds": epochs, "presentations_per_round": ppr,
+            "steps_per_round": steps, "total_optimizer_steps": steps * epochs,
+            "sim_presentations": (sampler.n_sim + sampler.extra_sim_per_epoch) * epochs,
+            "real_presentations": sampler.real_per_epoch * epochs,
+            "extra_sampler_seed": sampler.extra_sampler_seed}
 
 
 # ── arm / student config ───────────────────────────────────
@@ -472,7 +642,7 @@ def arm_spec(arm: str) -> dict:
 
 
 def student_config(arm: str, sampler: RealSamplerSpec, *, pseudo_manifest_sha256=None,
-                   source_commit: str = "", sim_subset=None) -> dict:
+                   source_commit: str = "", sim_subset=None, sim_inputs=None) -> dict:
     """arm 하나의 전체 학습 설정. `config_fingerprint`가 나머지 전체를 요약한다."""
     spec = arm_spec(arm)
     data = spec["data"]
@@ -485,6 +655,10 @@ def student_config(arm: str, sampler: RealSamplerSpec, *, pseudo_manifest_sha256
                 f"{sampler.real_per_epoch}")
         if pseudo_manifest_sha256 is not None:
             raise ContractError(f"{arm}은 sim_only인데 pseudo_manifest_sha256이 주어졌다")
+        if sampler.extra_sim_per_epoch <= 0:
+            raise ContractError(
+                f"{arm}은 sim_only인데 extra_sim_per_epoch가 0이다 — 대조군도 라운드마다 sim을 "
+                f"추가로 봐서 arm1과 optimizer step 수를 맞춰야 한다")
     elif data == "sim_pseudo":
         if sampler.real_per_epoch <= 0:
             raise ContractError(
@@ -492,21 +666,82 @@ def student_config(arm: str, sampler: RealSamplerSpec, *, pseudo_manifest_sha256
                 f"{sampler.real_per_epoch}")
         if not pseudo_manifest_sha256:
             raise ContractError(f"{arm}은 sim_pseudo인데 pseudo_manifest_sha256이 없다")
+        if sampler.extra_sim_per_epoch:
+            raise ContractError(f"{arm}은 sim_pseudo인데 extra_sim_per_epoch가 0이 아니다")
     else:  # pragma: no cover - ARMS가 아닌 한 도달하지 않는다
         raise ContractError(f"알 수 없는 data 종류: {data!r}")
 
+    exposure = exposure_plan(sampler, epochs=STUDENT_HPARAMS["epochs"],
+                             batch_size=STUDENT_HPARAMS["batch_size"])
     rest = {"schema": STUDENT_SCHEMA, "arm": arm, "data": data, "seed": seed,
-             **STUDENT_HPARAMS, "sampler": sampler.to_dict(),
-             "pseudo_manifest": pseudo_manifest_sha256, "source_commit": source_commit,
-             "sim_subset": sim_subset}
+            **STUDENT_HPARAMS, "sampler": sampler.to_dict(), **exposure,
+            "pseudo_manifest": pseudo_manifest_sha256, "source_commit": source_commit,
+            "sim_subset": sim_subset, "sim_inputs": sim_inputs}
     cfg = dict(rest)
     cfg["config_fingerprint"] = fingerprint(rest)
     return cfg
 
 
+_EXPOSURE_KEYS = ("exposure_rounds", "presentations_per_round", "steps_per_round",
+                  "total_optimizer_steps", "sim_presentations", "real_presentations",
+                  "extra_sampler_seed")
+
 # student_config가 지문에 넣는 키 — 그 뒤에 train이 덧붙이는 out/runtime/x_domain 등은 제외.
 _CONFIG_KEYS = frozenset({"schema", "arm", "data", "seed", *STUDENT_HPARAMS, "sampler",
-                          "pseudo_manifest", "source_commit", "sim_subset"})
+                          *_EXPOSURE_KEYS, "pseudo_manifest", "source_commit", "sim_subset",
+                          "sim_inputs"})
+
+
+def _sampler_from_dict(d: dict) -> RealSamplerSpec:
+    return RealSamplerSpec.build(d["n_sim"], d["n_real"], real_per_epoch=d["real_per_epoch"],
+                                 seed=d["seed"],
+                                 extra_sim_per_epoch=d.get("extra_sim_per_epoch", 0),
+                                 extra_sampler_seed=d.get("extra_sampler_seed"))
+
+
+def _require_sim_inputs(c: dict) -> None:
+    rec = c.get("sim_inputs")
+    ok = isinstance(rec, dict) and all(
+        isinstance(rec.get(n), dict) and isinstance(rec[n].get("sha256"), str)
+        and len(rec[n]["sha256"]) == 64 for n in SIM_INPUT_NAMES)
+    if not ok:
+        raise ContractError(f"{c.get('arm')}의 sim_inputs에 {', '.join(SIM_INPUT_NAMES)} "
+                            f"sha256이 없다 — plan은 sim 캐시 해시를 기록해야 한다")
+
+
+def build_student_manifest(cfg: dict, *, out, runtime: dict, optimizer_steps_done: int) -> dict:
+    """학습이 끝난 뒤 쓰는 student manifest — cfg + 산출 ckpt 해시 + 실제로 돈 step 수.
+
+    step 수가 계획과 다르면 쓰지 않는다: 중간에 멈춘 학습이 끝난 것처럼 기록되면 안 된다.
+    """
+    if optimizer_steps_done != cfg["total_optimizer_steps"]:
+        raise ContractError(
+            f"optimizer_steps_done({optimizer_steps_done})이 계획한 total_optimizer_steps("
+            f"{cfg['total_optimizer_steps']})와 다르다")
+    is_arm1 = cfg["data"] == "sim_pseudo"
+    out = Path(out)
+    return {**cfg, "out": str(out), "out_sha256": sha256_file(out),
+            "optimizer_steps_done": optimizer_steps_done,
+            "x_domain": "sim+real" if is_arm1 else "sim",
+            "y_source": "sim_depth_gt+pseudo_label" if is_arm1 else "sim_depth_gt",
+            "metric": None, "note": "judged by leaderboard only",
+            # 학습 환경 — parity가 비교한다 (arm0은 CPU, arm1은 GPU 같은 차이를 잡는다)
+            "runtime": runtime}
+
+
+def verify_student_artifacts(manifest: dict) -> None:
+    """학습 후 manifest가 가리키는 ckpt가 기록된 해시 그대로인지 재확인한다 (plan은 건너뜀)."""
+    if "out" not in manifest:
+        return
+    out = Path(manifest["out"])
+    if not out.is_file():
+        raise ContractError(f"{manifest.get('arm')}의 out 파일이 없다: {out}")
+    if sha256_file(out) != manifest.get("out_sha256"):
+        raise ContractError(f"{manifest.get('arm')}의 out_sha256 불일치 — 학습 뒤 ckpt가 "
+                            f"바뀌었다: {out}")
+    if manifest.get("optimizer_steps_done") != manifest.get("total_optimizer_steps"):
+        raise ContractError(f"{manifest.get('arm')}의 optimizer_steps_done이 "
+                            f"total_optimizer_steps와 다르다")
 
 
 def check_arm_parity(configs: list) -> None:
@@ -543,6 +778,18 @@ def check_arm_parity(configs: list) -> None:
         rest = {k: v for k, v in c.items() if k in _CONFIG_KEYS}
         if fingerprint(rest) != c.get("config_fingerprint"):
             raise ContractError(f"{c.get('arm')}의 config_fingerprint가 내용과 맞지 않는다")
+        # 노출·step 필드가 sampler와 하이퍼파라미터에서 실제로 유도되는지 — 모든 arm이 같은
+        # 거짓 값을 적으면 위의 값 비교로는 잡히지 않는다.
+        try:
+            want = exposure_plan(_sampler_from_dict(c["sampler"]), epochs=c["epochs"],
+                                 batch_size=c["batch_size"])
+        except (KeyError, TypeError) as e:
+            raise ContractError(f"{c.get('arm')}의 sampler 기록이 불완전하다: {e!r}") from None
+        wrong = [k for k in _EXPOSURE_KEYS if c.get(k, _MISSING) != want[k]]
+        if wrong:
+            raise ContractError(f"{c.get('arm')}의 {', '.join(wrong)}가 sampler에서 유도한 "
+                                f"값과 다르다")
+        _require_sim_inputs(c)
 
     n_sims = {c.get("sampler", {}).get("n_sim") for c in configs}
     if len(n_sims) > 1:

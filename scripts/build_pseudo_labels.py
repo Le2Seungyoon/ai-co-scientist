@@ -15,7 +15,8 @@ teacher 추론은 학습이 아니라 결정적 순전파(+AdaBN 통계 재계�
            --cache-dir runtime/cache --out runtime/pseudo/H5-real-pseudo-s.npy \
            --manifest runtime/pseudo/H5-real-pseudo-s.manifest.json
          깨끗한 커밋에서만 돈다(미추적 파일 포함). 같은 명령을 다른 경로로 한 번 더 돌려
-         `compare`가 빈 diff여야 학습 입력으로 쓴다 — 두 빌드는 같은 커밋·장치여야 한다.
+         `compare`가 빈 diff여야 학습 입력으로 쓴다 — 두 빌드는 같은 깨끗한 커밋·장치여야
+         하고, compare는 양쪽 파일을 다시 해싱·검증한 뒤에만 재현을 인정한다.
   검증:  python scripts/build_pseudo_labels.py verify --manifest PATH.json
   비교:  python scripts/build_pseudo_labels.py compare A.json B.json
 """
@@ -37,9 +38,9 @@ from ai_co_scientist.self_training import (
     TEACHER_ADABN_SHUFFLE,
     TEACHER_ADABN_SOURCE,
     ContractError,
+    atomic_write,
     build_pseudo_manifest,
     git_head,
-    load_manifest,
     reject_aliases,
     require_clean_commit,
     require_real_train_source,
@@ -81,9 +82,15 @@ def _cmd_build(args, ap: argparse.ArgumentParser) -> None:
 
     # GPU 구간만 락 안에서 돈다 — 검증·--help는 락 없이 CPU로 끝난다. 모든 워크트리가 같은
     # 기계 단위 락을 다투므로 다른 학습/추론이 GPU를 쓰는 동안에는 즉시 거부된다.
+    # 라벨은 임시 파일에 다 쓴 뒤에만 --out으로 드러난다 — 도중에 죽은 빌드가 반쯤 쓴 .npy를
+    # 남겨 다음 실행이 "이미 존재한다"로 막히거나, 그 파일이 학습 입력으로 쓰이지 않게.
+    runtime = {}
     try:
         with resource_lock(GPU_LOCK):
-            runtime = _label_on_gpu(args, ap, cache, resolved_source, out_path)
+            atomic_write(out_path, lambda tmp: runtime.update(
+                _label_on_gpu(args, ap, cache, resolved_source, tmp)))
+    except ContractError as e:
+        ap.error(str(e))
     except ResourceBusy as e:
         ap.error(f"{GPU_LOCK}를 다른 실행이 잡고 있다 (GPU는 한 번에 하나): {e}")
 
@@ -146,16 +153,24 @@ def _cmd_verify(args, ap: argparse.ArgumentParser) -> None:
     except ContractError as e:
         ap.error(str(e))
         return
+    except (OSError, json.JSONDecodeError) as e:
+        ap.error(f"manifest를 읽을 수 없다: {e}")
+        return
     print(json.dumps({"ok": True, **result}, ensure_ascii=False))
 
 
 def _cmd_compare(args, ap: argparse.ArgumentParser) -> None:
+    # 재현을 주장하기 전에 양쪽이 가리키는 파일을 다시 해싱하고 계약 필드를 확인한다 — JSON만
+    # 비교하면 빌드 뒤에 바뀐 라벨 파일도 "재현됨"이 된다.
     try:
-        a = load_manifest(args.a)
-        b = load_manifest(args.b)
+        a = verify_pseudo_manifest(args.a)
+        b = verify_pseudo_manifest(args.b)
         require_reproduced(a, b)
     except ContractError as e:
         ap.error(str(e))
+        return
+    except (OSError, json.JSONDecodeError) as e:
+        ap.error(f"manifest를 읽을 수 없다: {e}")
         return
     print(json.dumps({"ok": True, "labels_sha256": a["labels"]["sha256"]}, ensure_ascii=False))
 

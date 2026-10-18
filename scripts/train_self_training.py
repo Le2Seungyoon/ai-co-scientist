@@ -1,8 +1,10 @@
 """H5 2단계 — student 구조 회귀기를 arm별로 학습한다 (sim-only 대조군 vs sim+real pseudo-label).
 
     X = sim train SEM 138,648장(EXP-005와 같은 `map_level_split(case, 0.2, 42)`의 train, arm
-        seed와 무관하게 고정) 전 arm 공통 + arm1(`sim_pseudo`)만 real train SEM 60,664장을 epoch
-        마다 추가한다(`RealSamplerSpec`, epoch당 real ≤ sim). / y = sim은 `s=(L-d)/L` GT, arm1의
+        seed와 무관하게 고정) 전 arm 공통 + 라운드마다 60,664장을 더 본다: arm1(`sim_pseudo`)은
+        real train SEM 전량, 대조군(arm0/arm0b)은 sim을 비복원으로 같은 수만큼
+        (`RealSamplerSpec`, real ≤ sim). 세 arm 모두 라운드당 199,312장 × 15라운드 = 23,370
+        optimizer step이고 cosine은 이 전역 step을 따른다. / y = sim은 `s=(L-d)/L` GT, arm1의
         real 부분은 `build_pseudo_labels.py`가 만든 teacher soft pseudo-label이다 — **실제 real
         depth GT는 어디서도 쓰지 않는다.**
 
@@ -33,23 +35,29 @@ from ai_co_scientist.self_training import (
     ARMS,
     GPU_LOCK,
     REAL_TRAIN_NPY,
+    ROUND_EXTRA_N,
     STUDENT_HPARAMS,
     ContractError,
     RealSamplerSpec,
     arm_spec,
+    atomic_write,
+    build_student_manifest,
     check_arm_parity,
+    check_resume_state,
     git_head,
     load_manifest,
     reject_aliases,
     reject_teacher_copy,
     require_clean_commit,
     sha256_file,
+    sim_inputs_record,
     sim_subset_record,
     sim_train_indices,
     student_config,
     student_manifest_path,
     student_resume_path,
     verify_pseudo_manifest,
+    verify_student_artifacts,
     write_manifest,
 )
 
@@ -116,15 +124,26 @@ def _prepare(args, ap: argparse.ArgumentParser) -> dict:
                     f"아니다: {pm['source']['path']} != {cache_real}")
 
         commit = require_clean_commit(git_head(cwd=SCRIPTS_DIR))
+        sim_inputs = sim_inputs_record(cache)
         sim_idx = sim_train_indices(np.load(cache / "sim_case.npy"))
         spec = arm_spec(args.arm)
-        n_real = pm["labels"]["n"] if is_arm1 else 0
-        # real_per_epoch은 CLI로 열지 않는다 — 사전보고가 고정하지 않은 손잡이를 arm1만
-        # 돌릴 수 있으면 그 자체가 arm 차이다. 기본 min(n_real, n_sim) = real 전량/epoch.
-        sampler = RealSamplerSpec.build(len(sim_idx), n_real, seed=spec["seed"])
+        # 라운드당 추가 노출 수는 CLI로 열지 않는다 — 사전보고가 고정하지 않은 손잡이를 한
+        # arm만 돌릴 수 있으면 그 자체가 arm 차이다. arm1은 real pseudo 전량, 대조군은 같은
+        # 수의 sim을 비복원으로 더 본다 → 세 arm의 optimizer step 수가 같다.
+        if is_arm1:
+            if pm["labels"]["n"] != ROUND_EXTRA_N:
+                raise ContractError(
+                    f"pseudo-label 장수({pm['labels']['n']})가 라운드당 추가 노출 "
+                    f"ROUND_EXTRA_N({ROUND_EXTRA_N})과 다르다 — 대조군과 step 수가 갈라진다")
+            sampler = RealSamplerSpec.build(len(sim_idx), pm["labels"]["n"],
+                                            real_per_epoch=ROUND_EXTRA_N, seed=spec["seed"])
+        else:
+            sampler = RealSamplerSpec.build(len(sim_idx), 0, real_per_epoch=0,
+                                            seed=spec["seed"], extra_sim_per_epoch=ROUND_EXTRA_N)
         pseudo_sha = sha256_file(args.pseudo_manifest) if is_arm1 else None
         cfg = student_config(args.arm, sampler, pseudo_manifest_sha256=pseudo_sha,
-                             source_commit=commit, sim_subset=sim_subset_record(sim_idx))
+                             source_commit=commit, sim_subset=sim_subset_record(sim_idx),
+                             sim_inputs=sim_inputs)
     except ContractError as e:
         ap.error(str(e))
     except (OSError, KeyError, json.JSONDecodeError) as e:
@@ -148,7 +167,6 @@ def _cmd_plan(args, ap: argparse.ArgumentParser) -> None:
 def _cmd_train(args, ap: argparse.ArgumentParser) -> None:
     prep = _prepare(args, ap)
     cfg, out = prep["cfg"], prep["out"]
-    resume_path, manifest_path = prep["resume_path"], prep["manifest_path"]
 
     try:
         plan = load_manifest(args.plan)
@@ -157,11 +175,12 @@ def _cmd_train(args, ap: argparse.ArgumentParser) -> None:
     if plan.get("config_fingerprint") != cfg["config_fingerprint"]:
         ap.error(f"--plan과 지금 설정이 다르다 — parity를 통과한 설정으로만 학습한다 "
                  f"({plan.get('config_fingerprint')} != {cfg['config_fingerprint']})")
-    if manifest_path.exists():
-        ap.error(f"학생 manifest가 이미 존재한다 (덮어쓰지 않는다): {manifest_path}")
-    if out.exists() and not args.resume:
-        ap.error(f"--out이 이미 존재한다 (덮어쓰지 않는다, 재개는 --resume): {out}")
-    resume_ok = bool(args.resume and resume_path.exists())
+    # 재개 여부는 락 전에 fail-closed로 정한다 — 없는 재개 상태로 새로 시작하거나, 있는
+    # 재개 상태·out·manifest를 덮어쓰는 경로는 없다.
+    try:
+        resume_ok = check_resume_state(out, resume=args.resume)
+    except ContractError as e:
+        ap.error(str(e))
 
     # GPU 구간만 락 안에서 돈다 — plan·parity·검증은 락 없이 CPU로 끝난다. 모든 워크트리가
     # 같은 기계 단위 락을 다투므로 다른 학습/추론이 GPU를 쓰는 동안에는 즉시 거부된다.
@@ -202,30 +221,39 @@ def _train_on_gpu(args, ap: argparse.ArgumentParser, prep: dict, resume_ok: bool
 
     model = make_model(STUDENT_HPARAMS["arch"], STUDENT_HPARAMS["width"]).to(DEVICE)
     opt = torch.optim.AdamW(model.parameters(), lr=STUDENT_HPARAMS["lr"])
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, STUDENT_HPARAMS["epochs"])
+    # cosine은 전역 optimizer step 단위다 — 세 arm이 같은 23,370 step 동안 같은 곡선을 탄다.
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg["total_optimizer_steps"])
     crit = nn.L1Loss().to(DEVICE)
 
-    start_ep = 1
+    start_ep, global_step = 1, 0
     if resume_ok:
         ck = torch.load(resume_path, map_location=DEVICE, weights_only=False)
         if ck.get("config_fingerprint") != cfg["config_fingerprint"]:
             ap.error(f"--resume 거부: {resume_path}는 다른 설정에서 만들어졌다 "
                      f"({ck.get('config_fingerprint')} != {cfg['config_fingerprint']})")
+        if ck.get("global_step") != ck.get("epoch", -1) * cfg["steps_per_round"]:
+            ap.error(f"--resume 거부: {resume_path}의 global_step({ck.get('global_step')})이 "
+                     f"epoch {ck.get('epoch')} × steps_per_round와 맞지 않는다")
         model.load_state_dict(ck["state_dict"])
         opt.load_state_dict(ck["opt"])
         sched.load_state_dict(ck["sched"])
-        start_ep = ck["epoch"] + 1
-        print(f"resume: {resume_path} → epoch {start_ep}부터", flush=True)
+        start_ep, global_step = ck["epoch"] + 1, ck["global_step"]
+        print(f"resume: {resume_path} → epoch {start_ep}, step {global_step}부터", flush=True)
 
     n_par = sum(p.numel() for p in model.parameters())
     print(f"device: {DEVICE} | arm={args.arm} params={n_par:,} | "
-          f"sim {sampler.n_sim} + real/epoch {sampler.real_per_epoch}", flush=True)
+          f"sim {sampler.n_sim} + extra sim {sampler.extra_sim_per_epoch} + real "
+          f"{sampler.real_per_epoch} / round | steps {cfg['total_optimizer_steps']}", flush=True)
 
     for ep in range(start_ep, STUDENT_HPARAMS["epochs"] + 1):
         model.train()
         idx = sampler.epoch_indices(ep).tolist()
         loader = DataLoader(ds, batch_size=STUDENT_HPARAMS["batch_size"], sampler=idx,
+                            drop_last=STUDENT_HPARAMS["drop_last"],
                             num_workers=args.num_workers)
+        if len(loader) != cfg["steps_per_round"]:
+            ap.error(f"라운드 {ep}의 배치 수 {len(loader)}가 계획한 steps_per_round "
+                     f"{cfg['steps_per_round']}와 다르다")
         losses = []
         for x, y in loader:
             x, y = x.to(DEVICE), y.to(DEVICE)
@@ -233,36 +261,36 @@ def _train_on_gpu(args, ap: argparse.ArgumentParser, prep: dict, resume_ok: bool
             loss = crit(model(x), y)
             loss.backward()
             opt.step()
+            sched.step()
+            global_step += 1
             losses.append(loss.item())
-        sched.step()
-        print(f"epoch {ep}: train_l1={np.mean(losses):.5f}", flush=True)
+        print(f"epoch {ep}: train_l1={np.mean(losses):.5f} step={global_step}", flush=True)
 
-        resume_path.parent.mkdir(parents=True, exist_ok=True)
-        # 에폭별 재개점 — best/holdout 선택 없이 진행 상황만 담는다. out(추론 계약)과는
+        # 라운드별 재개점 — best/holdout 선택 없이 진행 상황만 담는다. out(추론 계약)과는
         # 별도 파일이다 (coding-patterns.md). 샘플러 순서는 (seed, epoch)만의 함수라 재개해도
-        # 끊기지 않은 실행과 배치 순서가 같다.
-        torch.save({"arch": STUDENT_HPARAMS["arch"], "width": STUDENT_HPARAMS["width"],
-                    "epoch": ep, "config_fingerprint": cfg["config_fingerprint"],
-                    "state_dict": model.state_dict(), "opt": opt.state_dict(),
-                    "sched": sched.state_dict()}, resume_path)
+        # 끊기지 않은 실행과 배치 순서가 같다. 원자적으로 바꿔 써서 도중에 죽어도 직전
+        # 라운드의 재개점이 남는다.
+        state = {"arch": STUDENT_HPARAMS["arch"], "width": STUDENT_HPARAMS["width"],
+                 "epoch": ep, "global_step": global_step,
+                 "config_fingerprint": cfg["config_fingerprint"],
+                 "state_dict": model.state_dict(), "opt": opt.state_dict(),
+                 "sched": sched.state_dict()}
+        atomic_write(resume_path, lambda tmp: torch.save(state, tmp), overwrite=True)
 
-    out.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"arch": STUDENT_HPARAMS["arch"], "width": STUDENT_HPARAMS["width"],
-                "blur_sigma": STUDENT_HPARAMS["blur_sigma"],
-                "state_dict": model.state_dict()}, out)
-    print(f"student(마지막 에폭, 홀드아웃 선택 없음) → {out}", flush=True)
-
-    manifest = {**cfg, "out": str(out),
-                "x_domain": "sim+real" if is_arm1 else "sim",
-                "y_source": "sim_depth_gt+pseudo_label" if is_arm1 else "sim_depth_gt",
-                "metric": None, "note": "judged by leaderboard only",
-                # 학습 환경 — parity가 비교한다 (arm0은 CPU, arm1은 GPU 같은 차이를 잡는다)
-                "runtime": {"device": str(DEVICE), "torch": torch.__version__,
-                            "cuda": torch.version.cuda, "num_workers": args.num_workers}}
+    if global_step != cfg["total_optimizer_steps"]:
+        ap.error(f"optimizer step {global_step}이 계획한 {cfg['total_optimizer_steps']}와 다르다")
+    final = {"arch": STUDENT_HPARAMS["arch"], "width": STUDENT_HPARAMS["width"],
+             "blur_sigma": STUDENT_HPARAMS["blur_sigma"], "state_dict": model.state_dict()}
     try:
+        atomic_write(out, lambda tmp: torch.save(final, tmp))
+        manifest = build_student_manifest(
+            cfg, out=out, optimizer_steps_done=global_step,
+            runtime={"device": str(DEVICE), "torch": torch.__version__,
+                     "cuda": torch.version.cuda, "num_workers": args.num_workers})
         write_manifest(manifest_path, manifest)
     except ContractError as e:
         ap.error(str(e))
+    print(f"student(마지막 에폭, 홀드아웃 선택 없음) → {out}", flush=True)
     print(json.dumps(manifest, ensure_ascii=False))
 
 
@@ -272,6 +300,8 @@ def _cmd_parity(args, ap: argparse.ArgumentParser) -> None:
     try:
         manifests = [load_manifest(p) for p in args.manifests]
         check_arm_parity(manifests)
+        for m in manifests:  # 학습 후 manifest면 ckpt가 기록된 해시 그대로인지까지
+            verify_student_artifacts(m)
     except ContractError as e:
         ap.error(str(e))
     except (OSError, json.JSONDecodeError) as e:
@@ -301,7 +331,8 @@ def main(argv=None) -> None:
     train.add_argument("--plan", required=True, help="같은 인자로 만든 plan JSON — 지문 일치 필수")
     train.add_argument("--num-workers", type=int, default=0, help="Windows는 0 권장")
     train.add_argument("--resume", action="store_true",
-                       help="<out>.resume.pt가 있고 설정 지문이 같으면 이어서 학습")
+                       help="<out>.resume.pt에서 이어서 학습 — 없거나 지문이 다르면 거부 "
+                            "(새로 시작하지 않는다). 재개 파일이 있는데 빠뜨려도 거부")
 
     parity = sub.add_parser("parity", help="여러 arm manifest가 seed/data 외에는 동일한지 확인")
     parity.add_argument("manifests", nargs="+", metavar="MANIFEST.json")
