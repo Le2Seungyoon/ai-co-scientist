@@ -17,10 +17,12 @@ sim GT로 학습한 구조 예측기가 만든 real-train 의사 라벨을 다�
 - **공통 X**: sim train SEM 138,648장. 자기학습 arm만 real train SEM 60,664장을 추가한다. real test SEM은 AdaBN과 최종 추론 외에는 학습·의사 라벨 생성·선택에 사용하지 않는다.
 - **y**: sim은 픽셀별 `s = (L-depth)/L` GT, real train은 EXP-005 계열 PlainMLP teacher가 만든 연속값 soft pseudo-label `s`다. 실제 real depth GT는 사용하지 않는다.
 - **teacher**: EXP-005 구조 checkpoint를 고정하고, real train 전체에 `--adabn real --adabn-shuffle 42` 조건으로 의사 라벨을 한 번 생성한다. 생성물의 파일 수·shape·유한값·해시를 manifest에 기록한다.
-- **student**: PlainMLP, L1 loss, batch size 128, AdamW, learning rate `1e-3`, cosine schedule, 15 epochs. teacher checkpoint에서 이어 학습하지 않고 scratch에서 시작한다.
-- **arm 0**: sim-only, seed 42.
-- **arm 0b**: sim-only, seed 43. arm 0과의 차이를 seed 변동폭으로 사용한다.
-- **arm 1**: sim + real pseudo-label, seed 42. sim/real 샘플 수 차이 때문에 real이 과대표집되지 않도록 epoch당 real 샘플 수를 sim 샘플 수 이하로 제한하고 sampler 구성을 manifest에 기록한다.
+- **student**: PlainMLP, L1 loss, batch size 128, AdamW, learning rate `1e-3`, 15 exposure rounds. teacher checkpoint에서 이어 학습하지 않고 scratch에서 시작한다. cosine schedule은 epoch가 아니라 총 optimizer step을 따른다.
+- **arm 0**: sim-only, seed 42. 각 round에 sim 138,648장을 한 번씩 보고, 별도 RNG로 sim 60,664장을 비복원 추가 표집한다.
+- **arm 0b**: sim-only, seed 43. arm 0과 동일한 추가 sim 표집 규칙을 쓰며 arm 0과의 차이를 seed 변동폭으로 사용한다.
+- **arm 1**: sim 138,648장 + real pseudo-label 60,664장, seed 42. real은 각 round에 전량을 한 번씩만 사용한다.
+- **학습량 parity**: 세 arm 모두 round당 199,312 presentations, `drop_last=False`에서 1,558 optimizer steps, 15 rounds에서 총 23,370 steps다. `total_optimizer_steps`, `sim_presentations`, `real_presentations`, `extra_sampler_seed`와 sampler 구성을 manifest에 기록하고 arm parity에서 재계산한다.
+- sim 입력 3종(`sim_sem`, `sim_depth`, `sim_case`)과 최종 student checkpoint의 SHA-256을 manifest에 기록한다. `--resume`은 전용 resume state가 없으면 새 학습으로 넘어가지 않고 실패하며, 완료 checkpoint·manifest·중단 state를 덮어쓰지 않는다.
 - **공통 추론**: EXP-019의 level 경로와 후처리(`--level-source cnn`, EXP-013 level checkpoint, shuffled real AdaBN seed 42, `tau=0`, level smoothing 9)를 그대로 사용한다.
 - **예산**: 구조 학습 3회, 추론 zip 최대 3개, 리더보드 제출 최대 3회. 모든 arm은 같은 구현 commit에서 실행한다.
 
@@ -31,7 +33,7 @@ sim GT로 학습한 구조 예측기가 만든 real-train 의사 라벨을 다�
 - **채택**: arm 1이 arm 0보다 public/private 모두 낮고, 두 split 중 작은 개선폭도 `seed_band + 0.02` 이상이다.
 - **조건부**: 두 split 모두 개선했지만 위 여유폭을 넘지 못하거나, 한 split만 개선했다. 이 경우 결론 없음으로 닫고 추가 제출을 자동 승인하지 않는다.
 - **기각**: 두 split 모두 악화하거나, 의사 라벨을 넣은 arm이 seed 대조군 범위 밖의 개선을 만들지 못한다.
-- **실행 전 중단**: pseudo-label 생성에 test 입력이 섞임, 파일 수/shape 불일치, NaN/Inf, 동일 명령의 해시 불일치, arm 사이에 seed와 데이터 구성 이외의 설정 차이가 발견되면 학습하지 않는다.
+- **실행 전 중단**: pseudo-label 생성에 test 입력이 섞임, 파일 수/shape 불일치, NaN/Inf, 동일 명령의 artifact 재해시·핵심 계약 비교 불일치, 계획한 optimizer step·sample presentation 불일치, arm 사이에 seed와 데이터 구성 이외의 설정 차이가 발견되면 학습하지 않는다.
 - `0.02`는 관측된 무효 수준(EXP-017의 약 0.003)과 명확한 악화(EXP-018의 약 0.028)를 구분하기 위한 사전 운영 임계값이지 통계적 신뢰구간이 아니다.
 
 ## 결과
