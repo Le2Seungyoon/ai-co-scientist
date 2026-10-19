@@ -6,8 +6,9 @@
 (`ai_co_scientist.sem`과 같은 경계 설계).
 
 여기 있는 것: 설정(사전등록 값과의 정확한 일치 검사) · 경로 누수 방지(`test_*` 실제 테스트셋이
-변환기 입력으로 새는 것을 막는다) · 형태 계약 · 기하 위생 gate(순수 numpy phase correlation) ·
-manifest의 불변성(write-once + sha256 재검증) · torch 아키텍처 팩토리(지연 import).
+변환기 입력으로 새는 것을 막는다) · 형태 계약 · 기하 위생 gate(순수 numpy — 전역 phase
+correlation + 국소 NCC 블록 매칭) · manifest의 불변성(write-once + sha256·gate 재검증) · GPU 락
+이름 · torch 아키텍처 팩토리(지연 import).
 """
 import hashlib
 import json
@@ -27,6 +28,36 @@ GATE_SAMPLE_N = 2048
 SHIFT_MEDIAN_MAX = 0.5
 SHIFT_P95_MAX = 1.0
 ROUNDTRIP_MAE_MAX = 0.10
+
+# 국소 기하 기준 (블록 매칭) — **사전등록 문서에 없는 추가 기준이다.** 전역 phase correlation은
+# 대칭 팽창·국소 왜곡을 못 보고 비순환 subpixel 이동을 과소평가한다(테스트가 고정). 문턱은 새로
+# 만들지 않고 사전등록 px 문턱(0.5/1.0)을 타일 단위로 재사용한다. gate를 **더 엄격하게만** 만든다.
+#
+# **미보정(uncalibrated)이다.** 합성 입력에서 알려진 한계 두 가지를 테스트가 고정한다:
+# (1) 거짓 실패 — 경사진 구멍 가장자리에 블러+감마(비선형 밝기)를 주면 등밝기 윤곽이 실제로
+#     ~1 px 움직여, 강도 기반 매칭으로는 기하 이동과 원리적으로 구별되지 않는다(외관만 바꿨는데
+#     국소 기준 실패). (2) 사각지대 — 한 타일 안에 중심이 있는 대칭 팽창은 타일 변위가 0이다.
+# 그래서 국소 기준 실패는 사전등록 gate 실패와 **따로 기록**한다(`preregistered_passed` /
+# `local_passed`). 실행 전 실제 sim 2,048장에서 외관 전용 변환으로 보정하고 사전등록을 개정해야
+# 한다 — 그 전까지 국소 실패는 "기각"이 아니라 fail-safe 정지로 읽는다.
+LOCAL_TILE = 24  # 72x48 → 3x2 타일
+LOCAL_SEARCH = 3  # 블록 매칭 탐색 반경(px). 이보다 큰 변위는 경계에 포화돼 어차피 실패한다
+LOCAL_MIN_STD = 2.0  # 원본 타일 std가 이보다 작으면(평탄) 변위가 정의되지 않아 NaN으로 뺀다
+
+# gate 파일에 기록·대조되는 판정 설정 전부 — 국소 측정 방법(타일·탐색·평탄 기준)도 포함해야
+# 방법이 바뀐 뒤 옛 gate JSON이 `require_gate_passed`를 통과하지 못한다.
+GATE_THRESHOLDS = {
+    "shift_median_max": SHIFT_MEDIAN_MAX,
+    "shift_p95_max": SHIFT_P95_MAX,
+    "roundtrip_mae_max": ROUNDTRIP_MAE_MAX,
+    "local_shift_median_max": SHIFT_MEDIAN_MAX,
+    "local_shift_p95_max": SHIFT_P95_MAX,
+    "local_tile": LOCAL_TILE,
+    "local_search": LOCAL_SEARCH,
+    "local_min_std": LOCAL_MIN_STD,
+}
+
+GPU_LOCK = "gpu-0"  # 학습·gate·번역의 runtime 구간이 잡는 `locks.resource_lock` 이름 — 기계 단위 1장
 
 ALLOWED_SOURCES = ("sim_sem.npy", "real_sem.npy")  # 변환기 입력으로 허용되는 파일명
 FORBIDDEN_NAMES = ("test_sem.npy", "test_names.json")  # real test — 변환기 학습에 넣으면 안 된다
@@ -139,19 +170,22 @@ def reject_test_paths(paths) -> None:
 
     (3)은 **디렉터리 성분만** 본다 — `test_foo0` 같은 pytest `tmp_path` 디렉터리는 문자열이
     "test"가 아니라 걸리지 않는다.
+
+    세 조건 모두 **대소문자를 무시**하고(Windows에서 `TEST_SEM.npy`는 같은 파일이다), 주어진
+    경로와 `resolve()`한 경로 **둘 다**에 적용한다 — symlink·`..`로 test 파일을 가리키는 우회를 막는다.
     """
     if isinstance(paths, (str, Path)):
         paths = [paths]
     for p in paths:
-        path = Path(p)
-        name = path.name
-        if name in FORBIDDEN_NAMES:
-            raise ValueError(f"금지된 파일이 입력/출력 경로에 있다: {p}")
-        if name.startswith("test_") and (name.endswith(".npy") or name.endswith(".json")):
-            raise ValueError(f"'test_' 접두 파일은 변환기 경로에 쓸 수 없다: {p}")
-        for part in path.parts[:-1]:
-            if part.lower() == "test":
-                raise ValueError(f"경로에 'test' 디렉터리 성분이 있다: {p}")
+        for path in (Path(p), Path(p).resolve()):
+            name = path.name.lower()
+            if name in FORBIDDEN_NAMES:
+                raise ValueError(f"금지된 파일이 입력/출력 경로에 있다: {p}")
+            if name.startswith("test_") and (name.endswith(".npy") or name.endswith(".json")):
+                raise ValueError(f"'test_' 접두 파일은 변환기 경로에 쓸 수 없다: {p}")
+            for part in path.parts[:-1]:
+                if part.lower() == "test":
+                    raise ValueError(f"경로에 'test' 디렉터리 성분이 있다: {p}")
 
 
 def require_source_name(path, expected: str) -> None:
@@ -252,9 +286,10 @@ def phase_correlation_shift(a: np.ndarray, b: np.ndarray) -> "tuple[float, float
 
     **알려진 사각지대**: 이 함수는 전역 위상만 보는 강체 이동(translation) 검출기다. 중심이
     고정된 대칭 팽창/축소(dilation/scale) — 예: 원판 구멍이 사방으로 고르게 커지는 것 — 는
-    이동이 아니므로 대부분 `(0, 0)` 근방을 낸다. 기하가 실제로 바뀌었어도 gate를 통과할 수
-    있다는 뜻이다(`test_phase_correlation_is_blind_to_symmetric_dilation`). gate는 "이동이
-    없다"만 보증하지 "형태가 보존됐다"는 보증하지 않는다.
+    이동이 아니므로 대부분 `(0, 0)` 근방을 낸다(`test_phase_correlation_is_blind_to_symmetric_
+    dilation`). 국소 왜곡과 비순환 subpixel 이동도 과소평가한다. 그래서 gate는 이 값만으로
+    판정하지 않고 `local_shift_max`(국소 블록 매칭) 기준을 함께 요구한다 — 그 국소 기준에도
+    사각지대와 거짓 실패가 있다(`LOCAL_TILE` 주석).
     """
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
@@ -296,10 +331,96 @@ def phase_correlation_shifts(orig: np.ndarray, moved: np.ndarray) -> np.ndarray:
     return out
 
 
+def _zscore(x: np.ndarray) -> np.ndarray:
+    sd = x.std()
+    return (x - x.mean()) / sd if sd > 0 else np.zeros_like(x)
+
+
+def _parabolic_peak(cm: float, c: float, cp: float) -> float:
+    """세 점 포물선의 꼭짓점 오프셋. 위로 볼록하지 않으면(평탄·병적) 보정하지 않는다."""
+    d = cm - 2.0 * c + cp
+    return 0.0 if d >= 0 else 0.5 * (cm - cp) / d
+
+
+def block_match_shifts(a: np.ndarray, b: np.ndarray, tile: int = LOCAL_TILE,
+                       search: int = LOCAL_SEARCH, min_std: float = LOCAL_MIN_STD) -> np.ndarray:
+    """타일별 국소 변위 `(dy, dx)` — shape `(n_tiles, 2)`, 평탄 타일은 NaN.
+
+    각 타일에서 `|d| <= search` 정수 후보마다 z-score 정규화 상관(NCC)을 재고 최댓값 주변을
+    포물선으로 subpixel 보정한다. NCC라 아핀 밝기 변화(변환기의 정상 동작)에 불변이고, 탐색
+    반경이 제한돼 백색화 phase correlation처럼 작은 타일에서 잡음 peak로 튀지 않는다.
+    `b`는 반사 패딩으로 경계 밖을 읽는다. 부호 규약은 `phase_correlation_shift`와 같다:
+    `b[p + d] == a[p]`(내용이 `+d`로 이동)이면 `d`를 돌려준다. 동일 입력은 정확히 0.
+    """
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    if a.shape != b.shape or a.ndim != 2:
+        raise ValueError(f"a, b는 같은 shape의 2차원 배열이어야 한다 — 받은 {a.shape}, {b.shape}")
+    h, w = a.shape
+    if h % tile or w % tile:
+        raise ValueError(f"shape {a.shape}이 타일 {tile}로 나누어떨어지지 않는다")
+    same = np.array_equal(a, b)
+    bp = np.pad(b, search, mode="reflect")
+    k = 2 * search + 1
+    out = []
+    for i in range(0, h, tile):
+        for j in range(0, w, tile):
+            ta = a[i:i + tile, j:j + tile]
+            if ta.std() < min_std:
+                out.append((np.nan, np.nan))
+                continue
+            if same:
+                out.append((0.0, 0.0))
+                continue
+            za = _zscore(ta)
+            score = np.empty((k, k))
+            for dy in range(-search, search + 1):
+                for dx in range(-search, search + 1):
+                    tb = bp[i + search + dy:i + search + dy + tile,
+                            j + search + dx:j + search + dx + tile]
+                    score[dy + search, dx + search] = float((za * _zscore(tb)).mean())
+            py, px = np.unravel_index(int(np.argmax(score)), score.shape)
+            fy = _parabolic_peak(*score[py - 1:py + 2, px]) if 0 < py < k - 1 else 0.0
+            fx = _parabolic_peak(*score[py, px - 1:px + 2]) if 0 < px < k - 1 else 0.0
+            out.append((py - search + fy, px - search + fx))
+    return np.asarray(out, dtype=np.float64)
+
+
+def local_shift_max(orig: np.ndarray, moved: np.ndarray) -> np.ndarray:
+    """`(N, H, W)` 두 스택의 이미지별 **최대 타일 변위 크기** — gate의 국소 기준 입력.
+
+    한 이미지 안에서 가장 많이 움직인 타일이 그 이미지의 기하 위반 정도다(국소 왜곡은 평균에
+    묻힌다). 모든 타일이 평탄해 잴 수 없으면 NaN — `evaluate_gate`가 NaN을 실패로 처리한다.
+    """
+    orig = np.asarray(orig)
+    moved = np.asarray(moved)
+    if orig.shape != moved.shape or orig.ndim != 3:
+        raise ValueError(f"orig, moved는 같은 shape의 (N,H,W)여야 한다 — 받은 "
+                         f"{orig.shape}, {moved.shape}")
+    out = np.empty(len(orig), dtype=np.float64)
+    for n in range(len(orig)):
+        mags = np.hypot(*block_match_shifts(orig[n], moved[n]).T)
+        out[n] = np.nan if np.isnan(mags).all() else float(np.nanmax(mags))
+    return out
+
+
 def shift_magnitudes(orig: np.ndarray, moved: np.ndarray) -> np.ndarray:
     """`(N, H, W)` 두 스택의 이미지별 이동량 크기(`hypot(dy, dx)`) — gate의 표본 통계 입력."""
     signed = phase_correlation_shifts(orig, moved)
     return np.hypot(signed[:, 0], signed[:, 1])
+
+
+def measure_geometry(orig_u8: np.ndarray, moved_u8: np.ndarray) -> dict:
+    """gate가 재는 기하 값을 한 번에 — 학습 gate와 번역 후 재검증이 **같은 함수**를 써야 둘이
+    같은 것을 잰다. 입력은 `(N,72,48)` uint8 스택. 반환: `signed` `(N,2)`, `shifts` `(N,)`(전역
+    이동 크기), `local` `(N,)`(`local_shift_max`)."""
+    check_sem_array(orig_u8, "gate 원본")
+    check_sem_array(moved_u8, "gate 변환본")
+    a = np.asarray(orig_u8, dtype=np.float64)
+    b = np.asarray(moved_u8, dtype=np.float64)
+    signed = phase_correlation_shifts(a, b)
+    return {"signed": signed, "shifts": np.hypot(signed[:, 0], signed[:, 1]),
+            "local": local_shift_max(a, b)}
 
 
 def roundtrip_mae(orig_u8: np.ndarray, roundtrip_u8: np.ndarray) -> float:
@@ -316,31 +437,30 @@ def roundtrip_mae(orig_u8: np.ndarray, roundtrip_u8: np.ndarray) -> float:
     return float(np.mean(np.abs(a - b)) / 255.0)
 
 
-def evaluate_gate(shifts: np.ndarray, mae: float, signed: "np.ndarray | None" = None) -> dict:
+def evaluate_gate(shifts: np.ndarray, mae: float, *, local: np.ndarray,
+                  signed: "np.ndarray | None" = None) -> dict:
     """기하 위생 gate 판정. 경계는 **포함**(`==` 임계값은 통과)이고, `NaN`은 항상 실패다.
 
     표본 크기가 `GATE_SAMPLE_N`이 아니면 애초에 사전등록된 gate가 아니므로 예외를 던진다 —
     표본 크기 자체가 사전등록의 일부다.
 
-    **`passed`는 오직 사전등록된 3개 기준**(`shift_median`, `shift_p95`, `roundtrip_mae`)**으로만
-    정해진다.** 반환값의 `diagnostics`(`shift_p99`, `shift_max`, `signed`가 주어졌을 때
-    `mean_dy`/`mean_dx`)는 참고용 관찰값일 뿐 판정에 관여하지 않는다 — 극단값 하나가 p99/max를
-    밀어 올려도 median/p95/mae가 기준 안이면 여전히 통과한다(`docs/experiment/H6-cyclegan-sim-
-    to-real.md`가 채택 지표와 관찰값을 분리하는 것과 같은 이유).
+    **`passed`는 정확히 5개 기준의 AND다**: 사전등록 3개(`shift_median`, `shift_p95`,
+    `roundtrip_mae`) + 국소 2개(`local_shift_median`, `local_shift_p95` — 이미지별
+    `local_shift_max`의 통계). 국소 기준은 사전등록에 없는 추가 기준이며 gate를 더 엄격하게만
+    만든다(`LOCAL_TILE` 주석). `local`은 **필수 키워드**다 — 전역 기준만으로 `passed=True`를
+    만드는 호출 경로 자체가 없다. 하나라도 실패하면 downstream 없이 종료한다(사전등록 stop).
 
-    `phase_correlation_shift`의 사각지대(전역 이동만 봄) 때문에, 이 gate는 "이동이 없다"는
-    기하 위생만 보증하고 "형태가 보존됐다"는 보증하지 않는다.
+    반환값의 `diagnostics`(`shift_p99`, `shift_max`, `signed`가 주어졌을 때 `mean_dy`/`mean_dx`)는
+    참고용 관찰값일 뿐 판정에 관여하지 않는다 — 극단값 하나가 p99/max를 밀어 올려도 기준
+    통계가 안이면 여전히 통과한다(`docs/experiment/H6-cyclegan-sim-to-real.md`가 채택 지표와
+    관찰값을 분리하는 것과 같은 이유).
     """
     shifts = np.asarray(shifts, dtype=np.float64)
     n = len(shifts)
     if n != GATE_SAMPLE_N:
         raise ValueError(f"gate 표본 크기는 {GATE_SAMPLE_N}이어야 한다 — 받은 {n}")
     mae = float(mae)
-    thresholds = {
-        "shift_median_max": SHIFT_MEDIAN_MAX,
-        "shift_p95_max": SHIFT_P95_MAX,
-        "roundtrip_mae_max": ROUNDTRIP_MAE_MAX,
-    }
+    thresholds = dict(GATE_THRESHOLDS)
 
     shift_nan = bool(np.isnan(shifts).any())
     mae_nan = bool(np.isnan(mae))
@@ -359,6 +479,21 @@ def evaluate_gate(shifts: np.ndarray, mae: float, signed: "np.ndarray | None" = 
         failures.append("roundtrip_mae가 NaN이다")
     elif mae > ROUNDTRIP_MAE_MAX:
         failures.append(f"roundtrip_mae {mae} > {ROUNDTRIP_MAE_MAX}")
+    n_preregistered_failures = len(failures)
+
+    local = np.asarray(local, dtype=np.float64)
+    if local.shape != (n,):
+        raise ValueError(f"local은 ({n},) 형태여야 한다 — 받은 {local.shape}")
+    if np.isnan(local).any():
+        failures.append("local_shift 배열에 NaN이 있다(평탄해 잴 수 없는 이미지)")
+        local_median = local_p95 = float("nan")
+    else:
+        local_median = float(np.median(local))
+        local_p95 = float(np.percentile(local, 95))
+        if local_median > SHIFT_MEDIAN_MAX:
+            failures.append(f"local_shift_median {local_median} > {SHIFT_MEDIAN_MAX}")
+        if local_p95 > SHIFT_P95_MAX:
+            failures.append(f"local_shift_p95 {local_p95} > {SHIFT_P95_MAX}")
 
     diagnostics: dict = {
         "shift_p99": float("nan") if shift_nan else float(np.percentile(shifts, 99)),
@@ -373,10 +508,16 @@ def evaluate_gate(shifts: np.ndarray, mae: float, signed: "np.ndarray | None" = 
 
     return {
         "passed": len(failures) == 0,
+        # 정지 사유를 가른다: 사전등록 3기준만의 판정 vs 미보정 국소 기준(LOCAL_TILE 주석).
+        # passed=False이면서 preregistered_passed=True면 사전등록상 "기각"이 아니라 fail-safe 정지다
+        "preregistered_passed": n_preregistered_failures == 0,
+        "local_passed": len(failures) == n_preregistered_failures,
         "n": n,
         "shift_median": median,
         "shift_p95": p95,
         "roundtrip_mae": mae,
+        "local_shift_median": local_median,
+        "local_shift_p95": local_p95,
         "thresholds": thresholds,
         "failures": failures,
         "diagnostics": diagnostics,
@@ -417,8 +558,81 @@ def write_once_json(path, obj) -> None:
         os.close(fd)
 
 
+class GateFailedError(RuntimeError):
+    """기하 위생 gate를 통과하지 못했다 — downstream 진행(구조 학습·제출)을 막는 하드 스톱."""
+
+
+GATE_SUMMARY_KEYS = ("passed", "preregistered_passed", "local_passed", "shift_median",
+                     "shift_p95", "roundtrip_mae", "local_shift_median", "local_shift_p95",
+                     "failures", "thresholds")
+
+
+def recheck_gate(gate: dict) -> dict:
+    """저장된 gate를 **원본 per-image 값으로 다시 판정**한다 — 실패하면 `GateFailedError`.
+
+    `shifts`·`local_shifts`(각 `GATE_SAMPLE_N`개)·`roundtrip_mae`가 없으면 재판정할 수 없으므로
+    거부한다. 재판정이 통과여도 저장된 요약값(`GATE_SUMMARY_KEYS`)이 재계산과 **정확히** 같지
+    않으면 거부한다 — 요약만 고친 gate(예: median을 손으로 낮춘 JSON)가 원본과 따로 놀며 사람을
+    속이는 것을 막는다. `build_manifest`·`verify_manifest`·`require_gate_passed`가 공유한다.
+    """
+    shifts = gate.get("shifts")
+    local = gate.get("local_shifts")
+    mae = gate.get("roundtrip_mae")
+    if not isinstance(shifts, list) or len(shifts) != GATE_SAMPLE_N or mae is None:
+        raise GateFailedError(f"gate에 재평가할 원본 shifts({GATE_SAMPLE_N}개)/roundtrip_mae가 없다")
+    if not isinstance(local, list) or len(local) != GATE_SAMPLE_N:
+        raise GateFailedError(
+            f"gate에 국소 기준 원본 local_shifts({GATE_SAMPLE_N}개)가 없다 — 전역 기준만으로는 "
+            "통과할 수 없다")
+    recomputed = evaluate_gate(np.asarray(shifts, dtype=np.float64), float(mae),
+                               local=np.asarray(local, dtype=np.float64))
+    if not recomputed["passed"]:
+        raise GateFailedError(
+            f"저장된 shifts/local_shifts/roundtrip_mae를 재평가하면 실패한다: "
+            f"{recomputed['failures']}")
+    drift = [k for k in GATE_SUMMARY_KEYS if gate.get(k) != recomputed[k]]
+    if drift:
+        raise GateFailedError(f"gate의 저장된 요약값이 원본 재계산과 다르다: {drift}")
+    return recomputed
+
+
 def _hashed_entry(path) -> dict:
-    return {"path": str(path), "sha256": sha256_file(path)}
+    # 절대경로 — 상대 레시피 경로(runtime/...)로 적으면 다른 cwd에서 검증할 때 "파일 없음"이 된다
+    return {"path": str(Path(path).resolve()), "sha256": sha256_file(path)}
+
+
+REQUIRED_OUTPUTS = ("sim_sem", "sim_depth", "sim_case")  # 번역본 + y/case 원본 사본
+UNCHANGED_OUTPUTS = ("sim_depth", "sim_case")  # y는 원본 sim GT 그대로다 — 바이트가 같아야 한다
+
+
+def _binding_problems(m: dict) -> list:
+    """manifest 부품끼리의 결속 — 해시가 다 맞아도 다른 실행의 gate를 붙여 넣은 manifest를 잡는다.
+
+    output이 `REQUIRED_OUTPUTS`와 정확히 같고, `UNCHANGED_OUTPUTS`는 같은 이름의 source와
+    sha256이 같고(= "y는 변환 전 sim GT" 전제), gate의 `ckpt_sha256`·`report_id`가 manifest의
+    ckpt·report_id와 같고, manifest·gate의 config가 사전등록과 같아야 한다.
+    """
+    problems = []
+    outs = m.get("output_files") or {}
+    srcs = m.get("source_files") or {}
+    gate = m.get("gate") or {}
+    if sorted(outs) != sorted(REQUIRED_OUTPUTS):
+        problems.append(f"output 목록이 {list(REQUIRED_OUTPUTS)}이어야 한다: {sorted(outs)}")
+    for name in UNCHANGED_OUTPUTS:
+        o, s = outs.get(name) or {}, srcs.get(name) or {}
+        if not o.get("sha256") or o.get("sha256") != s.get("sha256"):
+            problems.append(f"output:{name}이 source:{name}과 바이트가 다르다(y는 원본 그대로여야 한다)")
+    if gate.get("ckpt_sha256") != (m.get("ckpt") or {}).get("sha256"):
+        problems.append("gate의 ckpt_sha256이 manifest ckpt와 다르다(다른 실행의 gate)")
+    if gate.get("report_id") != m.get("report_id"):
+        problems.append(f"gate의 report_id({gate.get('report_id')!r})가 manifest"
+                        f"({m.get('report_id')!r})와 다르다")
+    for label, cfg in (("manifest", m.get("config")), ("gate", gate.get("config"))):
+        try:
+            validate_config(CycleGANConfig.from_dict(cfg if isinstance(cfg, dict) else {}))
+        except ValueError as e:
+            problems.append(f"{label} config가 사전등록과 다르다: {e}")
+    return problems
 
 
 def build_manifest(*, report_id: str, config: dict, gate: dict, ckpt_path,
@@ -434,11 +648,16 @@ def build_manifest(*, report_id: str, config: dict, gate: dict, ckpt_path,
     """
     if gate.get("passed") is not True:
         raise ValueError("gate가 실패했다 — 실패한 gate로는 manifest를 만들 수 없다")
+    try:
+        recheck_gate(gate)
+    except GateFailedError as e:
+        raise ValueError(f"manifest에 넣을 gate가 재검증을 통과하지 못한다: {e}") from e
+    reject_test_paths([ckpt_path, *source_files.values(), *output_files.values()])
     out_dirs = {Path(p).resolve().parent for p in output_files.values()}
     if len(out_dirs) > 1:
         raise ValueError(f"output 파일은 한 디렉터리(manifest 디렉터리)에 있어야 한다 — "
                          f"받은 디렉터리 {sorted(str(d) for d in out_dirs)}")
-    return {
+    manifest = {
         "hypothesis": "H6",
         "report_id": report_id,
         "config": config,
@@ -451,19 +670,49 @@ def build_manifest(*, report_id: str, config: dict, gate: dict, ckpt_path,
         "output_files": {name: {"path": Path(p).name, "sha256": sha256_file(p)}
                          for name, p in output_files.items()},
     }
+    problems = _binding_problems(manifest)
+    if problems:
+        raise ValueError("manifest 결속 실패 — " + "; ".join(problems))
+    return manifest
 
 
 def verify_manifest(manifest_path) -> dict:
-    """manifest에 적힌 모든 파일(ckpt + source + output)의 sha256을 다시 계산해 대조한다.
+    """manifest를 쓸 때마다 **다시 믿을 이유를 확인**한다 — 파일 해시와 내용 계약 둘 다.
 
-    불일치·누락 파일을 **전부** 나열한 뒤 `ValueError`를 던진다 — 하나 찾고 바로 멈추면
-    두 번째 결함이 다음 실행까지 숨는다.
+    1. 모든 파일(ckpt + source + output)의 sha256 재계산 대조.
+    2. 계약: `hypothesis == "H6"`, output `path`는 manifest 디렉터리 안의 **맨 파일명**(구분자·
+       `..` 없음 — manifest 밖을 가리키도록 고치는 것 차단), 어떤 경로도 `reject_test_paths`에
+       걸리지 않음, 저장된 gate가 `recheck_gate`를 통과함.
+    3. 결속: `_binding_problems` — 필수 output, y/case 무변경, gate↔ckpt·report_id·config.
+
+    이 함수는 `translate_sim.py`가 승격 전에 부른다. **downstream 구조 학습이 로드 시점에 부르는
+    배선은 이 lane 밖이다**(`train_structure.py`) — arm 1 실행 전에 통합돼야 한다.
+
+    문제를 **전부** 나열한 뒤 `ValueError`를 던진다 — 하나 찾고 바로 멈추면 두 번째 결함이
+    다음 실행까지 숨는다.
     """
     manifest_path = Path(manifest_path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     problems = []
 
+    if manifest.get("hypothesis") != "H6":
+        problems.append(f"hypothesis가 'H6'이 아니다: {manifest.get('hypothesis')!r}")
+    try:
+        recheck_gate(manifest.get("gate") or {})
+    except GateFailedError as e:
+        problems.append(f"gate 재검증 실패: {e}")
+    problems += _binding_problems(manifest)
+    paths = [(manifest.get("ckpt") or {}).get("path", "")]
+    paths += [e.get("path", "") for e in (manifest.get("source_files") or {}).values()]
+    try:
+        reject_test_paths(paths)
+    except ValueError as e:
+        problems.append(f"경로 위생: {e}")
+
     def _check(label: str, entry: dict, base: "Path | None" = None) -> None:
+        if not entry.get("path") or not entry.get("sha256"):
+            problems.append(f"{label}: path/sha256 항목이 없다")
+            return
         p = Path(entry["path"]) if base is None else base / entry["path"]
         if not p.exists():
             problems.append(f"{label}: 파일 없음 ({p})")
@@ -472,19 +721,24 @@ def verify_manifest(manifest_path) -> dict:
         if actual != entry["sha256"]:
             problems.append(f"{label}: sha256 불일치 ({p})")
 
-    _check("ckpt", manifest["ckpt"])
-    for name, entry in manifest.get("source_files", {}).items():
+    _check("ckpt", manifest.get("ckpt") or {})
+    for name, entry in (manifest.get("source_files") or {}).items():
         _check(f"source:{name}", entry)
-    for name, entry in manifest.get("output_files", {}).items():
+    for name, entry in (manifest.get("output_files") or {}).items():
+        rel = entry.get("path", "")
+        if rel in ("", ".", "..") or Path(rel).name != rel or "/" in rel or "\\" in rel:
+            problems.append(f"output:{name}: manifest 디렉터리 안의 맨 파일명이어야 한다 ({rel!r})")
+            continue
+        try:
+            reject_test_paths([rel])
+        except ValueError as e:
+            problems.append(f"output:{name}: 경로 위생: {e}")
+            continue
         _check(f"output:{name}", entry, base=manifest_path.parent)
 
     if problems:
         raise ValueError("manifest 검증 실패 — " + "; ".join(problems))
     return manifest
-
-
-class GateFailedError(RuntimeError):
-    """기하 위생 gate를 통과하지 못했다 — downstream 진행(구조 학습·제출)을 막는 하드 스톱."""
 
 
 def expected_ckpt_name(report_id: str) -> str:
@@ -519,8 +773,9 @@ def indices_sha256(idx: np.ndarray) -> str:
 def require_gate_passed(gate_json_path, ckpt_path, *, report_id: str, sim_sem_path=None) -> dict:
     """`translate_sim.py`가 torch를 import하기 **전**에 부르는 하드 스톱.
 
-    저장된 `passed` 불리언은 **신뢰하지 않는다** — 저장된 per-image `shifts`와 `roundtrip_mae`를
-    가지고 `evaluate_gate`를 직접 재실행해, 그 결과가 통과인지로만 판단한다. 그 외 거부 조건:
+    저장된 `passed` 불리언은 **신뢰하지 않는다** — 저장된 per-image `shifts`·`local_shifts`와
+    `roundtrip_mae`로 `recheck_gate`(`evaluate_gate` 재실행 + 요약값 정확 일치)를 돌려, 그
+    결과가 통과인지로만 판단한다. 그 외 거부 조건:
 
     - `ckpt_path`의 파일명이 `expected_ckpt_name(report_id)`와 다름(중간 resume ckpt 우회 차단)
     - gate의 `report_id`가 인자로 준 것과 다름(다른 실행의 gate를 잘못 재사용하는 것 차단)
@@ -567,27 +822,19 @@ def require_gate_passed(gate_json_path, ckpt_path, *, report_id: str, sim_sem_pa
     except ValueError as e:
         raise GateFailedError(f"gate의 config가 사전등록과 다르다: {e}") from e
 
-    expected_thresholds = {
-        "shift_median_max": SHIFT_MEDIAN_MAX,
-        "shift_p95_max": SHIFT_P95_MAX,
-        "roundtrip_mae_max": ROUNDTRIP_MAE_MAX,
-    }
+    expected_thresholds = GATE_THRESHOLDS
     if gate.get("thresholds") != expected_thresholds:
         raise GateFailedError(
             f"gate의 임계값이 현재 모듈 상수와 다르다: {gate.get('thresholds')} != {expected_thresholds}")
     if gate.get("n") != GATE_SAMPLE_N:
         raise GateFailedError(f"gate 표본 크기가 {GATE_SAMPLE_N}이 아니다: {gate.get('n')!r}")
 
-    shifts = gate.get("shifts")
-    roundtrip_mae_val = gate.get("roundtrip_mae")
-    if not isinstance(shifts, list) or len(shifts) != GATE_SAMPLE_N or roundtrip_mae_val is None:
-        raise GateFailedError(
-            f"gate에 재평가할 원본 shifts({GATE_SAMPLE_N}개)/roundtrip_mae가 없다: {gate_json_path}")
-    # 저장된 passed 불리언은 신뢰하지 않는다 — 원본 per-image 값으로 직접 재평가한다.
-    recomputed = evaluate_gate(np.asarray(shifts, dtype=np.float64), float(roundtrip_mae_val))
-    if not recomputed["passed"]:
-        raise GateFailedError(
-            f"저장된 shifts/roundtrip_mae를 재평가하면 실패한다: {recomputed['failures']}")
+    # 저장된 passed 불리언은 신뢰하지 않는다 — 원본 per-image 값으로 직접 재평가하고, 저장된
+    # 요약값이 재계산과 정확히 같은지도 본다.
+    try:
+        recheck_gate(gate)
+    except GateFailedError as e:
+        raise GateFailedError(f"{e}: {gate_json_path}") from e
 
     idx = gate_sample_indices(SIM_TRAIN_N, GATE_SAMPLE_N, 42)
     expected_idx_sha = indices_sha256(idx)

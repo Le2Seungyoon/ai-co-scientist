@@ -12,15 +12,25 @@ sha256·(주어지면) sim_sem.npy sha256까지 전부 확인하는 단일 하�
 
 쓰기는 **원자적**이다: 모든 산출물(번역된 `sim_sem.npy` + `sim_depth.npy`/`sim_case.npy` 원본
 그대로 + `manifest.json`)을 `<out-cache-dir>.partial/`에 먼저 쓰고, manifest 작성과
-`verify_manifest` 통과까지 확인한 뒤에만 `os.replace`로 최종 이름 `<out-cache-dir>`로 승격한다.
+`verify_manifest` 통과까지 확인한 뒤에만 `os.rename`으로 최종 이름 `<out-cache-dir>`로 승격한다.
 크래시나 gate 재검증 실패로 중간에 멈추면 `.partial`만 남고 `train_structure.py --cache-dir
 <translated dir>`가 읽을 최종 디렉터리는 아예 생기지 않는다.
 
 **쓰기 후 재검증**: 디스크에 실제로 저장된 `sim_sem.npy`를 다시 읽어, gate가 쓴 것과 같은 2,048
-고정 표본 인덱스로 phase-correlation shift를 다시 재고 (`ai_co_scientist.cyclegan.evaluate_gate`
-로 gate가 기록한 `roundtrip_mae`와 함께) 판정한다. round-trip 변환은 다시 돌리지 않는다 —
+고정 표본 인덱스로 전역 phase-correlation shift와 국소 블록 매칭 shift를 다시 재고
+(`measure_geometry` → `evaluate_gate`, gate가 기록한 `roundtrip_mae`와 함께) 판정한다.
+round-trip 변환은 다시 돌리지 않는다 —
 round-trip MAE는 쓰기 전/후로 달라질 이유가 없는 값이라, `G_real2sim`을 다시 호출하는 비용을
 피한다. 이 재검증이 실패하면 `.partial`을 지우지 않고 남긴 채(조사용) 거부한다.
+
+순서: 경로 위생(인자로 받은 경로를 열기 전) → gate 하드 스톱(gate JSON·ckpt·sim_sem의 **해시
+읽기** — 락 밖이다) → 출력 안전 → 누수 가드(cache의 `test_sem.npy`가 있으면 **해시만** 읽어
+real_sem과 비교 — 배열로 로드하지 않는다) → `resource_lock(GPU_LOCK)`(= `gpu-0`, 대기 없음 —
+이미 잡혀 있으면 코드 4) 안에서만 배열 로드·torch·번역·쓰기. 해시는 CPU 순차 읽기라 GPU 경합이
+아니므로 락 밖에 둔다. 덮어쓰기 정책: 최종·`.partial` 디렉터리 둘 중 하나라도 있으면 거부하고,
+승격 직전에 최종 디렉터리를 다시 확인한다(락 안에서 확인 → rename; Windows `os.rename`은 기존
+대상을 거부하고, POSIX에서는 그 사이 누가 만든 **빈** 디렉터리만 대체될 수 있다).
+manifest 작성·검증 실패는 코드 3으로 거부하고 `.partial`을 조사용으로 남긴다.
 
 ckpt 로드(`load_generators`)와 배치 번역(`translate_u8`)은 `train_cyclegan.py gate`와 같은
 `ai_co_scientist.cyclegan` 함수다 — gate가 본 이미지와 downstream이 받는 이미지가 같은 경로로
@@ -45,6 +55,7 @@ import numpy as np
 from ai_co_scientist.config import ensure_utf8_console
 from ai_co_scientist.cyclegan import (
     GATE_SAMPLE_N,
+    GPU_LOCK,
     SIM_TRAIN_N,
     GateFailedError,
     build_manifest,
@@ -52,15 +63,16 @@ from ai_co_scientist.cyclegan import (
     evaluate_gate,
     gate_sample_indices,
     load_generators,
+    measure_geometry,
     reject_test_paths,
     require_gate_passed,
     require_source_name,
     sha256_file,
-    shift_magnitudes,
     translate_u8,
     verify_manifest,
     write_once_json,
 )
+from ai_co_scientist.locks import ResourceBusy, resource_lock
 
 DEFAULT_CACHE_DIR = "runtime/cache"  # config.yaml paths.cache_dir과 손으로 맞춤
 
@@ -98,7 +110,15 @@ def main() -> int:
     real_path = cache_dir / "real_sem.npy"
     test_path = cache_dir / "test_sem.npy"
 
-    # 1) 무엇보다 먼저 -- gate 통과 여부. torch도 배열도 아직 안 건드린다. 이 한 번의 호출이
+    # 0) 경로 위생 -- 인자로 받은 어떤 파일도 읽기(해시 포함) 전에.
+    try:
+        reject_test_paths([sim_path, depth_path, case_path, real_path, ckpt_path, gate_json_path,
+                           out_dir, partial_dir])
+        require_source_name(sim_path, "sim_sem.npy")
+    except ValueError as e:
+        return _refuse(str(e))
+
+    # 1) gate 통과 여부. torch도 배열도 아직 안 건드린다. 이 한 번의 호출이
     #    ckpt 파일명 규약(재개점 차단 포함) · gate의 report_id · 저장된 epoch/config ·
     #    임계값·표본 크기 · 원본 shifts/roundtrip_mae 재평가 · 인덱스 지문 · ckpt sha256 ·
     #    sim_sem.npy sha256(줬으므로)까지 전부 확인한다(require_gate_passed는 numpy-only 모듈의
@@ -110,14 +130,6 @@ def main() -> int:
         return _refuse(f"gate 실패: {e}")
     except OSError as e:
         return _refuse(f"gate/ckpt/sim 파일 접근 실패: {e}")
-
-    # 2) 경로 위생
-    try:
-        reject_test_paths([sim_path, depth_path, case_path, real_path, ckpt_path, gate_json_path,
-                           out_dir])
-        require_source_name(sim_path, "sim_sem.npy")
-    except ValueError as e:
-        return _refuse(str(e))
 
     # 3) 출력 디렉터리 안전 -- 최종본과 임시(.partial)본 둘 다 없어야 한다
     if out_dir.exists():
@@ -138,6 +150,18 @@ def main() -> int:
             return _refuse("cache/test_sem.npy와 real_sem.npy의 sha256이 같다 -- 이름만 바꾼 "
                            "test 사본이 real 자리에 들어왔을 가능성이 있다(누수 가드)")
 
+    try:
+        with resource_lock(GPU_LOCK):  # 여기부터 real 데이터·GPU·쓰기 (모듈 docstring 순서)
+            return _translate_locked(args, gate, sim_path, depth_path, case_path, real_path,
+                                     ckpt_path, out_dir, partial_dir)
+    except ResourceBusy as e:
+        print(json.dumps({"status": "busy", "reason": f"{GPU_LOCK} 사용 중 — {e}"},
+                         ensure_ascii=False))
+        return 4
+
+
+def _translate_locked(args, gate, sim_path, depth_path, case_path, real_path, ckpt_path,
+                      out_dir, partial_dir) -> int:
     sim = np.load(sim_path, mmap_mode="r")
     check_sem_array(sim, "sim_sem", SIM_TRAIN_N)
 
@@ -162,10 +186,8 @@ def main() -> int:
     # 5) 쓰기 후 재검증 -- 디스크에 실제로 쓰인 배열로, gate와 같은 표본 인덱스에 대해 다시 잰다.
     written = np.load(out_sim_path, mmap_mode="r")
     idx = gate_sample_indices(SIM_TRAIN_N, GATE_SAMPLE_N, seed=42)
-    post_shifts = shift_magnitudes(
-        np.ascontiguousarray(sim[idx]).astype(np.float64),
-        np.ascontiguousarray(written[idx]).astype(np.float64))
-    post_write_gate = evaluate_gate(post_shifts, float(gate["roundtrip_mae"]))
+    geo = measure_geometry(np.ascontiguousarray(sim[idx]), np.ascontiguousarray(written[idx]))
+    post_write_gate = evaluate_gate(geo["shifts"], float(gate["roundtrip_mae"]), local=geo["local"])
     if not post_write_gate["passed"]:
         print(json.dumps({
             "status": "refused",
@@ -174,19 +196,24 @@ def main() -> int:
         }, ensure_ascii=False))
         return 3
 
-    manifest = build_manifest(
-        report_id=args.report_id, config=cfg.to_dict(),
-        gate={**gate, "post_write_gate": post_write_gate}, ckpt_path=ckpt_path,
-        source_files={"sim_sem": sim_path, "sim_depth": depth_path, "sim_case": case_path,
-                      "real_sem": real_path},
-        output_files={"sim_sem": out_sim_path, "sim_depth": partial_dir / "sim_depth.npy",
-                      "sim_case": partial_dir / "sim_case.npy"},
-        git_commit=args.git_commit)
     manifest_path = partial_dir / "manifest.json"
-    write_once_json(manifest_path, manifest)
-    verify_manifest(manifest_path)  # 여기까지 통과해야만 아래에서 최종 이름으로 승격한다
+    try:
+        manifest = build_manifest(
+            report_id=args.report_id, config=cfg.to_dict(),
+            gate={**gate, "post_write_gate": post_write_gate}, ckpt_path=ckpt_path,
+            source_files={"sim_sem": sim_path, "sim_depth": depth_path, "sim_case": case_path,
+                          "real_sem": real_path},
+            output_files={"sim_sem": out_sim_path, "sim_depth": partial_dir / "sim_depth.npy",
+                          "sim_case": partial_dir / "sim_case.npy"},
+            git_commit=args.git_commit)
+        write_once_json(manifest_path, manifest)
+        verify_manifest(manifest_path)  # 여기까지 통과해야만 아래에서 최종 이름으로 승격한다
+    except (ValueError, OSError) as e:  # FileExistsError는 OSError — .partial은 조사용으로 남긴다
+        return _refuse(f"manifest 작성/검증 실패: {e}", partial_dir=str(partial_dir))
 
-    os.replace(partial_dir, out_dir)  # 매니페스트 검증 이후에만 원자적으로 최종 이름이 된다
+    if out_dir.exists():  # 번역 도중 누가 만들었다 -- 덮지 않고 .partial을 조사용으로 남긴다
+        return _refuse(f"승격 직전 출력 디렉터리가 생겼다 -> {out_dir}", partial_dir=str(partial_dir))
+    os.rename(partial_dir, out_dir)  # 매니페스트 검증 이후에만 최종 이름이 된다
 
     print(json.dumps({
         "status": "ok", "report_id": args.report_id, "ckpt_epoch": ckpt_epoch,

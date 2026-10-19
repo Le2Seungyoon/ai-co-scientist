@@ -18,6 +18,19 @@
 `gate`/`translate_sim.py`는 재개점을 절대 받아들이지 않는다(이름이 다르면 torch를 불러오기
 전에 거부한다).
 
+덮어쓰기 정책(결정론적 — 어느 경우에도 "상황에 따라 조용히"가 없다):
+
+- 최종 ckpt가 이미 있으면 거부한다. 저장은 `.tmp`에 끝까지 쓴 뒤 `os.link`로 최종 이름을
+  배타적으로 붙인다 — 경합에서도 안 덮고, 저장 중 크래시가 최종 이름에 찢긴 파일을 남기지 않는다.
+- 재개점이 있는데 `--resume`이 없으면 거부한다(조용히 처음부터 돌며 재개점을 덮지 않는다).
+  `--resume`인데 재개점이 없으면 거부한다(조용히 처음부터 시작하지 않는다).
+- 재개점만 매 에폭 **원자적으로** 덮어쓴다(`.tmp`에 쓰고 `os.replace`).
+- gate JSON은 write-once다(`write_once_json`).
+
+GPU 락: `train`/`gate`는 모든 거부 검사를 끝낸 **뒤**, 실제 데이터를 읽기 **전**에
+`resource_lock(GPU_LOCK)`(= `gpu-0`, 대기 없음)을 잡고 runtime 전체를 그 안에서 돈다. 이미
+잡혀 있으면 코드 4로 거부한다. `plan`과 `--help`는 락을 잡지 않는다(CPU-safe).
+
 미래 실행 레시피(둘 다 `uv run --group baseline` 필요 — 이 워크트리에서는 절대 실행하지 않는다):
 
     uv run --group baseline python scripts/train_cyclegan.py plan --report-id EXP-0NN
@@ -41,6 +54,7 @@ import numpy as np
 from ai_co_scientist.config import ensure_utf8_console
 from ai_co_scientist.cyclegan import (
     GATE_SAMPLE_N,
+    GPU_LOCK,
     PREREGISTERED,
     REAL_TRAIN_N,
     SIM_TRAIN_N,
@@ -56,7 +70,7 @@ from ai_co_scientist.cyclegan import (
     indices_sha256,
     load_generators,
     lr_multiplier,
-    phase_correlation_shifts,
+    measure_geometry,
     reject_test_paths,
     require_source_name,
     roundtrip_mae,
@@ -66,6 +80,7 @@ from ai_co_scientist.cyclegan import (
     validate_config,
     write_once_json,
 )
+from ai_co_scientist.locks import ResourceBusy, resource_lock
 
 DEFAULT_CACHE_DIR = "runtime/cache"  # config.yaml paths.cache_dir과 손으로 맞춤
 DEFAULT_CKPT_DIR = "runtime/ckpt"  # config.yaml paths.ckpt_dir과 손으로 맞춤
@@ -143,14 +158,25 @@ def train(args) -> int:
     require_source_name(sim_path, "sim_sem.npy")
     require_source_name(real_path, "real_sem.npy")
 
-    # 출력 존재 검사 — torch/배열 어느 것도 건드리기 전에 (덮어쓰지 않는다)
+    # 출력 존재 검사 — torch/배열 어느 것도 건드리기 전에 (덮어쓰기 정책: 모듈 docstring)
     if ckpt_path.exists():
         raise SystemExit(f"거부: 출력 체크포인트가 이미 있다(덮어쓰지 않음) -> {ckpt_path}")
+    if resume_path.exists() and not args.resume:
+        raise SystemExit(f"거부: 재개점이 이미 있다 — 이어가려면 --resume, 아니면 사람이 먼저 "
+                         f"치울 것(조용히 덮지 않음) -> {resume_path}")
+    if args.resume and not resume_path.exists():
+        raise SystemExit(f"거부: --resume인데 재개점이 없다(조용히 처음부터 시작하지 않음) "
+                         f"-> {resume_path}")
     if not sim_path.exists():
         raise SystemExit(f"거부: sim SEM 캐시가 없다 -> {sim_path}")
     if not real_path.exists():
         raise SystemExit(f"거부: real SEM 캐시가 없다 -> {real_path}")
 
+    with resource_lock(GPU_LOCK):  # 여기부터 real 데이터·GPU — 모듈 docstring의 GPU 락
+        return _train_locked(args, cfg, sim_path, real_path, out_dir, ckpt_path, resume_path)
+
+
+def _train_locked(args, cfg, sim_path, real_path, out_dir, ckpt_path, resume_path) -> int:
     sim = np.load(sim_path, mmap_mode="r")
     real = np.load(real_path, mmap_mode="r")
     check_sem_array(sim, "sim_sem", SIM_TRAIN_N)
@@ -211,7 +237,7 @@ def train(args) -> int:
 
     total_epochs = cfg.total_epochs
     start_ep = 0
-    if args.resume and resume_path.exists():
+    if args.resume:  # 존재는 train()이 락 전에 확인했다
         ck = torch.load(resume_path, map_location=device, weights_only=False)
         g_sim2real.load_state_dict(ck["state_dict"]["G_sim2real"])
         g_real2sim.load_state_dict(ck["state_dict"]["G_real2sim"])
@@ -286,6 +312,7 @@ def train(args) -> int:
               f"loss_D={np.mean(d_losses):.4f}", flush=True)
 
         out_dir.mkdir(parents=True, exist_ok=True)
+        resume_tmp = resume_path.with_name(resume_path.name + ".tmp")
         torch.save({
             "epoch": ep,
             "state_dict": {
@@ -295,9 +322,13 @@ def train(args) -> int:
             "opt_g": opt_g.state_dict(), "opt_d": opt_d.state_dict(),
             "sched_g": sched_g.state_dict(), "sched_d": sched_d.state_dict(),
             "config": cfg.to_dict(),
-        }, resume_path)  # 매 에폭 덮어쓰는 별도 파일 — train_structure.py --resume과 같은 이유
+        }, resume_tmp)
+        os.replace(resume_tmp, resume_path)  # 매 에폭 원자적으로 덮는 별도 파일 — 찢긴 재개점 없음
 
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+    # 임시 파일에 끝까지 쓴 뒤 하드링크로 최종 이름을 **배타적으로** 붙인다 — os.link는 대상이
+    # 있으면 FileExistsError(덮지 않음)이고, 저장 도중 크래시는 최종 이름에 찢긴 파일을 남기지 않는다
+    final_tmp = ckpt_path.with_name(ckpt_path.name + ".tmp")
     torch.save({
         "config": cfg.to_dict(),
         "epoch": total_epochs,  # gate/translate가 "완주"를 확인하는 값 — 재개점의 0-idx ep와 다르다
@@ -305,7 +336,12 @@ def train(args) -> int:
             "G_sim2real": g_sim2real.state_dict(), "G_real2sim": g_real2sim.state_dict(),
             "D_sim": d_sim.state_dict(), "D_real": d_real.state_dict(),
         },
-    }, ckpt_path)
+        # 미사전등록 실행 옵션 — 판정엔 안 쓰지만 재현을 위해 기록한다(모듈 docstring)
+        "runtime_options": {"amp": bool(args.amp), "num_workers": int(args.num_workers),
+                            "real_sample_seed": REAL_SAMPLE_SEED, "resumed": bool(args.resume)},
+    }, final_tmp)
+    os.link(final_tmp, ckpt_path)
+    final_tmp.unlink()
 
     print(json.dumps({
         "report_id": args.report_id,
@@ -336,6 +372,11 @@ def gate(args) -> int:
     if not sim_path.exists():
         raise SystemExit(f"거부: sim SEM 캐시가 없다 -> {sim_path}")
 
+    with resource_lock(GPU_LOCK):  # 여기부터 real 데이터·GPU — 모듈 docstring의 GPU 락
+        return _gate_locked(args, sim_path, ckpt_path, out_json)
+
+
+def _gate_locked(args, sim_path, ckpt_path, out_json) -> int:
     sim = np.load(sim_path, mmap_mode="r")
     check_sem_array(sim, "sim_sem", SIM_TRAIN_N)
 
@@ -352,24 +393,25 @@ def gate(args) -> int:
     translated = translate_u8(g_sim2real, orig, args.batch_size, device)
     roundtrip = translate_u8(g_real2sim, translated, args.batch_size, device)
 
-    signed = phase_correlation_shifts(orig.astype(np.float64), translated.astype(np.float64))
-    mags = np.hypot(signed[:, 0], signed[:, 1])
+    geo = measure_geometry(orig, translated)  # 전역 phase correlation + 국소 블록 매칭
     mae = roundtrip_mae(orig, roundtrip)
-    gate_result = evaluate_gate(mags, mae, signed=signed)  # signed= → diagnostics에 mean_dy/dx
+    gate_result = evaluate_gate(geo["shifts"], mae, local=geo["local"],
+                                signed=geo["signed"])  # signed= → diagnostics에 mean_dy/dx
 
     payload = {
         **gate_result,
         "report_id": args.report_id,
         "ckpt": str(ckpt_path), "ckpt_sha256": sha256_file(ckpt_path), "ckpt_epoch": ckpt_epoch,
         "config": cfg.to_dict(),
-        "shifts": [float(m) for m in mags],  # require_gate_passed가 재평가할 원본 크기값
-        "signed_shifts": signed.tolist(),  # 진단용 원본 (dy,dx) — 판정에는 안 쓰인다
+        "shifts": [float(m) for m in geo["shifts"]],  # require_gate_passed가 재평가할 원본값
+        "local_shifts": [float(m) for m in geo["local"]],  # 국소 기준 원본 — 없으면 통과 불가
+        "signed_shifts": geo["signed"].tolist(),  # 진단용 원본 (dy,dx) — 판정에는 안 쓰인다
         "roundtrip_mae": mae,
         "indices_sha256": indices_sha256(idx),
         "sim_sem_sha256": sha256_file(sim_path),
     }
+    print(json.dumps(payload, ensure_ascii=False))  # 쓰기 전에 — 쓰기가 실패해도 결과는 남는다
     write_once_json(out_json, payload)
-    print(json.dumps(payload, ensure_ascii=False))
     return 0 if gate_result["passed"] else 3
 
 
@@ -395,7 +437,8 @@ def main() -> int:
                     help="<out-dir>/<report-id>-cyclegan.resume.pt가 있으면 이어서 학습")
     tr.add_argument("--config-json", default="", help="plan과 동일 — 사전등록 편차 거부용")
 
-    ga = sub.add_parser("gate", help="기하 위생 gate: phase-correlation shift + round-trip MAE")
+    ga = sub.add_parser("gate", help="기하 위생 gate: 전역 phase-correlation shift + 국소 블록 "
+                                     "매칭 shift + round-trip MAE")
     ga.add_argument("--report-id", required=True)
     ga.add_argument("--ckpt", required=True)
     ga.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR)
@@ -413,6 +456,9 @@ def main() -> int:
     except GateFailedError as e:  # ckpt 이름·epoch·config 불일치 — translate_sim과 같은 코드 3
         print(f"거부: {e}", file=sys.stderr)
         return 3
+    except ResourceBusy as e:  # 다른 실행이 gpu-0을 쥐고 있다 — 기다리거나 다른 자원으로 옮기지 않는다
+        print(f"거부: {GPU_LOCK} 사용 중 — {e}", file=sys.stderr)
+        return 4
     except ValueError as e:
         print(f"거부: {e}", file=sys.stderr)
         return 1

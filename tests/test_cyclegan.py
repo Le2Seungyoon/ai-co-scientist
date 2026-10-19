@@ -312,16 +312,19 @@ def _shifts(n, value):
     return np.full(n, value, dtype=np.float64)
 
 
+_ZL = np.zeros(cyclegan.GATE_SAMPLE_N)  # 국소 기준이 통과하는 기본값 — 전역 기준만 떼어 볼 때
+
+
 def test_evaluate_gate_passes_at_exact_boundary():
     shifts = _shifts(cyclegan.GATE_SAMPLE_N, cyclegan.SHIFT_MEDIAN_MAX)  # 중앙값=p95=경계
-    r = cyclegan.evaluate_gate(shifts, cyclegan.ROUNDTRIP_MAE_MAX)
+    r = cyclegan.evaluate_gate(shifts, cyclegan.ROUNDTRIP_MAE_MAX, local=_ZL)
     assert r["passed"] is True
     assert r["failures"] == []
 
 
 def test_evaluate_gate_fails_on_shift_median_alone():
     shifts = _shifts(cyclegan.GATE_SAMPLE_N, cyclegan.SHIFT_MEDIAN_MAX + 0.01)
-    r = cyclegan.evaluate_gate(shifts, 0.0)
+    r = cyclegan.evaluate_gate(shifts, 0.0, local=_ZL)
     assert r["passed"] is False
     assert any("shift_median" in f for f in r["failures"])
     assert not any("shift_p95" in f for f in r["failures"])
@@ -334,7 +337,7 @@ def test_evaluate_gate_fails_on_shift_p95_alone():
     # 상위 10%를 크게 튀운다 — np.percentile(linear)이 95번째 백분위를 이 구간에 걸치게
     # 하려면 5%보다 여유를 둬야 한다(정확히 5%는 보간 위치가 여전히 0쪽에 걸린다).
     shifts[: n // 10] = cyclegan.SHIFT_P95_MAX + 5.0
-    r = cyclegan.evaluate_gate(shifts, 0.0)
+    r = cyclegan.evaluate_gate(shifts, 0.0, local=_ZL)
     assert r["passed"] is False
     assert any("shift_p95" in f for f in r["failures"])
     assert not any("shift_median" in f for f in r["failures"])
@@ -342,7 +345,7 @@ def test_evaluate_gate_fails_on_shift_p95_alone():
 
 def test_evaluate_gate_fails_on_roundtrip_mae_alone():
     shifts = _shifts(cyclegan.GATE_SAMPLE_N, 0.0)
-    r = cyclegan.evaluate_gate(shifts, cyclegan.ROUNDTRIP_MAE_MAX + 0.01)
+    r = cyclegan.evaluate_gate(shifts, cyclegan.ROUNDTRIP_MAE_MAX + 0.01, local=_ZL)
     assert r["passed"] is False
     assert any("roundtrip_mae" in f for f in r["failures"])
     assert not any("shift_median" in f or "shift_p95" in f for f in r["failures"])
@@ -351,25 +354,25 @@ def test_evaluate_gate_fails_on_roundtrip_mae_alone():
 def test_evaluate_gate_nan_shifts_fails_not_silently_passes():
     shifts = _shifts(cyclegan.GATE_SAMPLE_N, 0.0)
     shifts[0] = np.nan
-    r = cyclegan.evaluate_gate(shifts, 0.0)
+    r = cyclegan.evaluate_gate(shifts, 0.0, local=_ZL)
     assert r["passed"] is False
     assert np.isnan(r["shift_median"]) and np.isnan(r["shift_p95"])
 
 
 def test_evaluate_gate_nan_mae_fails():
     shifts = _shifts(cyclegan.GATE_SAMPLE_N, 0.0)
-    r = cyclegan.evaluate_gate(shifts, float("nan"))
+    r = cyclegan.evaluate_gate(shifts, float("nan"), local=_ZL)
     assert r["passed"] is False
     assert any("roundtrip_mae" in f for f in r["failures"])
 
 
 def test_evaluate_gate_wrong_n_raises():
     with pytest.raises(ValueError):
-        cyclegan.evaluate_gate(np.zeros(10, dtype=np.float64), 0.0)
+        cyclegan.evaluate_gate(np.zeros(10, dtype=np.float64), 0.0, local=np.zeros(10))
 
 
 def test_evaluate_gate_diagnostics_never_flip_passed():
-    # diagnostics(p99, max, mean_dy/dx)는 참고용이다 — 사전등록된 3개 기준만 passed를 결정한다.
+    # diagnostics(p99, max, mean_dy/dx)는 참고용이다 — 5개 기준 통계만 passed를 결정한다.
     # 상위 2%(45/2048)를 극단으로 밀면: p95 인덱스(0.95*2047≈1944.65)는 여전히 0 구간에 있어
     # median=p95=0을 유지해 통과하지만, p99 인덱스(0.99*2047≈2026.53)는 그 45개 구간에 걸려
     # p99만 임계값을 넘는다 — diagnostics가 gating과 분리돼 있다는 것을 수치로 고정한다.
@@ -379,7 +382,7 @@ def test_evaluate_gate_diagnostics_never_flip_passed():
     shifts[n - k:] = 999.0
     signed = np.zeros((n, 2), dtype=np.float64)
     signed[n - k:] = [999.0, -999.0]
-    r = cyclegan.evaluate_gate(shifts, 0.0, signed=signed)
+    r = cyclegan.evaluate_gate(shifts, 0.0, local=_ZL, signed=signed)
     assert r["passed"] is True  # diagnostics가 극단이어도 gating 기준(median/p95/mae) 통과면 통과
     assert r["diagnostics"]["shift_max"] == 999.0
     assert r["diagnostics"]["shift_p99"] > cyclegan.SHIFT_P95_MAX  # 진단값 자체는 크다
@@ -387,7 +390,7 @@ def test_evaluate_gate_diagnostics_never_flip_passed():
 
 def test_evaluate_gate_diagnostics_contain_p99_and_max():
     shifts = np.linspace(0.0, 1.0, cyclegan.GATE_SAMPLE_N)
-    r = cyclegan.evaluate_gate(shifts, 0.0)
+    r = cyclegan.evaluate_gate(shifts, 0.0, local=_ZL)
     assert r["diagnostics"]["shift_max"] == pytest.approx(1.0)
     assert r["diagnostics"]["shift_p99"] == pytest.approx(np.percentile(shifts, 99))
 
@@ -398,16 +401,167 @@ def test_evaluate_gate_diagnostics_mean_dy_dx_from_signed():
     signed = np.zeros((n, 2), dtype=np.float64)
     signed[:, 0] = 2.0
     signed[:, 1] = -3.0
-    r = cyclegan.evaluate_gate(shifts, 0.0, signed=signed)
+    r = cyclegan.evaluate_gate(shifts, 0.0, local=_ZL, signed=signed)
     assert r["diagnostics"]["mean_dy"] == pytest.approx(2.0)
     assert r["diagnostics"]["mean_dx"] == pytest.approx(-3.0)
 
 
 def test_evaluate_gate_diagnostics_omit_mean_dy_dx_without_signed():
     shifts = _shifts(cyclegan.GATE_SAMPLE_N, 0.0)
-    r = cyclegan.evaluate_gate(shifts, 0.0)
+    r = cyclegan.evaluate_gate(shifts, 0.0, local=_ZL)
     assert "mean_dy" not in r["diagnostics"]
     assert "mean_dx" not in r["diagnostics"]
+
+
+# ── 국소 기하: 블록 매칭 (전역 phase correlation의 사각지대) ─────────
+
+def _hole_scene(warp=None, appearance=False, seed=0):
+    """72x48 합성 hole crop: 부드러운 원판 구멍 + 저주파 텍스처. `warp(yy, xx) -> (sy, sx)`는
+    출력 좌표가 원본의 어디를 읽는지(역사상)다. `appearance=True`는 기하를 바꾸지 않는 외관
+    변화(블러 + 아핀 밝기 + 잡음)를 얹는다 — 변환기가 해도 되는 일의 대역이다."""
+    h, w = cyclegan.IMG_H, cyclegan.IMG_W
+    rng = np.random.default_rng(seed)
+    big = rng.normal(size=(h * 3, w * 3))
+    ky = np.fft.fftfreq(big.shape[0])[:, None]
+    kx = np.fft.fftfreq(big.shape[1])[None]
+    tex = np.fft.ifft2(np.fft.fft2(big) * np.exp(-8 * np.pi ** 2 * (ky ** 2 + kx ** 2))).real * 60
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    sy, sx = (yy, xx) if warp is None else warp(yy, xx)
+    r = np.hypot(sy - h / 2, sx - w / 2)
+    y, x = sy + h, sx + w
+    y0, x0 = np.floor(y).astype(int), np.floor(x).astype(int)
+    fy, fx = y - y0, x - x0
+    t = (tex[y0, x0] * (1 - fy) * (1 - fx) + tex[y0 + 1, x0] * fy * (1 - fx)
+         + tex[y0, x0 + 1] * (1 - fy) * fx + tex[y0 + 1, x0 + 1] * fy * fx)
+    img = 170 - 120 / (1 + np.exp((r - 14) / 1.2)) + t
+    if appearance:
+        k = np.exp(-2 * (np.pi * 0.8) ** 2 * (np.fft.fftfreq(h)[:, None] ** 2
+                                             + np.fft.fftfreq(w)[None] ** 2))
+        img = np.fft.ifft2(np.fft.fft2(img) * k).real * 1.1 + 10 + rng.normal(0, 3, img.shape)
+    return img
+
+
+def _left_half_shift(d):
+    return lambda y, x: (y, np.where(x < cyclegan.IMG_W / 2, x - d, x))
+
+
+def _smooth_warp(a):
+    return lambda y, x: (y + a * np.sin(2 * np.pi * y / cyclegan.IMG_H),
+                         x + a * np.sin(2 * np.pi * x / cyclegan.IMG_W + 1))
+
+
+def _dilate(k):
+    cy, cx = cyclegan.IMG_H / 2, cyclegan.IMG_W / 2
+    return lambda y, x: (cy + (y - cy) / (1 + k), cx + (x - cx) / (1 + k))
+
+
+def _gate_on(orig, moved):
+    """한 쌍을 GATE_SAMPLE_N장으로 복제해 전역+국소 gate를 모두 돌린다 (mae=0)."""
+    g = np.full(cyclegan.GATE_SAMPLE_N, np.hypot(*cyclegan.phase_correlation_shift(orig, moved)))
+    loc = np.full(cyclegan.GATE_SAMPLE_N, cyclegan.local_shift_max(orig[None], moved[None])[0])
+    return cyclegan.evaluate_gate(g, 0.0, local=loc)
+
+
+def test_block_match_identical_is_exactly_zero():
+    a = _hole_scene()
+    np.testing.assert_array_equal(cyclegan.block_match_shifts(a, a), np.zeros((6, 2)))
+
+
+def test_block_match_recovers_integer_shift_in_every_tile():
+    # 비순환 이동(큰 장면에서 잘라낸 두 창)이라 phase correlation의 경계 편향이 없는 설정.
+    # 포물선 subpixel 보정이 비대칭 NCC 면에서 ~0.1 px 치우치므로 허용오차 0.15
+    big = np.random.default_rng(3).normal(size=(90, 66)).cumsum(0).cumsum(1)
+    a = big[8:80, 8:56]
+    for dy, dx in [(1, 0), (0, -2), (2, 1), (-1, -1)]:
+        b = big[8 - dy:80 - dy, 8 - dx:56 - dx]  # b[p] = a[p - d] — 내용이 +d로 이동
+        est = cyclegan.block_match_shifts(a, b)
+        np.testing.assert_allclose(est, np.tile([dy, dx], (6, 1)), atol=0.15)
+
+
+def test_block_match_skips_flat_tiles_as_nan():
+    # 평탄한 타일은 변위가 정의되지 않는다 — 0으로 적으면 "움직이지 않았다"는 거짓 증거가 된다
+    a = _hole_scene()
+    a[:24, :24] = 128.0
+    est = cyclegan.block_match_shifts(a, a + 1.0)
+    assert np.isnan(est[0]).all()
+    assert not np.isnan(est[1:]).any()
+
+
+def test_local_shift_max_of_all_flat_image_is_nan_and_fails_gate():
+    # 전부 평탄하면 국소 기하를 잴 수 없다 — 측정 불가는 통과가 아니라 실패다
+    a = np.full((1, cyclegan.IMG_H, cyclegan.IMG_W), 128.0)
+    loc = cyclegan.local_shift_max(a, a + 3.0)
+    assert np.isnan(loc[0])
+    res = cyclegan.evaluate_gate(np.zeros(cyclegan.GATE_SAMPLE_N), 0.0,
+                                 local=np.full(cyclegan.GATE_SAMPLE_N, loc[0]))
+    assert res["passed"] is False
+
+
+@pytest.mark.parametrize("name,warp", [
+    ("left half shifted 1 px", _left_half_shift(1.0)),
+    ("smooth 1 px warp", _smooth_warp(1.0)),
+    ("4 % hole dilation", _dilate(0.04)),
+])
+def test_local_warp_passes_global_gate_but_fails_local_gate(name, warp):
+    # 합성 국소 왜곡 거부 계약: 픽셀 GT 대응을 깨는 국소 기하 변화를 전역 phase correlation은
+    # 통과시키고(사각지대) 블록 매칭 기준이 잡는다. 외관 변화를 함께 얹어도 마찬가지다.
+    # 전역 값은 장면에 따라 흔들리므로(seed 0: 0.30~0.38 px, 20 seed 최대 ~0.75) 장면을 seed 0에
+    # 고정하고 크기를 사각지대 안으로 잡았다. 국소 값은 seed 0에서 0.80~1.08 px다
+    orig = _hole_scene()
+    moved = _hole_scene(warp=warp, appearance=True)
+    res = _gate_on(orig, moved)
+    assert res["shift_median"] <= cyclegan.SHIFT_MEDIAN_MAX, name  # 전역 기준은 못 본다
+    assert res["passed"] is False, name
+    assert any(f.startswith("local_shift") for f in res["failures"]), name
+
+
+def test_appearance_only_change_passes_local_gate():
+    # 음성 대조: 기하는 그대로 두고 블러·아핀 밝기·잡음만 바꾸면 국소 기준도 통과해야 한다 —
+    # 이게 깨지면 gate가 변환기의 정상 동작(외관 이동)을 기하 위반으로 오판한다
+    res = _gate_on(_hole_scene(), _hole_scene(appearance=True))
+    assert res["passed"] is True, res["failures"]
+    assert res["local_shift_median"] < 0.3
+
+
+def test_global_phase_correlation_underestimates_noncircular_subpixel_shift():
+    # 발견 고정: 실제 0.5 px 비순환 전역 이동을 전역 phase correlation은 ~0.05로 읽는다
+    # (crop 경계의 불연속이 백색화 스펙트럼을 지배). 사전등록 전역 기준이 느슨하다는 증거라
+    # 국소 기준이 필요하다 — 블록 매칭은 같은 입력을 ~0.5로 읽는다
+    orig = _hole_scene()
+    moved = _hole_scene(warp=lambda y, x: (y - 0.5, x))
+    assert np.hypot(*cyclegan.phase_correlation_shift(orig, moved)) < 0.1
+    assert cyclegan.local_shift_max(orig[None], moved[None])[0] > 0.45
+
+
+def test_evaluate_gate_local_criteria_are_inclusive_and_named():
+    zeros = _ZL
+    at = np.full(cyclegan.GATE_SAMPLE_N, cyclegan.SHIFT_MEDIAN_MAX)
+    res = cyclegan.evaluate_gate(zeros, 0.0, local=at)
+    assert res["passed"] is True
+    assert res["thresholds"] == cyclegan.GATE_THRESHOLDS
+    over = cyclegan.evaluate_gate(zeros, 0.0, local=at + 1e-9)
+    assert over["failures"] == [f"local_shift_median {cyclegan.SHIFT_MEDIAN_MAX + 1e-9} > "
+                                f"{cyclegan.SHIFT_MEDIAN_MAX}"]
+
+
+def test_require_gate_passed_rejects_gate_without_local_shifts(tmp_path):
+    # 국소 기준 없이 만든 gate(전역 3개 기준만)는 하드 스톱을 통과할 수 없다
+    gate_path, ckpt, gate = _valid_gate_and_ckpt(tmp_path, report_id="EXP-920")
+    del gate["local_shifts"]
+    gate_path.unlink()
+    cyclegan.write_once_json(gate_path, gate)
+    with pytest.raises(cyclegan.GateFailedError, match="local_shifts"):
+        cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-920")
+
+
+def test_require_gate_passed_recomputes_local_criterion(tmp_path):
+    # 저장된 passed=True라도 local_shifts를 재평가하면 실패하는 gate는 거부된다
+    gate_path, ckpt, gate = _valid_gate_and_ckpt(tmp_path, report_id="EXP-921")
+    gate["local_shifts"] = [2.0] * cyclegan.GATE_SAMPLE_N
+    gate_path.unlink()
+    cyclegan.write_once_json(gate_path, gate)
+    with pytest.raises(cyclegan.GateFailedError, match="local_shift"):
+        cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-921")
 
 
 # ── manifest — 덮어쓰기 거부 + 해시 검증 ──────────────────────────
@@ -425,55 +579,63 @@ def _write_bytes(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
-def _passing_gate() -> dict:
+def _passing_gate(report_id="EXP-900", ckpt=None) -> dict:
+    # manifest에 들어가는 gate는 재검증 가능한 원본 값과 결속 정보(ckpt·report_id·config)를 든다
     shifts = np.zeros(cyclegan.GATE_SAMPLE_N, dtype=np.float64)
-    return cyclegan.evaluate_gate(shifts, 0.0)
+    gate = cyclegan.evaluate_gate(shifts, 0.0, local=_ZL)
+    gate.update({"shifts": shifts.tolist(), "local_shifts": _ZL.tolist(), "report_id": report_id,
+                 "config": dict(cyclegan.PREREGISTERED),
+                 "ckpt_sha256": cyclegan.sha256_file(ckpt) if ckpt is not None else None})
+    return gate
+
+
+def _manifest_parts(tmp_path, report_id, out_name="out"):
+    """결속을 모두 만족하는 manifest 재료: ckpt, source 4종, output 3종(depth/case는 source 사본)."""
+    ckpt = tmp_path / f"{report_id}-cyclegan.pt"
+    _write_bytes(ckpt, b"ckpt-bytes")
+    cache = tmp_path / "cache"
+    sources = {}
+    for name, data in (("sim_sem", b"sim"), ("sim_depth", b"depth"), ("sim_case", b"case"),
+                       ("real_sem", b"real")):
+        sources[name] = cache / f"{name}.npy"
+        _write_bytes(sources[name], data)
+    out = tmp_path / out_name
+    outputs = {"sim_sem": out / "sim_sem.npy", "sim_depth": out / "sim_depth.npy",
+               "sim_case": out / "sim_case.npy"}
+    _write_bytes(outputs["sim_sem"], b"translated")
+    _write_bytes(outputs["sim_depth"], b"depth")
+    _write_bytes(outputs["sim_case"], b"case")
+    return dict(report_id=report_id, config=cyclegan.PREREGISTERED,
+                gate=_passing_gate(report_id, ckpt), ckpt_path=ckpt, source_files=sources,
+                output_files=outputs, git_commit="deadbeef")
 
 
 def test_build_manifest_refuses_failed_gate(tmp_path):
-    ckpt = tmp_path / "EXP-900-cyclegan.pt"
-    _write_bytes(ckpt, b"ckpt-bytes")
-    failing_gate = cyclegan.evaluate_gate(
-        _shifts(cyclegan.GATE_SAMPLE_N, cyclegan.SHIFT_MEDIAN_MAX + 1.0), 0.0)
+    parts = _manifest_parts(tmp_path, "EXP-900")
+    parts["gate"] = cyclegan.evaluate_gate(
+        _shifts(cyclegan.GATE_SAMPLE_N, cyclegan.SHIFT_MEDIAN_MAX + 1.0), 0.0, local=_ZL)
     with pytest.raises(ValueError):
-        cyclegan.build_manifest(
-            report_id="EXP-900", config=cyclegan.PREREGISTERED, gate=failing_gate,
-            ckpt_path=ckpt, source_files={}, output_files={}, git_commit="deadbeef")
+        cyclegan.build_manifest(**parts)
 
 
 def test_build_manifest_and_verify_manifest_roundtrip(tmp_path):
-    ckpt = tmp_path / "EXP-901-cyclegan.pt"
-    src = tmp_path / "sim_sem.npy"
-    out = tmp_path / "out" / "sim_sem.npy"
-    _write_bytes(ckpt, b"ckpt-bytes")
-    _write_bytes(src, b"source-bytes")
-    _write_bytes(out, b"output-bytes")
-
-    manifest = cyclegan.build_manifest(
-        report_id="EXP-901", config=cyclegan.PREREGISTERED, gate=_passing_gate(),
-        ckpt_path=ckpt, source_files={"sim_sem": src}, output_files={"sim_sem": out},
-        git_commit="deadbeef")
+    parts = _manifest_parts(tmp_path, "EXP-901")
     manifest_path = tmp_path / "out" / "manifest.json"
-    cyclegan.write_once_json(manifest_path, manifest)
+    cyclegan.write_once_json(manifest_path, cyclegan.build_manifest(**parts))
 
     verified = cyclegan.verify_manifest(manifest_path)
     assert verified["hypothesis"] == "H6"
     assert verified["x_domain"] == "sim_translated_to_real_appearance"
     assert verified["y_source"] == "sim_depth_gt"
+    assert Path(verified["ckpt"]["path"]).is_absolute()  # 다른 cwd에서도 검증 가능
 
 
 def test_verify_manifest_detects_a_single_flipped_byte(tmp_path):
-    ckpt = tmp_path / "EXP-902-cyclegan.pt"
-    out = tmp_path / "sim_sem.npy"
-    _write_bytes(ckpt, b"ckpt-bytes")
-    _write_bytes(out, b"output-bytes")
+    parts = _manifest_parts(tmp_path, "EXP-902")
+    manifest_path = tmp_path / "out" / "manifest.json"
+    cyclegan.write_once_json(manifest_path, cyclegan.build_manifest(**parts))
 
-    manifest = cyclegan.build_manifest(
-        report_id="EXP-902", config=cyclegan.PREREGISTERED, gate=_passing_gate(),
-        ckpt_path=ckpt, source_files={}, output_files={"sim_sem": out}, git_commit="deadbeef")
-    manifest_path = tmp_path / "manifest.json"
-    cyclegan.write_once_json(manifest_path, manifest)
-
+    out = parts["output_files"]["sim_sem"]
     data = bytearray(out.read_bytes())
     data[0] ^= 0x01  # 바이트 1개만 뒤집는다
     out.write_bytes(bytes(data))
@@ -482,25 +644,13 @@ def test_verify_manifest_detects_a_single_flipped_byte(tmp_path):
         cyclegan.verify_manifest(manifest_path)
 
 
-
 def test_manifest_survives_rename_of_its_directory(tmp_path):
     # 회귀: translate_sim.py는 `<out>.partial/`에 쓰고 manifest를 만든 뒤 `<out>`으로 rename한다.
     # 출력 경로를 절대경로로 적으면 rename 직후 모든 output이 "파일 없음"이 되어, 정상 산출물이
     # 영구히 검증 불가가 됐다. 출력은 manifest 디렉터리 기준 상대 이름으로 적어야 한다.
-    ckpt = tmp_path / "EXP-903-cyclegan.pt"
-    src = tmp_path / "cache" / "sim_sem.npy"
+    parts = _manifest_parts(tmp_path, "EXP-903", out_name="EXP-903-translated.partial")
     partial = tmp_path / "EXP-903-translated.partial"
-    _write_bytes(ckpt, b"ckpt-bytes")
-    _write_bytes(src, b"source-bytes")
-    _write_bytes(partial / "sim_sem.npy", b"output-bytes")
-    _write_bytes(partial / "sim_depth.npy", b"depth-bytes")
-
-    manifest = cyclegan.build_manifest(
-        report_id="EXP-903", config=cyclegan.PREREGISTERED, gate=_passing_gate(),
-        ckpt_path=ckpt, source_files={"sim_sem": src},
-        output_files={"sim_sem": partial / "sim_sem.npy", "sim_depth": partial / "sim_depth.npy"},
-        git_commit="deadbeef")
-    cyclegan.write_once_json(partial / "manifest.json", manifest)
+    cyclegan.write_once_json(partial / "manifest.json", cyclegan.build_manifest(**parts))
     final = tmp_path / "EXP-903-translated"
     partial.rename(final)
 
@@ -511,17 +661,27 @@ def test_manifest_survives_rename_of_its_directory(tmp_path):
 
 def test_build_manifest_rejects_outputs_outside_one_directory(tmp_path):
     # 출력이 상대 이름으로 적히므로, 두 디렉터리에 흩어진 출력은 manifest 하나로 기술할 수 없다
-    ckpt = tmp_path / "EXP-904-cyclegan.pt"
-    _write_bytes(ckpt, b"ckpt-bytes")
-    _write_bytes(tmp_path / "a" / "sim_sem.npy", b"x")
-    _write_bytes(tmp_path / "b" / "sim_depth.npy", b"y")
+    parts = _manifest_parts(tmp_path, "EXP-904")
+    moved = tmp_path / "b" / "sim_depth.npy"
+    _write_bytes(moved, b"depth")
+    parts["output_files"]["sim_depth"] = moved
     with pytest.raises(ValueError, match="한 디렉터리"):
-        cyclegan.build_manifest(
-            report_id="EXP-904", config=cyclegan.PREREGISTERED, gate=_passing_gate(),
-            ckpt_path=ckpt, source_files={},
-            output_files={"sim_sem": tmp_path / "a" / "sim_sem.npy",
-                          "sim_depth": tmp_path / "b" / "sim_depth.npy"},
-            git_commit="deadbeef")
+        cyclegan.build_manifest(**parts)
+
+
+@pytest.mark.parametrize("mutate,expect", [
+    (lambda p: p["output_files"].pop("sim_case"), "output 목록"),
+    (lambda p: p["output_files"]["sim_depth"].write_bytes(b"depth-CHANGED"), "sim_depth"),
+    (lambda p: p["gate"].update(ckpt_sha256="0" * 64), "ckpt_sha256"),
+    (lambda p: p["gate"].update(report_id="EXP-OTHER"), "report_id"),
+    (lambda p: p.update(config={**cyclegan.PREREGISTERED, "seed": 43}), "config"),
+])
+def test_build_manifest_refuses_unbound_parts(tmp_path, mutate, expect):
+    # 해시가 전부 맞아도 부품끼리 안 맞으면(다른 실행의 gate, 바뀐 y, 빠진 산출물) 만들 수 없다
+    parts = _manifest_parts(tmp_path, "EXP-905")
+    mutate(parts)
+    with pytest.raises(ValueError, match=expect):
+        cyclegan.build_manifest(**parts)
 
 
 # ── require_gate_passed: 강화된 하드 스톱 ──────────────────────
@@ -532,9 +692,11 @@ def _valid_gate_and_ckpt(tmp_path, *, report_id="EXP-910"):
     _write_bytes(ckpt, b"ckpt-bytes")
     idx = cyclegan.gate_sample_indices(cyclegan.SIM_TRAIN_N, cyclegan.GATE_SAMPLE_N, 42)
     shifts = [0.0] * cyclegan.GATE_SAMPLE_N
-    evaluated = cyclegan.evaluate_gate(np.asarray(shifts, dtype=np.float64), 0.0)
+    evaluated = cyclegan.evaluate_gate(np.asarray(shifts, dtype=np.float64), 0.0,
+                                       local=np.zeros(cyclegan.GATE_SAMPLE_N))
     gate = dict(evaluated)
     gate.update({
+        "local_shifts": [0.0] * cyclegan.GATE_SAMPLE_N,
         "report_id": report_id,
         "ckpt_sha256": cyclegan.sha256_file(ckpt),
         "ckpt_epoch": cyclegan.PREREGISTERED["epochs_fixed"] + cyclegan.PREREGISTERED["epochs_decay"],
@@ -811,10 +973,8 @@ def _make_gate_json(path: Path, ckpt_path: Path, *, report_id="H6-TEST",
     """
     from ai_co_scientist.cyclegan import (
         GATE_SAMPLE_N,
+        GATE_THRESHOLDS,
         PREREGISTERED,
-        ROUNDTRIP_MAE_MAX,
-        SHIFT_MEDIAN_MAX,
-        SHIFT_P95_MAX,
         SIM_TRAIN_N,
         gate_sample_indices,
         indices_sha256,
@@ -823,14 +983,16 @@ def _make_gate_json(path: Path, ckpt_path: Path, *, report_id="H6-TEST",
     idx = gate_sample_indices(SIM_TRAIN_N, GATE_SAMPLE_N, seed=42)
     shift_val = 0.0 if shifts_ok else 10.0  # 10.0 > SHIFT_P95_MAX(1.0) -- 재평가하면 반드시 실패
     total_epochs = PREREGISTERED["epochs_fixed"] + PREREGISTERED["epochs_decay"]
+    # 요약값은 evaluate_gate가 만든 그대로(recheck_gate가 정확 일치를 본다). passed만 True로
+    # 덮는다 -- require_gate_passed는 이 값을 신뢰하지 않고 원본 값으로 재평가한다
+    summary = cyclegan.evaluate_gate(np.full(GATE_SAMPLE_N, shift_val), 0.0,
+                                     local=np.zeros(GATE_SAMPLE_N))
     gate = {
-        "passed": True,  # require_gate_passed는 이 값을 신뢰하지 않고 shifts/mae로 재평가한다
-        "n": GATE_SAMPLE_N,
-        "shift_median": shift_val, "shift_p95": shift_val, "roundtrip_mae": 0.0,
-        "thresholds": {"shift_median_max": SHIFT_MEDIAN_MAX, "shift_p95_max": SHIFT_P95_MAX,
-                      "roundtrip_mae_max": ROUNDTRIP_MAE_MAX},
-        "failures": [],
+        **summary,
+        "passed": True,
+        "thresholds": GATE_THRESHOLDS,
         "shifts": [shift_val] * GATE_SAMPLE_N,
+        "local_shifts": [0.0] * GATE_SAMPLE_N,
         "indices_sha256": indices_sha256(idx),
         "ckpt_sha256": sha_override if sha_override is not None else sha256_file(ckpt_path),
         "ckpt_epoch": total_epochs if ckpt_epoch_override is None else ckpt_epoch_override,
@@ -1158,3 +1320,407 @@ def test_scripts_share_torch_helpers_through_src_not_each_other():
         assert "def translate_batches(" not in source, script.name
         assert "def load_generators(" not in source, script.name
         assert "def load_and_validate_ckpt(" not in source, script.name
+
+
+# ── 경로 위생 강화: 대소문자 무시 + resolve ─────────────────────
+
+@pytest.mark.parametrize("path", [
+    "runtime/cache/TEST_SEM.NPY",
+    "runtime/cache/Test_Names.json",
+    "runtime/cache/Test_anything.NPY",
+    "data/TeSt/SEM/x.png",
+])
+def test_reject_test_paths_is_case_insensitive(path):
+    # Windows 파일시스템은 대소문자를 구분하지 않는다 — TEST_SEM.NPY는 test_sem.npy와 같은 파일이다
+    with pytest.raises(ValueError):
+        cyclegan.reject_test_paths([path])
+
+
+def test_reject_test_paths_checks_resolved_symlink_target(tmp_path):
+    # 이름은 무해한 sim_sem.npy지만 실제로는 test_sem.npy를 가리키는 링크 — resolve()로 잡는다
+    target = tmp_path / "test_sem.npy"
+    target.write_bytes(b"x")
+    link = tmp_path / "cache" / "sim_sem.npy"
+    link.parent.mkdir()
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("이 환경은 symlink를 만들 권한이 없다")
+    with pytest.raises(ValueError):
+        cyclegan.reject_test_paths([link])
+
+
+# ── gate 호출 계약: 국소 기준 필수 · 요약값 정확 일치 ──────────────
+
+def test_evaluate_gate_requires_local_keyword():
+    # 전역 기준만으로 passed=True를 만드는 호출 경로 자체가 없어야 한다
+    with pytest.raises(TypeError):
+        cyclegan.evaluate_gate(np.zeros(cyclegan.GATE_SAMPLE_N), 0.0)  # noqa
+
+
+def test_gate_passed_is_exactly_the_and_of_five_criteria():
+    ok = cyclegan.evaluate_gate(_ZL, 0.0, local=_ZL)
+    assert ok["passed"] is True
+    bad = {
+        "shift_median": dict(shifts=_shifts(cyclegan.GATE_SAMPLE_N, 0.6)),
+        "roundtrip_mae": dict(mae=cyclegan.ROUNDTRIP_MAE_MAX + 1e-9),
+        "local_shift_median": dict(local=_shifts(cyclegan.GATE_SAMPLE_N, 0.6)),
+    }
+    for key, kw in bad.items():
+        r = cyclegan.evaluate_gate(kw.get("shifts", _ZL), kw.get("mae", 0.0),
+                                   local=kw.get("local", _ZL))
+        assert r["passed"] is False, key
+        assert [f.split(" ")[0] for f in r["failures"]] == [key], r["failures"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("shift_median", -1.0),
+    ("local_shift_p95", 0.0001),
+    ("failures", ["whatever"]),
+])
+def test_require_gate_passed_rejects_summary_that_disagrees_with_raw_values(tmp_path, field, value):
+    # 원본 per-image 값은 통과인데 요약만 손댄 gate — 사람이 읽는 값과 재평가 값이 따로 논다
+    gate_path, ckpt, gate = _valid_gate_and_ckpt(tmp_path, report_id="EXP-930")
+    gate[field] = value
+    gate_path.unlink()
+    cyclegan.write_once_json(gate_path, gate)
+    with pytest.raises(cyclegan.GateFailedError, match="요약값"):
+        cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-930")
+
+
+def test_measure_geometry_identical_is_zero_and_warp_is_caught():
+    orig = np.clip(_hole_scene(), 0, 255).astype(np.uint8)[None]
+    same = cyclegan.measure_geometry(orig, orig.copy())
+    assert same["shifts"].tolist() == [0.0]
+    assert same["local"].tolist() == [0.0]
+    assert same["signed"].shape == (1, 2)
+    warped = np.clip(_hole_scene(warp=_smooth_warp(1.0)), 0, 255).astype(np.uint8)[None]
+    assert cyclegan.measure_geometry(orig, warped)["local"][0] > cyclegan.SHIFT_MEDIAN_MAX
+
+
+def test_measure_geometry_enforces_uint8_shape_contract():
+    with pytest.raises(ValueError):
+        cyclegan.measure_geometry(np.zeros((1, 72, 48)), np.zeros((1, 72, 48)))
+
+
+# ── manifest 불변성: 해시 + 내용 계약 ──────────────────────────────
+
+def _built_manifest(tmp_path, report_id="EXP-940"):
+    parts = _manifest_parts(tmp_path, report_id)
+    path = tmp_path / "out" / "manifest.json"
+    manifest = cyclegan.build_manifest(**parts)
+    cyclegan.write_once_json(path, manifest)
+    return path, manifest
+
+
+def _rewrite(path, manifest):
+    path.unlink()
+    cyclegan.write_once_json(path, manifest)
+
+
+def test_build_manifest_refuses_gate_without_raw_values(tmp_path):
+    parts = _manifest_parts(tmp_path, "EXP-941")
+    for k in ("shifts", "local_shifts"):  # passed=True 요약만 남기고 원본 값을 뺀다
+        del parts["gate"][k]
+    with pytest.raises(ValueError, match="재검증"):
+        cyclegan.build_manifest(**parts)
+
+
+def test_build_manifest_refuses_test_source_path(tmp_path):
+    parts = _manifest_parts(tmp_path, "EXP-942")
+    src = tmp_path / "cache" / "test_sem.npy"
+    _write_bytes(src, b"real")
+    parts["source_files"]["real_sem"] = src
+    with pytest.raises(ValueError):
+        cyclegan.build_manifest(**parts)
+
+
+@pytest.mark.parametrize("mutate,expect", [
+    (lambda m: m["output_files"]["sim_sem"].update(path="../sim_sem.npy"), "맨 파일명"),
+    (lambda m: m["gate"].update(local_shifts=[5.0] * cyclegan.GATE_SAMPLE_N), "gate 재검증"),
+    (lambda m: m["gate"].update(shift_p95=0.25), "gate 재검증"),
+    (lambda m: m.update(hypothesis="H7"), "hypothesis"),
+    (lambda m: m["gate"].update(report_id="EXP-OTHER"), "report_id"),
+    (lambda m: m["output_files"]["sim_depth"].update(sha256="0" * 64), "sim_depth"),
+    (lambda m: m.pop("ckpt"), "ckpt"),
+    (lambda m: m["source_files"]["sim_sem"].update(path="runtime/cache/TEST_SEM.npy"), "경로 위생"),
+])
+def test_verify_manifest_rejects_content_tampering_not_only_hash_tampering(tmp_path, mutate,
+                                                                          expect):
+    # 해시가 안 바뀌는 조작(manifest 본문만 고침)도 재검증에서 잡혀야 manifest를 믿을 수 있다
+    path, manifest = _built_manifest(tmp_path)
+    cyclegan.verify_manifest(path)  # 원본은 통과
+    mutate(manifest)
+    _rewrite(path, manifest)
+    with pytest.raises(ValueError, match=expect):
+        cyclegan.verify_manifest(path)
+
+
+# ── GPU 락 · 덮어쓰기 정책 (스크립트 in-process, 가짜 락 — 기계 전역 gpu-0은 안 건드린다) ──
+
+def _load_script(path: Path, name: str):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _FakeLock:
+    """`resource_lock` 대역. 진입·해제를 `events`에 적고, `busy`면 진입 시 `ResourceBusy`."""
+
+    def __init__(self, events, busy=False):
+        self.events = events
+        self.busy = busy
+        self.names = []
+
+    def __call__(self, name, **kwargs):
+        from contextlib import contextmanager
+
+        from ai_co_scientist.locks import ResourceBusy
+        self.names.append(name)
+
+        @contextmanager
+        def cm():
+            if self.busy:
+                self.events.append("busy")
+                raise ResourceBusy(f"fake: {name}")
+            self.events.append("lock")
+            try:
+                yield
+            finally:
+                self.events.append("unlock")
+        return cm()
+
+
+def _trap_data_reads(monkeypatch, mod, events):
+    """스크립트의 `np.load`를 기록 후 중단시킨다 — 락 안에서 데이터 읽기가 처음 일어나는지 본다."""
+    def _load(*a, **k):
+        events.append("np.load")
+        raise RuntimeError("stop: 데이터 읽기 지점 도달")
+    monkeypatch.setattr(mod.np, "load", _load)
+
+
+def _train_args(tmp_path, **kw):
+    import argparse
+    cache = tmp_path / "cache"
+    _touch_sem_cache(cache)
+    base = dict(report_id="H6-TEST", cache_dir=str(cache), out_dir=str(tmp_path / "ckpt"),
+                num_workers=0, amp=False, resume=False, config_json="")
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _gate_args(tmp_path):
+    import argparse
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "sim_sem.npy").touch()
+    ckpt = tmp_path / _expected_ckpt_name("H6-TEST")
+    ckpt.write_bytes(b"dummy")
+    return argparse.Namespace(report_id="H6-TEST", ckpt=str(ckpt), cache_dir=str(cache),
+                              out_json=str(tmp_path / "gate.json"), batch_size=8)
+
+
+def test_gpu_lock_name_is_gpu0():
+    assert cyclegan.GPU_LOCK == "gpu-0"
+
+
+@pytest.mark.parametrize("sub", ["train", "gate"])
+def test_train_cli_busy_gpu_refuses_before_reading_data(tmp_path, monkeypatch, sub):
+    from ai_co_scientist.locks import ResourceBusy
+    mod = _load_script(TRAIN_SCRIPT, f"_h6_train_busy_{sub}")
+    events = []
+    fake = _FakeLock(events, busy=True)
+    monkeypatch.setattr(mod, "resource_lock", fake)
+    _trap_data_reads(monkeypatch, mod, events)
+    args = _train_args(tmp_path) if sub == "train" else _gate_args(tmp_path)
+    with pytest.raises(ResourceBusy):
+        getattr(mod, sub)(args)
+    assert fake.names == ["gpu-0"]
+    assert events == ["busy"]  # 데이터를 한 바이트도 안 읽었다
+    assert not (tmp_path / "ckpt").exists() and not (tmp_path / "gate.json").exists()
+
+
+@pytest.mark.parametrize("sub", ["train", "gate"])
+def test_train_cli_reads_data_only_inside_gpu_lock_and_releases_it(tmp_path, monkeypatch, sub):
+    mod = _load_script(TRAIN_SCRIPT, f"_h6_train_lock_{sub}")
+    events = []
+    monkeypatch.setattr(mod, "resource_lock", _FakeLock(events))
+    _trap_data_reads(monkeypatch, mod, events)
+    args = _train_args(tmp_path) if sub == "train" else _gate_args(tmp_path)
+    with pytest.raises(RuntimeError, match="stop"):
+        getattr(mod, sub)(args)
+    assert events == ["lock", "np.load", "unlock"]  # 읽기는 락 안에서, 실패해도 락은 풀린다
+
+
+def test_train_cli_main_maps_busy_gpu_to_exit_4(tmp_path, monkeypatch, capsys):
+    mod = _load_script(TRAIN_SCRIPT, "_h6_train_main_busy")
+    monkeypatch.setattr(mod, "resource_lock", _FakeLock([], busy=True))
+    monkeypatch.setattr(mod, "ensure_utf8_console", lambda: None)
+    args = _gate_args(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["train_cyclegan.py", "gate", "--report-id", "H6-TEST",
+                                      "--ckpt", args.ckpt, "--cache-dir", args.cache_dir,
+                                      "--out-json", args.out_json])
+    assert mod.main() == 4
+    assert "gpu-0" in capsys.readouterr().err
+
+
+def test_plan_takes_no_gpu_lock(tmp_path, monkeypatch):
+    mod = _load_script(TRAIN_SCRIPT, "_h6_train_plan")
+    fake = _FakeLock([], busy=True)
+    monkeypatch.setattr(mod, "resource_lock", fake)
+    args = _train_args(tmp_path)
+    assert mod.plan(args) == 0
+    assert fake.names == []
+
+
+def _translate_main(monkeypatch, mod, ckpt, cache, gate_json, out_dir):
+    monkeypatch.setattr(mod, "ensure_utf8_console", lambda: None)
+    monkeypatch.setattr(sys, "argv", [
+        "translate_sim.py", "--report-id", "H6-TEST", "--ckpt", str(ckpt),
+        "--gate-json", str(gate_json), "--cache-dir", str(cache), "--out-cache-dir", str(out_dir)])
+    return mod.main()
+
+
+def test_translate_busy_gpu_refuses_with_exit_4_and_no_outputs(tmp_path, monkeypatch, capsys):
+    ckpt, cache, gate_json = _full_environment(tmp_path)
+    mod = _load_script(TRANSLATE_SCRIPT, "_h6_translate_busy")
+    events = []
+    fake = _FakeLock(events, busy=True)
+    monkeypatch.setattr(mod, "resource_lock", fake)
+    _trap_data_reads(monkeypatch, mod, events)
+    out_dir = tmp_path / "out"
+    assert _translate_main(monkeypatch, mod, ckpt, cache, gate_json, out_dir) == 4
+    last = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert last["status"] == "busy"
+    assert fake.names == ["gpu-0"]
+    assert events == ["busy"]
+    assert not out_dir.exists() and not Path(str(out_dir) + ".partial").exists()
+
+
+def test_translate_reads_data_only_inside_gpu_lock(tmp_path, monkeypatch):
+    ckpt, cache, gate_json = _full_environment(tmp_path)
+    mod = _load_script(TRANSLATE_SCRIPT, "_h6_translate_lock")
+    events = []
+    monkeypatch.setattr(mod, "resource_lock", _FakeLock(events))
+    _trap_data_reads(monkeypatch, mod, events)
+    with pytest.raises(RuntimeError, match="stop"):
+        _translate_main(monkeypatch, mod, ckpt, cache, gate_json, tmp_path / "out")
+    assert events == ["lock", "np.load", "unlock"]
+
+
+def test_translate_refuses_test_path_before_hashing_anything(tmp_path, monkeypatch, capsys):
+    # 경로 위생은 gate 하드 스톱(파일 해시)보다 먼저다 — test 경로는 열어 보지도 않는다
+    ckpt, cache, gate_json = _full_environment(tmp_path)
+    mod = _load_script(TRANSLATE_SCRIPT, "_h6_translate_order")
+    hashed = []
+    monkeypatch.setattr(mod, "require_gate_passed",
+                        lambda *a, **k: hashed.append(a) or pytest.fail("gate를 먼저 읽었다"))
+    assert _translate_main(monkeypatch, mod, ckpt, cache, gate_json,
+                           tmp_path / "test" / "out") == 3
+    assert hashed == []
+    assert "test" in json.loads(capsys.readouterr().out.strip().splitlines()[-1])["reason"]
+
+
+def test_train_refuses_existing_resume_without_resume_flag(tmp_path):
+    cache = tmp_path / "cache"
+    _touch_sem_cache(cache)
+    out_dir = tmp_path / "ckpt"
+    out_dir.mkdir()
+    resume = out_dir / "H6-TEST-cyclegan.resume.pt"
+    resume.write_bytes(b"resume-state")
+    proc = _run(TRAIN_SCRIPT, "train", "--report-id", "H6-TEST",
+               "--cache-dir", str(cache), "--out-dir", str(out_dir))
+    assert proc.returncode != 0
+    assert "--resume" in proc.stderr
+    assert resume.read_bytes() == b"resume-state"  # 조용히 처음부터 돌며 덮지 않았다
+    assert _no_torch_leak(proc)
+
+
+def test_train_refuses_resume_flag_without_resume_file(tmp_path):
+    cache = tmp_path / "cache"
+    _touch_sem_cache(cache)
+    proc = _run(TRAIN_SCRIPT, "train", "--report-id", "H6-TEST", "--resume",
+               "--cache-dir", str(cache), "--out-dir", str(tmp_path / "ckpt"))
+    assert proc.returncode != 0
+    assert "재개점이 없다" in proc.stderr
+    assert not (tmp_path / "ckpt").exists()
+    assert _no_torch_leak(proc)
+
+
+# ── 정지 의미론: 사전등록 기준 vs 미보정 국소 기준을 따로 기록 ──────────
+
+def test_local_shift_p95_alone_fails_and_is_recorded_as_local_only_stop():
+    n = cyclegan.GATE_SAMPLE_N
+    local = np.zeros(n)
+    local[: n // 10] = cyclegan.SHIFT_P95_MAX + 1.0  # 상위 10%만 크게 — median은 0 그대로
+    r = cyclegan.evaluate_gate(_ZL, 0.0, local=local)
+    assert r["passed"] is False
+    assert r["failures"] == [f"local_shift_p95 {r['local_shift_p95']} > {cyclegan.SHIFT_P95_MAX}"]
+    assert r["preregistered_passed"] is True  # 사전등록상 "기각"이 아니라 fail-safe 정지
+    assert r["local_passed"] is False
+
+
+def test_preregistered_failure_is_not_attributed_to_local_criterion():
+    r = cyclegan.evaluate_gate(_ZL, cyclegan.ROUNDTRIP_MAE_MAX + 0.01, local=_ZL)
+    assert (r["passed"], r["preregistered_passed"], r["local_passed"]) == (False, False, True)
+
+
+def test_recheck_gate_survives_json_roundtrip_of_nontrivial_floats(tmp_path):
+    # 요약값 정확 일치 검사가 0이 아닌 부동소수에서도 JSON 왕복 뒤 성립해야 한다(거짓 거부 방지)
+    rng = np.random.default_rng(7)
+    shifts = rng.uniform(0, 0.45, cyclegan.GATE_SAMPLE_N)
+    local = rng.uniform(0, 0.45, cyclegan.GATE_SAMPLE_N)
+    gate = cyclegan.evaluate_gate(shifts, 0.0123456789, local=local)
+    gate.update({"shifts": shifts.tolist(), "local_shifts": local.tolist()})
+    path = tmp_path / "gate.json"
+    cyclegan.write_once_json(path, gate)
+    assert cyclegan.recheck_gate(json.loads(path.read_text(encoding="utf-8")))["passed"] is True
+
+
+def test_require_gate_passed_rejects_gate_written_with_other_local_method(tmp_path):
+    # 타일·탐색·평탄 기준이 바뀐 뒤에는 옛 gate JSON을 재사용할 수 없다
+    gate_path, ckpt, gate = _valid_gate_and_ckpt(tmp_path, report_id="EXP-950")
+    gate["thresholds"] = {k: v for k, v in gate["thresholds"].items() if k != "local_tile"}
+    _rewrite(gate_path, gate)
+    with pytest.raises(cyclegan.GateFailedError, match="임계값"):
+        cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-950")
+
+
+def _ring(seed, cy=36.0, cx=24.0, k=0.0):
+    """경사진 가장자리의 구멍(시그모이드) + 픽셀 잡음. k>0이면 (cy,cx) 중심 대칭 팽창."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:cyclegan.IMG_H, 0:cyclegan.IMG_W].astype(np.float64)
+    r = np.hypot(yy - cy, xx - cx) / (1 + k)
+    return 40 + 160 / (1 + np.exp(-(r - 10) / 1.2)) + rng.normal(0, 4, r.shape)
+
+
+def _gblur(img, sy, sx):
+    h, w = img.shape
+    k = np.exp(-2 * np.pi ** 2 * ((sy * np.fft.fftfreq(h))[:, None] ** 2
+                                  + (sx * np.fft.fftfreq(w))[None] ** 2))
+    return np.fft.ifft2(np.fft.fft2(img) * k).real
+
+
+def test_known_limit_blur_plus_gamma_is_a_local_only_false_stop():
+    # 알려진 거짓 실패(LOCAL_TILE 주석): 기하는 그대로인데 이방성 블러+감마가 경사 가장자리의
+    # 등밝기 윤곽을 ~1 px 옮긴다. 국소 기준은 멈추고, 사전등록 전역 기준은 통과한다 — 그래서
+    # 둘을 따로 기록한다. 이 테스트가 깨지면(=통과하게 되면) 보정 결과로 주석을 갱신할 것
+    orig = np.stack([np.clip(_ring(s), 0, 255) for s in range(8)]).astype(np.uint8)
+    app = np.stack([255 * (np.clip(_gblur(_ring(s), 1.5, 0.8), 0, 255) / 255) ** 1.8
+                    for s in range(8)]).clip(0, 255).astype(np.uint8)
+    geo = cyclegan.measure_geometry(orig, app)
+    n = cyclegan.GATE_SAMPLE_N
+    r = cyclegan.evaluate_gate(np.resize(geo["shifts"], n), 0.0, local=np.resize(geo["local"], n))
+    assert r["preregistered_passed"] is True
+    assert r["local_passed"] is False
+
+
+def test_known_blind_spot_dilation_centred_inside_a_tile_is_invisible_locally():
+    # 알려진 사각지대(LOCAL_TILE 주석): 한 타일(12,12 중심) 안의 대칭 팽창은 어느 타일도 움직이지
+    # 않는다. 국소 기준이 "형태 보존"을 보증하지 않는다는 사실을 고정한다
+    orig = np.clip(_ring(0, cy=12, cx=12), 0, 255).astype(np.uint8)[None]
+    grown = np.clip(_ring(0, cy=12, cx=12, k=0.10), 0, 255).astype(np.uint8)[None]
+    assert np.abs(orig.astype(int) - grown.astype(int)).max() > 20  # 실제로 모양이 바뀌었다
+    assert cyclegan.measure_geometry(orig, grown)["local"][0] < cyclegan.SHIFT_MEDIAN_MAX
