@@ -7,7 +7,7 @@
 
 여기 있는 것: 설정(사전등록 값과의 정확한 일치 검사) · 경로 누수 방지(`test_*` 실제 테스트셋이
 변환기 입력으로 새는 것을 막는다) · 형태 계약 · 기하 위생 gate(순수 numpy — 전역 phase
-correlation + 국소 NCC 블록 매칭) · manifest의 불변성(write-once + sha256·gate 재검증) · GPU 락
+correlation 판정 + 진단 전용 국소 NCC probe) · manifest의 불변성(write-once + sha256·gate 재검증) · GPU 락
 이름 · torch 아키텍처 팩토리(지연 import).
 """
 import hashlib
@@ -29,32 +29,33 @@ SHIFT_MEDIAN_MAX = 0.5
 SHIFT_P95_MAX = 1.0
 ROUNDTRIP_MAE_MAX = 0.10
 
-# 국소 기하 기준 (블록 매칭) — **사전등록 문서에 없는 추가 기준이다.** 전역 phase correlation은
-# 대칭 팽창·국소 왜곡을 못 보고 비순환 subpixel 이동을 과소평가한다(테스트가 고정). 문턱은 새로
-# 만들지 않고 사전등록 px 문턱(0.5/1.0)을 타일 단위로 재사용한다. gate를 **더 엄격하게만** 만든다.
-#
-# **미보정(uncalibrated)이다.** 합성 입력에서 알려진 한계 두 가지를 테스트가 고정한다:
-# (1) 거짓 실패 — 경사진 구멍 가장자리에 블러+감마(비선형 밝기)를 주면 등밝기 윤곽이 실제로
-#     ~1 px 움직여, 강도 기반 매칭으로는 기하 이동과 원리적으로 구별되지 않는다(외관만 바꿨는데
-#     국소 기준 실패). (2) 사각지대 — 한 타일 안에 중심이 있는 대칭 팽창은 타일 변위가 0이다.
-# 그래서 국소 기준 실패는 사전등록 gate 실패와 **따로 기록**한다(`preregistered_passed` /
-# `local_passed`). 실행 전 실제 sim 2,048장에서 외관 전용 변환으로 보정하고 사전등록을 개정해야
-# 한다 — 그 전까지 국소 실패는 "기각"이 아니라 fail-safe 정지로 읽는다.
-LOCAL_TILE = 24  # 72x48 → 3x2 타일
-LOCAL_SEARCH = 3  # 블록 매칭 탐색 반경(px). 이보다 큰 변위는 경계에 포화돼 어차피 실패한다
-LOCAL_MIN_STD = 2.0  # 원본 타일 std가 이보다 작으면(평탄) 변위가 정의되지 않아 NaN으로 뺀다
-
-# gate 파일에 기록·대조되는 판정 설정 전부 — 국소 측정 방법(타일·탐색·평탄 기준)도 포함해야
-# 방법이 바뀐 뒤 옛 gate JSON이 `require_gate_passed`를 통과하지 못한다.
+# 정지 규칙 = 사전등록 3기준뿐이다(`docs/experiment/H6-cyclegan-sim-to-real.md` §조건). gate 파일에
+# 기록·대조되는 판정 설정 전부이고, 여기 없는 값은 `passed`에 관여하지 않는다.
 GATE_THRESHOLDS = {
     "shift_median_max": SHIFT_MEDIAN_MAX,
     "shift_p95_max": SHIFT_P95_MAX,
     "roundtrip_mae_max": ROUNDTRIP_MAE_MAX,
-    "local_shift_median_max": SHIFT_MEDIAN_MAX,
-    "local_shift_p95_max": SHIFT_P95_MAX,
-    "local_tile": LOCAL_TILE,
-    "local_search": LOCAL_SEARCH,
-    "local_min_std": LOCAL_MIN_STD,
+}
+
+# 국소 기하 probe (블록 매칭) — **진단 전용이며 미보정(uncalibrated)이다. 판정에 관여하지 않는다.**
+# 전역 phase correlation은 대칭 팽창·국소 왜곡을 못 보고 비순환 subpixel 이동을 과소평가한다(테스트가
+# 고정). 그 공백을 사람이 볼 수 있게 기록하지만, 합성 입력에서 알려진 한계 두 가지 때문에 정지
+# 규칙에 넣을 수 없다: (1) 거짓 플래그 — 경사진 구멍 가장자리에 블러+감마(비선형 밝기)를 주면
+# 등밝기 윤곽이 실제로 ~1 px 움직여, 강도 기반 매칭으로는 기하 이동과 원리적으로 구별되지 않는다.
+# (2) 사각지대 — 한 타일 안에 중심이 있는 대칭 팽창은 타일 변위가 0이다. 실제 sim 2,048장에서
+# 외관 전용 변환으로 보정하고 사전등록을 개정하기 전까지는 플래그만 남긴다.
+LOCAL_TILE = 24  # 72x48 → 3x2 타일
+LOCAL_SEARCH = 3  # 블록 매칭 탐색 반경(px). 이보다 큰 변위는 경계에 포화된다
+LOCAL_MIN_STD = 2.0  # 원본 타일 std가 이보다 작으면(평탄) 변위가 정의되지 않아 NaN으로 뺀다
+LOCAL_PROBE_ROLE = "diagnostic_only_uncalibrated"
+# probe 기록에 함께 남는 측정 방법 — 방법이 바뀌면 옛 gate의 probe 요약이 재현되지 않아 거부된다.
+# 플래그 문턱은 새로 만들지 않고 사전등록 px 문턱을 타일 단위로 재사용한다(보정된 값이 아니다).
+LOCAL_PROBE_METHOD = {
+    "tile": LOCAL_TILE,
+    "search": LOCAL_SEARCH,
+    "min_std": LOCAL_MIN_STD,
+    "flag_median_over": SHIFT_MEDIAN_MAX,
+    "flag_p95_over": SHIFT_P95_MAX,
 }
 
 GPU_LOCK = "gpu-0"  # 학습·gate·번역의 runtime 구간이 잡는 `locks.resource_lock` 이름 — 기계 단위 1장
@@ -287,9 +288,9 @@ def phase_correlation_shift(a: np.ndarray, b: np.ndarray) -> "tuple[float, float
     **알려진 사각지대**: 이 함수는 전역 위상만 보는 강체 이동(translation) 검출기다. 중심이
     고정된 대칭 팽창/축소(dilation/scale) — 예: 원판 구멍이 사방으로 고르게 커지는 것 — 는
     이동이 아니므로 대부분 `(0, 0)` 근방을 낸다(`test_phase_correlation_is_blind_to_symmetric_
-    dilation`). 국소 왜곡과 비순환 subpixel 이동도 과소평가한다. 그래서 gate는 이 값만으로
-    판정하지 않고 `local_shift_max`(국소 블록 매칭) 기준을 함께 요구한다 — 그 국소 기준에도
-    사각지대와 거짓 실패가 있다(`LOCAL_TILE` 주석).
+    dilation`). 국소 왜곡과 비순환 subpixel 이동도 과소평가한다. 사전등록 gate의 잔여 위험이며,
+    `local_shift_max`(국소 블록 매칭)가 진단 전용으로 기록하지만 판정을 대신하지 않는다
+    (`LOCAL_PROBE_METHOD` 주석).
     """
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
@@ -387,10 +388,10 @@ def block_match_shifts(a: np.ndarray, b: np.ndarray, tile: int = LOCAL_TILE,
 
 
 def local_shift_max(orig: np.ndarray, moved: np.ndarray) -> np.ndarray:
-    """`(N, H, W)` 두 스택의 이미지별 **최대 타일 변위 크기** — gate의 국소 기준 입력.
+    """`(N, H, W)` 두 스택의 이미지별 **최대 타일 변위 크기** — 진단 전용 국소 probe의 입력.
 
     한 이미지 안에서 가장 많이 움직인 타일이 그 이미지의 기하 위반 정도다(국소 왜곡은 평균에
-    묻힌다). 모든 타일이 평탄해 잴 수 없으면 NaN — `evaluate_gate`가 NaN을 실패로 처리한다.
+    묻힌다). 모든 타일이 평탄해 잴 수 없으면 NaN — probe가 "측정 불가"로 따로 센다.
     """
     orig = np.asarray(orig)
     moved = np.asarray(moved)
@@ -413,7 +414,7 @@ def shift_magnitudes(orig: np.ndarray, moved: np.ndarray) -> np.ndarray:
 def measure_geometry(orig_u8: np.ndarray, moved_u8: np.ndarray) -> dict:
     """gate가 재는 기하 값을 한 번에 — 학습 gate와 번역 후 재검증이 **같은 함수**를 써야 둘이
     같은 것을 잰다. 입력은 `(N,72,48)` uint8 스택. 반환: `signed` `(N,2)`, `shifts` `(N,)`(전역
-    이동 크기), `local` `(N,)`(`local_shift_max`)."""
+    이동 크기), `local` `(N,)`(`local_shift_max` — 진단 전용)."""
     check_sem_array(orig_u8, "gate 원본")
     check_sem_array(moved_u8, "gate 변환본")
     a = np.asarray(orig_u8, dtype=np.float64)
@@ -437,30 +438,49 @@ def roundtrip_mae(orig_u8: np.ndarray, roundtrip_u8: np.ndarray) -> float:
     return float(np.mean(np.abs(a - b)) / 255.0)
 
 
-def evaluate_gate(shifts: np.ndarray, mae: float, *, local: np.ndarray,
+def _local_probe(local: np.ndarray, n: int) -> dict:
+    """미보정 국소 probe의 기록 — **판정에 관여하지 않는다**(`LOCAL_PROBE_METHOD` 주석).
+
+    측정 불가(NaN) 이미지는 따로 세고 나머지로 통계를 낸다. 값이 없으면 `None`(NaN이 아니라 —
+    JSON 왕복 뒤에도 `==` 대조가 성립해야 `recheck_gate`가 요약 조작을 잡는다)."""
+    local = np.asarray(local, dtype=np.float64)
+    if local.shape != (n,):
+        raise ValueError(f"local은 ({n},) 형태여야 한다 — 받은 {local.shape}")
+    finite = local[~np.isnan(local)]
+    n_nan = int(n - len(finite))
+    median = float(np.median(finite)) if len(finite) else None
+    p95 = float(np.percentile(finite, 95)) if len(finite) else None
+    flags = []
+    if n_nan:
+        flags.append(f"local_shift 측정 불가 {n_nan}장")
+    if median is not None and median > SHIFT_MEDIAN_MAX:
+        flags.append(f"local_shift_median {median} > {SHIFT_MEDIAN_MAX}")
+    if p95 is not None and p95 > SHIFT_P95_MAX:
+        flags.append(f"local_shift_p95 {p95} > {SHIFT_P95_MAX}")
+    return {"role": LOCAL_PROBE_ROLE, "method": dict(LOCAL_PROBE_METHOD), "median": median,
+            "p95": p95, "n_unmeasurable": n_nan, "flags": flags}
+
+
+def evaluate_gate(shifts: np.ndarray, mae: float, *, local: "np.ndarray | None" = None,
                   signed: "np.ndarray | None" = None) -> dict:
     """기하 위생 gate 판정. 경계는 **포함**(`==` 임계값은 통과)이고, `NaN`은 항상 실패다.
 
     표본 크기가 `GATE_SAMPLE_N`이 아니면 애초에 사전등록된 gate가 아니므로 예외를 던진다 —
     표본 크기 자체가 사전등록의 일부다.
 
-    **`passed`는 정확히 5개 기준의 AND다**: 사전등록 3개(`shift_median`, `shift_p95`,
-    `roundtrip_mae`) + 국소 2개(`local_shift_median`, `local_shift_p95` — 이미지별
-    `local_shift_max`의 통계). 국소 기준은 사전등록에 없는 추가 기준이며 gate를 더 엄격하게만
-    만든다(`LOCAL_TILE` 주석). `local`은 **필수 키워드**다 — 전역 기준만으로 `passed=True`를
-    만드는 호출 경로 자체가 없다. 하나라도 실패하면 downstream 없이 종료한다(사전등록 stop).
+    **`passed`는 정확히 사전등록 3기준의 AND다**: `shift_median`, `shift_p95`(전역 phase
+    correlation), `roundtrip_mae`. 하나라도 실패하면 downstream 없이 종료한다(사전등록 stop).
 
-    반환값의 `diagnostics`(`shift_p99`, `shift_max`, `signed`가 주어졌을 때 `mean_dy`/`mean_dx`)는
-    참고용 관찰값일 뿐 판정에 관여하지 않는다 — 극단값 하나가 p99/max를 밀어 올려도 기준
-    통계가 안이면 여전히 통과한다(`docs/experiment/H6-cyclegan-sim-to-real.md`가 채택 지표와
-    관찰값을 분리하는 것과 같은 이유).
+    `local`(이미지별 `local_shift_max`)을 주면 `local_probe`에 **진단 전용** 기록을 남긴다 —
+    미보정이라 외관 전용 변환에 거짓 플래그를 올리고 타일 안 팽창을 못 보므로, 통과를 실패로도
+    실패를 통과로도 바꾸지 않는다(`LOCAL_PROBE_METHOD` 주석). `diagnostics`(`shift_p99`,
+    `shift_max`, `signed`가 주어졌을 때 `mean_dy`/`mean_dx`)도 같은 이유로 판정에 관여하지 않는다.
     """
     shifts = np.asarray(shifts, dtype=np.float64)
     n = len(shifts)
     if n != GATE_SAMPLE_N:
         raise ValueError(f"gate 표본 크기는 {GATE_SAMPLE_N}이어야 한다 — 받은 {n}")
     mae = float(mae)
-    thresholds = dict(GATE_THRESHOLDS)
 
     shift_nan = bool(np.isnan(shifts).any())
     mae_nan = bool(np.isnan(mae))
@@ -479,21 +499,6 @@ def evaluate_gate(shifts: np.ndarray, mae: float, *, local: np.ndarray,
         failures.append("roundtrip_mae가 NaN이다")
     elif mae > ROUNDTRIP_MAE_MAX:
         failures.append(f"roundtrip_mae {mae} > {ROUNDTRIP_MAE_MAX}")
-    n_preregistered_failures = len(failures)
-
-    local = np.asarray(local, dtype=np.float64)
-    if local.shape != (n,):
-        raise ValueError(f"local은 ({n},) 형태여야 한다 — 받은 {local.shape}")
-    if np.isnan(local).any():
-        failures.append("local_shift 배열에 NaN이 있다(평탄해 잴 수 없는 이미지)")
-        local_median = local_p95 = float("nan")
-    else:
-        local_median = float(np.median(local))
-        local_p95 = float(np.percentile(local, 95))
-        if local_median > SHIFT_MEDIAN_MAX:
-            failures.append(f"local_shift_median {local_median} > {SHIFT_MEDIAN_MAX}")
-        if local_p95 > SHIFT_P95_MAX:
-            failures.append(f"local_shift_p95 {local_p95} > {SHIFT_P95_MAX}")
 
     diagnostics: dict = {
         "shift_p99": float("nan") if shift_nan else float(np.percentile(shifts, 99)),
@@ -506,22 +511,19 @@ def evaluate_gate(shifts: np.ndarray, mae: float, *, local: np.ndarray,
         diagnostics["mean_dy"] = float(np.mean(signed[:, 0]))
         diagnostics["mean_dx"] = float(np.mean(signed[:, 1]))
 
-    return {
+    result = {
         "passed": len(failures) == 0,
-        # 정지 사유를 가른다: 사전등록 3기준만의 판정 vs 미보정 국소 기준(LOCAL_TILE 주석).
-        # passed=False이면서 preregistered_passed=True면 사전등록상 "기각"이 아니라 fail-safe 정지다
-        "preregistered_passed": n_preregistered_failures == 0,
-        "local_passed": len(failures) == n_preregistered_failures,
         "n": n,
         "shift_median": median,
         "shift_p95": p95,
         "roundtrip_mae": mae,
-        "local_shift_median": local_median,
-        "local_shift_p95": local_p95,
-        "thresholds": thresholds,
+        "thresholds": dict(GATE_THRESHOLDS),
         "failures": failures,
         "diagnostics": diagnostics,
     }
+    if local is not None:
+        result["local_probe"] = _local_probe(local, n)
+    return result
 
 
 # ── manifest — 덮어쓰기 거부 + 해시 검증 (불변이 아니라 "한 번 쓰고, 매번 재검증") ──
@@ -562,35 +564,34 @@ class GateFailedError(RuntimeError):
     """기하 위생 gate를 통과하지 못했다 — downstream 진행(구조 학습·제출)을 막는 하드 스톱."""
 
 
-GATE_SUMMARY_KEYS = ("passed", "preregistered_passed", "local_passed", "shift_median",
-                     "shift_p95", "roundtrip_mae", "local_shift_median", "local_shift_p95",
-                     "failures", "thresholds")
+GATE_SUMMARY_KEYS = ("passed", "shift_median", "shift_p95", "roundtrip_mae", "failures",
+                     "thresholds", "local_probe")
 
 
 def recheck_gate(gate: dict) -> dict:
     """저장된 gate를 **원본 per-image 값으로 다시 판정**한다 — 실패하면 `GateFailedError`.
 
-    `shifts`·`local_shifts`(각 `GATE_SAMPLE_N`개)·`roundtrip_mae`가 없으면 재판정할 수 없으므로
-    거부한다. 재판정이 통과여도 저장된 요약값(`GATE_SUMMARY_KEYS`)이 재계산과 **정확히** 같지
-    않으면 거부한다 — 요약만 고친 gate(예: median을 손으로 낮춘 JSON)가 원본과 따로 놀며 사람을
-    속이는 것을 막는다. `build_manifest`·`verify_manifest`·`require_gate_passed`가 공유한다.
+    판정은 `shifts`(`GATE_SAMPLE_N`개)·`roundtrip_mae`만으로 완결된다 — 없으면 재판정할 수 없으므로
+    거부한다. 진단 전용 `local_shifts`는 선택이지만, 있으면 `local_probe`를 재계산해 대조하고
+    원본 없이 `local_probe`만 있으면 요약 불일치로 거부한다. 재판정이 통과여도 저장된 요약값
+    (`GATE_SUMMARY_KEYS`)이 재계산과 **정확히** 같지 않으면 거부한다 — 요약만 고친 gate(예:
+    median을 손으로 낮춘 JSON)가 원본과 따로 놀며 사람을 속이는 것을 막는다.
+    `build_manifest`·`verify_manifest`·`require_gate_passed`가 공유한다.
     """
     shifts = gate.get("shifts")
     local = gate.get("local_shifts")
     mae = gate.get("roundtrip_mae")
     if not isinstance(shifts, list) or len(shifts) != GATE_SAMPLE_N or mae is None:
         raise GateFailedError(f"gate에 재평가할 원본 shifts({GATE_SAMPLE_N}개)/roundtrip_mae가 없다")
-    if not isinstance(local, list) or len(local) != GATE_SAMPLE_N:
-        raise GateFailedError(
-            f"gate에 국소 기준 원본 local_shifts({GATE_SAMPLE_N}개)가 없다 — 전역 기준만으로는 "
-            "통과할 수 없다")
-    recomputed = evaluate_gate(np.asarray(shifts, dtype=np.float64), float(mae),
-                               local=np.asarray(local, dtype=np.float64))
+    if local is not None and (not isinstance(local, list) or len(local) != GATE_SAMPLE_N):
+        raise GateFailedError(f"gate의 진단 원본 local_shifts가 {GATE_SAMPLE_N}개 목록이 아니다")
+    recomputed = evaluate_gate(
+        np.asarray(shifts, dtype=np.float64), float(mae),
+        local=None if local is None else np.asarray(local, dtype=np.float64))
     if not recomputed["passed"]:
         raise GateFailedError(
-            f"저장된 shifts/local_shifts/roundtrip_mae를 재평가하면 실패한다: "
-            f"{recomputed['failures']}")
-    drift = [k for k in GATE_SUMMARY_KEYS if gate.get(k) != recomputed[k]]
+            f"저장된 shifts/roundtrip_mae를 재평가하면 실패한다: {recomputed['failures']}")
+    drift = [k for k in GATE_SUMMARY_KEYS if gate.get(k) != recomputed.get(k)]
     if drift:
         raise GateFailedError(f"gate의 저장된 요약값이 원본 재계산과 다르다: {drift}")
     return recomputed
@@ -773,7 +774,7 @@ def indices_sha256(idx: np.ndarray) -> str:
 def require_gate_passed(gate_json_path, ckpt_path, *, report_id: str, sim_sem_path=None) -> dict:
     """`translate_sim.py`가 torch를 import하기 **전**에 부르는 하드 스톱.
 
-    저장된 `passed` 불리언은 **신뢰하지 않는다** — 저장된 per-image `shifts`·`local_shifts`와
+    저장된 `passed` 불리언은 **신뢰하지 않는다** — 저장된 per-image `shifts`와
     `roundtrip_mae`로 `recheck_gate`(`evaluate_gate` 재실행 + 요약값 정확 일치)를 돌려, 그
     결과가 통과인지로만 판단한다. 그 외 거부 조건:
 

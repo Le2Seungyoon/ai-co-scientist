@@ -312,7 +312,7 @@ def _shifts(n, value):
     return np.full(n, value, dtype=np.float64)
 
 
-_ZL = np.zeros(cyclegan.GATE_SAMPLE_N)  # 국소 기준이 통과하는 기본값 — 전역 기준만 떼어 볼 때
+_ZL = np.zeros(cyclegan.GATE_SAMPLE_N)  # 국소 probe가 조용한 기본값 — 판정 기준만 떼어 볼 때
 
 
 def test_evaluate_gate_passes_at_exact_boundary():
@@ -487,14 +487,19 @@ def test_block_match_skips_flat_tiles_as_nan():
     assert not np.isnan(est[1:]).any()
 
 
-def test_local_shift_max_of_all_flat_image_is_nan_and_fails_gate():
-    # 전부 평탄하면 국소 기하를 잴 수 없다 — 측정 불가는 통과가 아니라 실패다
+def test_local_shift_max_of_all_flat_image_is_nan_and_is_flagged_by_the_probe():
+    # 전부 평탄하면 국소 기하를 잴 수 없다 — 진단 probe는 "측정 불가"로 적고 0으로 숨기지 않는다.
+    # 판정은 사전등록 기준만 한다(진단 probe는 passed를 바꾸지 않는다)
     a = np.full((1, cyclegan.IMG_H, cyclegan.IMG_W), 128.0)
     loc = cyclegan.local_shift_max(a, a + 3.0)
     assert np.isnan(loc[0])
     res = cyclegan.evaluate_gate(np.zeros(cyclegan.GATE_SAMPLE_N), 0.0,
                                  local=np.full(cyclegan.GATE_SAMPLE_N, loc[0]))
-    assert res["passed"] is False
+    assert res["passed"] is True
+    probe = res["local_probe"]
+    assert probe["n_unmeasurable"] == cyclegan.GATE_SAMPLE_N
+    assert probe["median"] is None and probe["p95"] is None
+    assert probe["flags"] == [f"local_shift 측정 불가 {cyclegan.GATE_SAMPLE_N}장"]
 
 
 @pytest.mark.parametrize("name,warp", [
@@ -502,66 +507,77 @@ def test_local_shift_max_of_all_flat_image_is_nan_and_fails_gate():
     ("smooth 1 px warp", _smooth_warp(1.0)),
     ("4 % hole dilation", _dilate(0.04)),
 ])
-def test_local_warp_passes_global_gate_but_fails_local_gate(name, warp):
-    # 합성 국소 왜곡 거부 계약: 픽셀 GT 대응을 깨는 국소 기하 변화를 전역 phase correlation은
-    # 통과시키고(사각지대) 블록 매칭 기준이 잡는다. 외관 변화를 함께 얹어도 마찬가지다.
+def test_local_warp_is_a_known_residual_of_the_authoritative_gate_and_only_flagged(name, warp):
+    # 잔여 위험 고정: 픽셀 GT 대응을 깨는 국소 왜곡을 사전등록 전역 phase correlation은 통과시킨다
+    # (사각지대). 국소 probe는 미보정 진단이라 이를 **기록만** 하고 정지시키지 않는다 — 실제 sim
+    # 보정 없이 정지 규칙에 넣으면 외관 전용 변환도 멈춘다(`test_appearance_only_blur_gamma_...`).
     # 전역 값은 장면에 따라 흔들리므로(seed 0: 0.30~0.38 px, 20 seed 최대 ~0.75) 장면을 seed 0에
     # 고정하고 크기를 사각지대 안으로 잡았다. 국소 값은 seed 0에서 0.80~1.08 px다
     orig = _hole_scene()
     moved = _hole_scene(warp=warp, appearance=True)
     res = _gate_on(orig, moved)
     assert res["shift_median"] <= cyclegan.SHIFT_MEDIAN_MAX, name  # 전역 기준은 못 본다
-    assert res["passed"] is False, name
-    assert any(f.startswith("local_shift") for f in res["failures"]), name
+    assert res["passed"] is True, name
+    assert res["failures"] == [], name
+    assert any(f.startswith("local_shift_median") for f in res["local_probe"]["flags"]), name
 
 
-def test_appearance_only_change_passes_local_gate():
-    # 음성 대조: 기하는 그대로 두고 블러·아핀 밝기·잡음만 바꾸면 국소 기준도 통과해야 한다 —
-    # 이게 깨지면 gate가 변환기의 정상 동작(외관 이동)을 기하 위반으로 오판한다
+def test_appearance_only_change_raises_no_probe_flag():
+    # 음성 대조: 기하는 그대로 두고 블러·아핀 밝기·잡음만 바꾸면 진단 probe도 조용해야 한다
     res = _gate_on(_hole_scene(), _hole_scene(appearance=True))
     assert res["passed"] is True, res["failures"]
-    assert res["local_shift_median"] < 0.3
+    assert res["local_probe"]["flags"] == []
+    assert res["local_probe"]["median"] < 0.3
 
 
 def test_global_phase_correlation_underestimates_noncircular_subpixel_shift():
     # 발견 고정: 실제 0.5 px 비순환 전역 이동을 전역 phase correlation은 ~0.05로 읽는다
-    # (crop 경계의 불연속이 백색화 스펙트럼을 지배). 사전등록 전역 기준이 느슨하다는 증거라
-    # 국소 기준이 필요하다 — 블록 매칭은 같은 입력을 ~0.5로 읽는다
+    # (crop 경계의 불연속이 백색화 스펙트럼을 지배). 사전등록 전역 기준이 느슨하다는 증거(잔여
+    # 위험) — 진단 probe의 블록 매칭은 같은 입력을 ~0.5로 읽는다
     orig = _hole_scene()
     moved = _hole_scene(warp=lambda y, x: (y - 0.5, x))
     assert np.hypot(*cyclegan.phase_correlation_shift(orig, moved)) < 0.1
     assert cyclegan.local_shift_max(orig[None], moved[None])[0] > 0.45
 
 
-def test_evaluate_gate_local_criteria_are_inclusive_and_named():
+def test_local_probe_flags_are_inclusive_and_named():
     zeros = _ZL
     at = np.full(cyclegan.GATE_SAMPLE_N, cyclegan.SHIFT_MEDIAN_MAX)
     res = cyclegan.evaluate_gate(zeros, 0.0, local=at)
-    assert res["passed"] is True
-    assert res["thresholds"] == cyclegan.GATE_THRESHOLDS
+    assert res["local_probe"]["flags"] == []
     over = cyclegan.evaluate_gate(zeros, 0.0, local=at + 1e-9)
-    assert over["failures"] == [f"local_shift_median {cyclegan.SHIFT_MEDIAN_MAX + 1e-9} > "
-                                f"{cyclegan.SHIFT_MEDIAN_MAX}"]
+    assert over["passed"] is True and over["failures"] == []
+    assert over["local_probe"]["flags"] == [f"local_shift_median {cyclegan.SHIFT_MEDIAN_MAX + 1e-9}"
+                                            f" > {cyclegan.SHIFT_MEDIAN_MAX}"]
 
 
-def test_require_gate_passed_rejects_gate_without_local_shifts(tmp_path):
-    # 국소 기준 없이 만든 gate(전역 3개 기준만)는 하드 스톱을 통과할 수 없다
+def test_require_gate_passed_accepts_gate_without_local_shifts(tmp_path):
+    # 판정 권한은 사전등록 기준에만 있다 — 진단 probe 원본이 없어도 재판정은 완결된다
     gate_path, ckpt, gate = _valid_gate_and_ckpt(tmp_path, report_id="EXP-920")
+    del gate["local_shifts"], gate["local_probe"]
+    _rewrite(gate_path, gate)
+    assert cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-920")["passed"] is True
+
+
+def test_require_gate_passed_rejects_probe_summary_without_its_raw_values(tmp_path):
+    # 원본 없이 남은 probe 요약은 재현할 수 없다 — 사람이 읽을 값이 검증되지 않으면 거부
+    gate_path, ckpt, gate = _valid_gate_and_ckpt(tmp_path, report_id="EXP-922")
     del gate["local_shifts"]
-    gate_path.unlink()
-    cyclegan.write_once_json(gate_path, gate)
-    with pytest.raises(cyclegan.GateFailedError, match="local_shifts"):
-        cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-920")
+    _rewrite(gate_path, gate)
+    with pytest.raises(cyclegan.GateFailedError, match="요약값"):
+        cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-922")
 
 
-def test_require_gate_passed_recomputes_local_criterion(tmp_path):
-    # 저장된 passed=True라도 local_shifts를 재평가하면 실패하는 gate는 거부된다
+def test_require_gate_passed_does_not_stop_on_diagnostic_local_values(tmp_path):
+    # 큰 국소 값은 probe 플래그로 기록될 뿐 하드 스톱이 아니다(미보정 — docs/experiment/H6 §조건)
     gate_path, ckpt, gate = _valid_gate_and_ckpt(tmp_path, report_id="EXP-921")
-    gate["local_shifts"] = [2.0] * cyclegan.GATE_SAMPLE_N
-    gate_path.unlink()
-    cyclegan.write_once_json(gate_path, gate)
-    with pytest.raises(cyclegan.GateFailedError, match="local_shift"):
-        cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-921")
+    local = np.full(cyclegan.GATE_SAMPLE_N, 2.0)
+    gate["local_shifts"] = local.tolist()
+    gate["local_probe"] = cyclegan.evaluate_gate(_ZL, 0.0, local=local)["local_probe"]
+    _rewrite(gate_path, gate)
+    rechecked = cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-921")
+    assert rechecked["passed"] is True
+    assert rechecked["local_probe"]["flags"]
 
 
 # ── manifest — 덮어쓰기 거부 + 해시 검증 ──────────────────────────
@@ -1350,32 +1366,58 @@ def test_reject_test_paths_checks_resolved_symlink_target(tmp_path):
         cyclegan.reject_test_paths([link])
 
 
-# ── gate 호출 계약: 국소 기준 필수 · 요약값 정확 일치 ──────────────
+# ── gate 호출 계약: 사전등록 3기준만 판정 · 국소 probe는 진단 전용 · 요약값 정확 일치 ──
 
-def test_evaluate_gate_requires_local_keyword():
-    # 전역 기준만으로 passed=True를 만드는 호출 경로 자체가 없어야 한다
-    with pytest.raises(TypeError):
-        cyclegan.evaluate_gate(np.zeros(cyclegan.GATE_SAMPLE_N), 0.0)  # noqa
+def test_gate_thresholds_are_exactly_the_three_preregistered_criteria():
+    # 정지 규칙 = 사전등록 문서의 세 문턱. 미보정 국소 probe의 설정은 여기 없다
+    assert cyclegan.GATE_THRESHOLDS == {"shift_median_max": 0.5, "shift_p95_max": 1.0,
+                                        "roundtrip_mae_max": 0.10}
 
 
-def test_gate_passed_is_exactly_the_and_of_five_criteria():
+def test_evaluate_gate_without_local_is_a_complete_verdict():
+    r = cyclegan.evaluate_gate(np.zeros(cyclegan.GATE_SAMPLE_N), 0.0)
+    assert r["passed"] is True
+    assert "local_probe" not in r
+
+
+def test_gate_result_carries_no_local_verdict_and_labels_the_probe_diagnostic():
+    r = cyclegan.evaluate_gate(_ZL, 0.0, local=_ZL)
+    assert "local_passed" not in r and "preregistered_passed" not in r
+    assert r["local_probe"]["role"] == cyclegan.LOCAL_PROBE_ROLE == "diagnostic_only_uncalibrated"
+    assert r["local_probe"]["method"] == cyclegan.LOCAL_PROBE_METHOD
+
+
+@pytest.mark.parametrize("local", [
+    np.full(cyclegan.GATE_SAMPLE_N, 50.0),
+    np.full(cyclegan.GATE_SAMPLE_N, np.nan),
+])
+def test_local_probe_never_flips_passed_either_way(local):
+    # 통과 쪽: 진단 값이 아무리 나빠도 사전등록 통과를 뒤집지 않는다
+    assert cyclegan.evaluate_gate(_ZL, 0.0, local=local)["passed"] is True
+    # 실패 쪽: 진단 값이 완벽해도 사전등록 실패를 구하지 못한다(fail-closed)
+    bad = cyclegan.evaluate_gate(_shifts(cyclegan.GATE_SAMPLE_N, 0.6), 0.0, local=_ZL)
+    assert bad["passed"] is False
+
+
+def test_gate_passed_is_exactly_the_and_of_three_preregistered_criteria():
     ok = cyclegan.evaluate_gate(_ZL, 0.0, local=_ZL)
     assert ok["passed"] is True
+    p95_bad = np.zeros(cyclegan.GATE_SAMPLE_N)
+    p95_bad[: cyclegan.GATE_SAMPLE_N // 10] = cyclegan.SHIFT_P95_MAX + 1.0
     bad = {
         "shift_median": dict(shifts=_shifts(cyclegan.GATE_SAMPLE_N, 0.6)),
+        "shift_p95": dict(shifts=p95_bad),
         "roundtrip_mae": dict(mae=cyclegan.ROUNDTRIP_MAE_MAX + 1e-9),
-        "local_shift_median": dict(local=_shifts(cyclegan.GATE_SAMPLE_N, 0.6)),
     }
     for key, kw in bad.items():
-        r = cyclegan.evaluate_gate(kw.get("shifts", _ZL), kw.get("mae", 0.0),
-                                   local=kw.get("local", _ZL))
+        r = cyclegan.evaluate_gate(kw.get("shifts", _ZL), kw.get("mae", 0.0), local=_ZL)
         assert r["passed"] is False, key
         assert [f.split(" ")[0] for f in r["failures"]] == [key], r["failures"]
 
 
 @pytest.mark.parametrize("field,value", [
     ("shift_median", -1.0),
-    ("local_shift_p95", 0.0001),
+    ("local_probe", {"role": "authoritative"}),
     ("failures", ["whatever"]),
 ])
 def test_require_gate_passed_rejects_summary_that_disagrees_with_raw_values(tmp_path, field, value):
@@ -1438,6 +1480,7 @@ def test_build_manifest_refuses_test_source_path(tmp_path):
 @pytest.mark.parametrize("mutate,expect", [
     (lambda m: m["output_files"]["sim_sem"].update(path="../sim_sem.npy"), "맨 파일명"),
     (lambda m: m["gate"].update(local_shifts=[5.0] * cyclegan.GATE_SAMPLE_N), "gate 재검증"),
+    (lambda m: m["gate"].update(shifts=[5.0] * cyclegan.GATE_SAMPLE_N), "gate 재검증"),
     (lambda m: m["gate"].update(shift_p95=0.25), "gate 재검증"),
     (lambda m: m.update(hypothesis="H7"), "hypothesis"),
     (lambda m: m["gate"].update(report_id="EXP-OTHER"), "report_id"),
@@ -1649,22 +1692,16 @@ def test_train_refuses_resume_flag_without_resume_file(tmp_path):
     assert _no_torch_leak(proc)
 
 
-# ── 정지 의미론: 사전등록 기준 vs 미보정 국소 기준을 따로 기록 ──────────
+# ── 정지 의미론: 사전등록 기준만 판정, 미보정 국소 probe는 기록만 ──────────
 
-def test_local_shift_p95_alone_fails_and_is_recorded_as_local_only_stop():
+def test_local_shift_p95_alone_is_only_a_probe_flag():
     n = cyclegan.GATE_SAMPLE_N
     local = np.zeros(n)
     local[: n // 10] = cyclegan.SHIFT_P95_MAX + 1.0  # 상위 10%만 크게 — median은 0 그대로
     r = cyclegan.evaluate_gate(_ZL, 0.0, local=local)
-    assert r["passed"] is False
-    assert r["failures"] == [f"local_shift_p95 {r['local_shift_p95']} > {cyclegan.SHIFT_P95_MAX}"]
-    assert r["preregistered_passed"] is True  # 사전등록상 "기각"이 아니라 fail-safe 정지
-    assert r["local_passed"] is False
-
-
-def test_preregistered_failure_is_not_attributed_to_local_criterion():
-    r = cyclegan.evaluate_gate(_ZL, cyclegan.ROUNDTRIP_MAE_MAX + 0.01, local=_ZL)
-    assert (r["passed"], r["preregistered_passed"], r["local_passed"]) == (False, False, True)
+    assert r["passed"] is True and r["failures"] == []
+    probe = r["local_probe"]
+    assert probe["flags"] == [f"local_shift_p95 {probe['p95']} > {cyclegan.SHIFT_P95_MAX}"]
 
 
 def test_recheck_gate_survives_json_roundtrip_of_nontrivial_floats(tmp_path):
@@ -1680,12 +1717,23 @@ def test_recheck_gate_survives_json_roundtrip_of_nontrivial_floats(tmp_path):
 
 
 def test_require_gate_passed_rejects_gate_written_with_other_local_method(tmp_path):
-    # 타일·탐색·평탄 기준이 바뀐 뒤에는 옛 gate JSON을 재사용할 수 없다
+    # 타일·탐색·평탄 기준이 바뀐 뒤에는 옛 gate JSON의 probe 기록이 재현되지 않는다
     gate_path, ckpt, gate = _valid_gate_and_ckpt(tmp_path, report_id="EXP-950")
-    gate["thresholds"] = {k: v for k, v in gate["thresholds"].items() if k != "local_tile"}
+    gate["local_probe"]["method"] = {**gate["local_probe"]["method"], "tile": 12}
+    _rewrite(gate_path, gate)
+    with pytest.raises(cyclegan.GateFailedError, match="요약값"):
+        cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-950")
+
+
+def test_require_gate_passed_rejects_legacy_gate_that_stopped_on_local_criteria(tmp_path):
+    # 국소 기준을 정지 규칙에 넣던 옛 형식(임계값에 local_* 포함)은 현재 정지 규칙과 다르다
+    gate_path, ckpt, gate = _valid_gate_and_ckpt(tmp_path, report_id="EXP-951")
+    gate["thresholds"] = {**gate["thresholds"], "local_shift_median_max": 0.5,
+                          "local_shift_p95_max": 1.0, "local_tile": 24}
+    gate["local_passed"] = True
     _rewrite(gate_path, gate)
     with pytest.raises(cyclegan.GateFailedError, match="임계값"):
-        cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-950")
+        cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-951")
 
 
 def _ring(seed, cy=36.0, cx=24.0, k=0.0):
@@ -1703,24 +1751,48 @@ def _gblur(img, sy, sx):
     return np.fft.ifft2(np.fft.fft2(img) * k).real
 
 
-def test_known_limit_blur_plus_gamma_is_a_local_only_false_stop():
-    # 알려진 거짓 실패(LOCAL_TILE 주석): 기하는 그대로인데 이방성 블러+감마가 경사 가장자리의
-    # 등밝기 윤곽을 ~1 px 옮긴다. 국소 기준은 멈추고, 사전등록 전역 기준은 통과한다 — 그래서
-    # 둘을 따로 기록한다. 이 테스트가 깨지면(=통과하게 되면) 보정 결과로 주석을 갱신할 것
+def _gate_on_stack(orig, moved):
+    geo = cyclegan.measure_geometry(orig, moved)
+    n = cyclegan.GATE_SAMPLE_N
+    return geo, cyclegan.evaluate_gate(np.resize(geo["shifts"], n), 0.0,
+                                       local=np.resize(geo["local"], n))
+
+
+def test_appearance_only_blur_gamma_passes_the_gate():
+    # 회귀(H6 blocker): 기하는 그대로인데 이방성 블러+감마가 경사 가장자리의 등밝기 윤곽을 ~1 px
+    # 옮긴다. 강도 기반 국소 매칭은 이를 기하 이동과 구별하지 못하므로(원리적 한계) 미보정 probe가
+    # 플래그를 올릴 수는 있어도 **gate를 멈추면 안 된다** — 외관 변경은 변환기의 정상 동작이다
     orig = np.stack([np.clip(_ring(s), 0, 255) for s in range(8)]).astype(np.uint8)
     app = np.stack([255 * (np.clip(_gblur(_ring(s), 1.5, 0.8), 0, 255) / 255) ** 1.8
                     for s in range(8)]).clip(0, 255).astype(np.uint8)
-    geo = cyclegan.measure_geometry(orig, app)
-    n = cyclegan.GATE_SAMPLE_N
-    r = cyclegan.evaluate_gate(np.resize(geo["shifts"], n), 0.0, local=np.resize(geo["local"], n))
-    assert r["preregistered_passed"] is True
-    assert r["local_passed"] is False
+    _, r = _gate_on_stack(orig, app)
+    assert r["passed"] is True, r["failures"]
+    assert r["failures"] == []
+    assert r["local_probe"]["flags"], "probe의 알려진 거짓 플래그가 사라졌다 — 보정 기록을 갱신할 것"
 
 
-def test_known_blind_spot_dilation_centred_inside_a_tile_is_invisible_locally():
-    # 알려진 사각지대(LOCAL_TILE 주석): 한 타일(12,12 중심) 안의 대칭 팽창은 어느 타일도 움직이지
-    # 않는다. 국소 기준이 "형태 보존"을 보증하지 않는다는 사실을 고정한다
+def test_known_residual_dilation_centred_inside_a_tile_passes_the_gate():
+    # 알려진 잔여 위험(사전등록 §조건에 명시): 한 타일(12,12 중심) 안의 대칭 팽창은 전역 phase
+    # correlation도 국소 probe도 보지 못한다. gate는 "형태 보존"을 보증하지 않는다 — 이 테스트가
+    # 깨지면(=잡게 되면) 사전등록의 잔여 위험 문단을 갱신할 것
     orig = np.clip(_ring(0, cy=12, cx=12), 0, 255).astype(np.uint8)[None]
     grown = np.clip(_ring(0, cy=12, cx=12, k=0.10), 0, 255).astype(np.uint8)[None]
     assert np.abs(orig.astype(int) - grown.astype(int)).max() > 20  # 실제로 모양이 바뀌었다
-    assert cyclegan.measure_geometry(orig, grown)["local"][0] < cyclegan.SHIFT_MEDIAN_MAX
+    geo, r = _gate_on_stack(orig, grown)
+    assert geo["local"][0] < cyclegan.SHIFT_MEDIAN_MAX
+    assert r["passed"] is True
+    assert r["local_probe"]["flags"] == []
+
+
+def test_preregistration_states_the_executable_stop_rule():
+    # 사전등록 문서가 코드의 정지 규칙과 정확히 같아야 한다: 세 문턱, 표본 2,048, 국소 probe는
+    # 진단 전용, 팽창 사각지대를 잔여 위험으로 명시
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "experiment"
+           / "H6-cyclegan-sim-to-real.md").read_text(encoding="utf-8")
+    gate_line = next(line for line in doc.splitlines() if line.startswith("- **기하 위생 gate**"))
+    for needle in ("2,048", "중앙값이 0.5 pixel 이하", "p95가 1.0 pixel 이하", "MAE는 0.10 이하",
+                   "세 기준", "NaN"):
+        assert needle in gate_line, needle
+    probe_line = next(line for line in doc.splitlines() if line.startswith("- **국소 진단 probe**"))
+    for needle in ("진단 전용", "판정에 관여하지 않는다", "미보정", "팽창", "잔여 위험"):
+        assert needle in probe_line, needle

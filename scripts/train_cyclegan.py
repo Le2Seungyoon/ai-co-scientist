@@ -393,7 +393,7 @@ def _gate_locked(args, sim_path, ckpt_path, out_json) -> int:
     translated = translate_u8(g_sim2real, orig, args.batch_size, device)
     roundtrip = translate_u8(g_real2sim, translated, args.batch_size, device)
 
-    geo = measure_geometry(orig, translated)  # 전역 phase correlation + 국소 블록 매칭
+    geo = measure_geometry(orig, translated)  # 전역 phase correlation(판정) + 국소 probe(진단)
     mae = roundtrip_mae(orig, roundtrip)
     gate_result = evaluate_gate(geo["shifts"], mae, local=geo["local"],
                                 signed=geo["signed"])  # signed= → diagnostics에 mean_dy/dx
@@ -404,7 +404,7 @@ def _gate_locked(args, sim_path, ckpt_path, out_json) -> int:
         "ckpt": str(ckpt_path), "ckpt_sha256": sha256_file(ckpt_path), "ckpt_epoch": ckpt_epoch,
         "config": cfg.to_dict(),
         "shifts": [float(m) for m in geo["shifts"]],  # require_gate_passed가 재평가할 원본값
-        "local_shifts": [float(m) for m in geo["local"]],  # 국소 기준 원본 — 없으면 통과 불가
+        "local_shifts": [float(m) for m in geo["local"]],  # 진단 probe 원본 — 판정에는 안 쓰인다
         "signed_shifts": geo["signed"].tolist(),  # 진단용 원본 (dy,dx) — 판정에는 안 쓰인다
         "roundtrip_mae": mae,
         "indices_sha256": indices_sha256(idx),

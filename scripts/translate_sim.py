@@ -17,7 +17,7 @@ sha256·(주어지면) sim_sem.npy sha256까지 전부 확인하는 단일 하�
 <translated dir>`가 읽을 최종 디렉터리는 아예 생기지 않는다.
 
 **쓰기 후 재검증**: 디스크에 실제로 저장된 `sim_sem.npy`를 다시 읽어, gate가 쓴 것과 같은 2,048
-고정 표본 인덱스로 전역 phase-correlation shift와 국소 블록 매칭 shift를 다시 재고
+고정 표본 인덱스로 전역 phase-correlation shift를 다시 재고(국소 블록 매칭은 진단 기록만)
 (`measure_geometry` → `evaluate_gate`, gate가 기록한 `roundtrip_mae`와 함께) 판정한다.
 round-trip 변환은 다시 돌리지 않는다 —
 round-trip MAE는 쓰기 전/후로 달라질 이유가 없는 값이라, `G_real2sim`을 다시 호출하는 비용을

@@ -17,7 +17,8 @@ sim의 픽셀 대응 depth GT를 보존한 채 외관만 real 쪽으로 옮기�
 - **CycleGAN X**: unpaired sim train SEM 138,648장과 real train SEM 60,664장. real test SEM과 모든 depth GT는 변환기 학습에 넣지 않는다.
 - **CycleGAN y**: 명시적 depth target 없음. LSGAN adversarial loss와 cycle/identity loss만 사용한다.
 - **변환기**: 1-channel ResNet generator 2개(6 residual blocks), 70×70 PatchGAN discriminator 2개, InstanceNorm, Adam `lr=2e-4`, `betas=(0.5, 0.999)`, batch size 8, seed 42. 50 epochs 고정 learning rate 뒤 50 epochs linear decay를 사용한다. `lambda_cycle=10`, `lambda_identity=5`다.
-- **기하 위생 gate**: 고정된 sim 검증 표본 2,048장에 대해 원본과 sim→real 변환본의 phase-correlation 이동량 중앙값이 0.5 pixel 이하이고 p95가 1.0 pixel 이하이어야 한다. round-trip `sim→real→sim`의 `[0,1]` 정규화 MAE는 0.10 이하여야 한다. 하나라도 실패하면 downstream 구조 학습 없이 종료한다. 이 gate는 성능 증거가 아니라 픽셀 GT 보존을 위한 안전 조건이다.
+- **기하 위생 gate**: 고정된 sim 검증 표본 2,048장에 대해 원본과 sim→real 변환본의 phase-correlation 이동량 중앙값이 0.5 pixel 이하이고 p95가 1.0 pixel 이하이어야 한다. round-trip `sim→real→sim`의 `[0,1]` 정규화 MAE는 0.10 이하여야 한다. 경계값은 통과이고 NaN은 실패다. 정지 규칙은 정확히 이 세 기준의 AND이며, 하나라도 실패하면 downstream 구조 학습 없이 종료한다(`evaluate_gate`의 `passed`·`failures`). 이 gate는 성능 증거가 아니라 픽셀 GT 보존을 위한 안전 조건이다.
+- **국소 진단 probe**: 같은 표본에서 24×24 타일 NCC 블록 매칭 변위(`local_probe`)를 기록하지만 진단 전용이며 판정에 관여하지 않는다 — 통과를 실패로도, 실패를 통과로도 바꾸지 않는다. 미보정이다: 합성 입력에서 기하를 바꾸지 않는 블러+감마에도 플래그를 올리고, 한 타일 안에 중심이 있는 대칭 팽창은 보지 못한다. 전역 phase correlation도 대칭 팽창과 국소 왜곡을 보지 못하므로, 이 gate가 형태 보존을 보증하지 않는다는 것이 사전등록된 잔여 위험이다. probe를 정지 규칙으로 올리려면 실제 sim 표본에서 외관 전용 변환으로 보정한 뒤 이 문서를 개정해야 한다.
 - **downstream y**: 변환 전 sim 원본의 픽셀별 `s = (L-depth)/L` GT를 변환본과 동일 좌표로 사용한다.
 - **구조 모델**: H5/H7과 같은 PlainMLP, L1 loss, batch size 128, AdamW, `lr=1e-3`, cosine schedule, 15 epochs, seed 42.
 - **arm 0**: 원본 sim-only 구조 학습.
