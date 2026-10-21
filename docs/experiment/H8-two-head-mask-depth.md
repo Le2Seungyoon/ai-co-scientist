@@ -17,10 +17,17 @@ zero-inflated `s`를 하나의 L1 회귀값으로 맞추는 대신 마스크와 
 - **X**: sim train SEM 138,648장. real test는 최종 추론과 AdaBN 외에는 사용하지 않는다.
 - **y**: sim depth GT에서 `s=(L-depth)/L`를 계산한다. `m = 1[s>0]`, `s_pos=s` for `m=1`로 분해한다.
 - **공통 backbone**: 기존 PlainMLP, batch size 128, AdamW `lr=1e-3`, cosine schedule, 15 epochs, seed 42.
-- **arm A**: 기존 single-head `s` 회귀, 전체 픽셀 L1 loss.
-- **arm B**: 같은 backbone에서 mask logit과 positive-depth 두 출력을 만든다. `BCEWithLogits(mask_logit,m) + L1(s_pos_hat,s_pos | m=1)`을 1:1로 합산하고, 추론값은 `sigmoid(mask_logit) * clamp(s_pos_hat,0,1)`로 구성한다.
-- arm B의 마지막 출력층 증가(+약 41.8% output-layer parameters)는 구조적 confound로 명시한다. backbone 폭·epoch·optimizer는 변경하지 않는다.
-- sim holdout은 site split seed 0으로 고정하고 structure RMSE, mask AUROC, positive-pixel RMSE를 기록한다. 이 값은 위생/기전 지표이며 채택 지표가 아니다.
+- **arm A**: 기존 single-head `s` 회귀. 출력 `sigmoid(logit)`, 전체 픽셀 L1 loss.
+- **arm B**: 같은 backbone(encoder + decoder 마지막 Linear 이전까지)에서 두 head를 낸다. depth head는 arm A 출력층과 같은 초기화값을 재사용하고 **arm A와 같은 sigmoid**를 거친다(`s_pos_hat = sigmoid(depth_logit)`). mask head는 새 `Linear(1024, H·W)`다.
+  - 손실: `BCEWithLogits(mask_logit, m) + L1(sigmoid(depth_logit), s | m=1), 1:1`
+  - 추론: `sigmoid(mask_logit) * sigmoid(depth_logit)` — soft product, hard threshold 없음.
+- **마스킹이 걸리는 정확한 지점**: `m = 1[s>0]`는 GT에서 학습 시에만 만든다. BCE는 배치 전체 픽셀 평균, L1은 **배치 안 m=1 픽셀 전체의 평균**(이미지별 평균 아님)이며 배치에 m=1이 없으면 0이다. m=0 픽셀은 depth head에 gradient를 주지 않는다. 두 head 사이 stop-gradient는 없다 — 두 손실 모두 공유 trunk로 역전파된다.
+- **arm 간 차이 (단일 변수가 아니다)**: 동일 초기화에서 arm B의 depth 경로는 arm A와 함수적으로 같다(`tests/test_two_head.py`가 bit 단위로 고정). 그 위에 다음 세 가지가 **한 묶음**으로 달라진다.
+  1. mask head 추가 — 출력층 2배(+100%), 전체 파라미터 8,468,736 → 12,011,136 (+41.8%).
+  2. 손실 분해 — 전체 픽셀 L1 → BCE + m=1 픽셀 L1. depth head는 m=0 픽셀에서 학습 신호를 잃는다.
+  3. 출력 조립 — 단일 sigmoid → 두 sigmoid의 곱.
+  이 셋은 이 설계에서 분리할 수 없다. 따라서 이 실험이 답하는 것은 **"2-head 묶음 vs single"**이며, 효과를 zero-inflation 분해 자체에 귀속하지 않는다(용량 증가·손실 형태와 구별 불가). backbone 폭·epoch·optimizer·배치 순서(전용 generator)는 변경하지 않는다.
+- sim holdout은 site split seed 0으로 고정하고 structure RMSE, mask AUROC, positive-pixel RMSE를 기록한다. 이 값은 위생/기전 지표이며 채택 지표가 아니다. mask AUROC의 점수원은 arm마다 다르다(arm A `s_hat`, arm B `sigmoid(mask_logit)`) — 두 arm끼리 비교하지 않는다.
 - **공통 추론**: EXP-019의 level 경로와 shuffled real AdaBN seed 42, `tau=0`, level smoothing 9를 사용한다.
 - **예산**: 학습 2회, 제출 최대 2회.
 
@@ -30,7 +37,9 @@ zero-inflated `s`를 하나의 L1 회귀값으로 맞추는 대신 마스크와 
 - **채택**: arm B가 arm A보다 public/private 모두 낮고, 두 split 중 작은 개선폭이 0.02 이상이다.
 - **조건부**: sim holdout만 개선, 양쪽 leaderboard 개선이 0.02 미만, 또는 split 방향이 갈린다. 이 경우 R6의 sim↔real 순위 반전 위험 때문에 결론 없음으로 닫는다.
 - **기각**: 두 split 모두 악화하거나 한 split에서 0.02 이상 악화한다.
-- **제출 전 중단**: NaN/Inf, mask 양성률이 sim GT 양성률에서 10 percentage points 이상 벗어남, 출력 범위 위반, arm A/B의 backbone·manifest·seed 불일치가 있으면 zip을 만들지 않는다.
+- **제출 전 중단**: NaN/Inf, 출력 범위 위반, arm A/B의 backbone·manifest·seed 불일치, 또는 mask 붕괴가 있으면 zip을 만들지 않는다.
+  - **mask 붕괴 게이트가 걸리는 정확한 지점** (arm B만): 학습 **마지막 epoch의 sim holdout**(split seed 0, val_frac 0.2)에서 `sigmoid(mask_logit) > 0.5`인 픽셀 비율과 같은 holdout의 GT `s>0` 비율을 비교해, 차이가 10 percentage points 이상이면 실패다. 판정은 학습 시점에 manifest(`sim_mask_gate`)에 고정된다 — ckpt는 진단용으로 저장되지만 `infer_two_head.py`가 zip 생성을 거부한다.
+  - real test의 mask 양성률은 **로깅 전용**이다. real depth GT가 없어 sim GT 비율과 비교할 근거가 없으므로 게이트로 쓰지 않는다.
 - 과거 branch의 실행되지 않은 사후 종결안은 증거로 사용하지 않는다. 현재 문서의 사전 기준으로 새로 판단한다.
 - `0.02`는 H7과 같은 운영 임계값이며 통계적 신뢰구간이 아니다.
 
@@ -49,8 +58,8 @@ zero-inflated `s`를 하나의 L1 회귀값으로 맞추는 대신 마스크와 
 
 **판정**: 미검증.
 
-**미검증**: zero-inflated target 분해가 real 성능을 높이는지와 출력층 증가가 효과의 원인인지 아직 분리되지 않았다.
+**미검증**: 2-head 묶음이 real 성능을 높이는지. 채택되더라도 효과가 zero-inflated target 분해·mask head 용량 증가·손실 형태 중 무엇에서 오는지는 이 설계로 분리되지 않는다 — 분리하려면 별도 가설(예: 파라미터를 맞춘 single-head control)이 필요하다.
 
 ## 이관 범위
 
-채택 시 2-head target 정의·1:1 loss·soft product 추론까지 한 단위로 이관한다. loss weight, hard threshold, backbone을 바꾸면 별도 가설로 다시 등록한다.
+채택 시 2-head target 정의·sigmoid depth head·1:1 loss·soft product 추론까지 한 단위로 이관한다. loss weight, hard threshold, backbone을 바꾸면 별도 가설로 다시 등록한다.

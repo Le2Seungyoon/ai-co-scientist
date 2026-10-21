@@ -6,9 +6,10 @@ torch는 `two_head_loss`/`compose_output_torch` 두 함수 안에서만 지연 i
 
 `docs/experiment/H8-two-head-mask-depth.md`의 사전등록을 코드로 고정한다:
     s = (L - d) / L,  m = 1[s>0],  s_pos = s|m
-    arm A(single): 전체 픽셀 L1
-    arm B(two_head): BCEWithLogits(mask_logit, m) + L1(s_pos_hat, s_pos | m=1), 1:1 합산
-    추론: ŝ = sigmoid(mask_logit) * clip(s_pos_hat, 0, 1)
+    arm A(single): ŝ = sigmoid(logit), 전체 픽셀 L1
+    arm B(two_head): s_pos_hat = sigmoid(depth_logit)  (arm A와 같은 출력 비선형)
+                     BCEWithLogits(mask_logit, m) + L1(s_pos_hat, s | m=1), 1:1 합산
+    추론: ŝ = sigmoid(mask_logit) * s_pos_hat  (soft product, hard threshold 없음)
 사전등록 값이 드리프트하면 arm A/B 비교가 confound를 갖게 되므로, 매니페스트/체크포인트/제출
 게이트가 이 드리프트를 실행 전에 잡는다.
 """
@@ -22,7 +23,7 @@ from ai_co_scientist.sem import CASE_LEVEL
 # ── 상수 ────────────────────────────────────────────────────
 
 ARMS = ("single", "two_head")
-CKPT_FORMAT = "h8-two-head/v1"
+CKPT_FORMAT = "h8-two-head/v2"  # v1 = raw depth head + clamp — 키가 같아 조용히 로드되므로 거부
 
 # 학습 사전등록 — arm A/B가 공유해야 하는 backbone·optimizer·split 하이퍼파라미터
 PREREGISTERED = {"arch": "mlp", "batch_size": 128, "lr": 1e-3, "optimizer": "AdamW",
@@ -74,8 +75,9 @@ def split_target(s) -> tuple:
 
 
 def compose_output(mask_logit, s_pos_hat) -> np.ndarray:
-    """ŝ = sigmoid(mask_logit) * clip(s_pos_hat, 0, 1). 큰 |logit|에서도 overflow 경고 없이
-    수치적으로 안정적인 조각별 sigmoid(음수 인자에만 exp를 건다)를 쓴다."""
+    """ŝ = sigmoid(mask_logit) * s_pos_hat. s_pos_hat은 모델이 이미 sigmoid로 낸 값이라 clip은
+    범위 가드일 뿐 no-op이다. 큰 |logit|에서도 overflow 경고 없이 수치적으로 안정적인 조각별
+    sigmoid(음수 인자에만 exp를 건다)를 쓴다."""
     logit = np.asarray(mask_logit, dtype=np.float64)
     pos = np.asarray(s_pos_hat, dtype=np.float64)
     # np.where는 두 branch를 전부(배열 전체로) 미리 계산하므로 exp(-logit)를 선택 안 해도
@@ -93,7 +95,10 @@ def two_head_loss_reference(mask_logit, s_pos_hat, s) -> dict:
     """numpy 기준 손실 — torch 버전(two_head_loss)이 반드시 이 값과 같아야 한다.
 
     bce: 전체 픽셀 평균 BCEWithLogits(안정형 log-sum-exp).
-    l1_pos: m=1 픽셀만, raw(clamp 없는) s_pos_hat 사용. n_pos==0이면 0.0.
+    l1_pos: m=1 픽셀만, 모델 출력 s_pos_hat(=sigmoid(depth_logit))을 추가 clamp 없이 쓴다.
+        배치 안 m=1 픽셀 전체의 평균이다(이미지별 평균 아님). n_pos==0이면 0.0.
+    m=0 픽셀은 depth head에 gradient를 주지 않는다. 두 head 사이 stop-gradient는 없다 —
+    두 손실 모두 공유 trunk로 역전파된다.
     total: bce + l1_pos (1:1).
     """
     logit = np.asarray(mask_logit, dtype=np.float64)
@@ -332,9 +337,10 @@ def sim_mask_gate(holdout: dict, arm: str, epoch: int) -> dict:
 # ── 매니페스트 ─────────────────────────────────────────────────
 
 _LOSS_BY_ARM = {"single": "L1(all pixels)",
-                "two_head": "BCEWithLogits(mask_logit, m) + L1(s_pos_hat, s_pos | m=1), 1:1"}
+                "two_head": ("BCEWithLogits(mask_logit, m) "
+                             "+ L1(sigmoid(depth_logit), s | m=1), 1:1")}
 _OUTPUT_BY_ARM = {"single": "sigmoid(logit)",
-                  "two_head": "sigmoid(mask_logit) * clip(s_pos_hat, 0, 1)"}
+                  "two_head": "sigmoid(mask_logit) * sigmoid(depth_logit)"}
 
 
 def validate_hparams(hp: dict) -> list:

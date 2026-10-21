@@ -839,6 +839,50 @@ def test_mlp_param_counts_exact_numbers():
     assert d["extra_frac_output_layer"] == 1.0
 
 
+def test_two_head_manifest_names_sigmoid_depth_path():
+    # 매니페스트는 arm B depth 경로가 arm A와 같은 sigmoid임을 적어야 한다 (raw+clamp 아님)
+    b = _build("two_head")
+    assert b["output"] == "sigmoid(mask_logit) * sigmoid(depth_logit)"
+    assert "L1(sigmoid(depth_logit), s | m=1)" in b["loss"]
+    assert _build("single")["output"] == "sigmoid(logit)"
+
+
+def test_resolve_ckpt_rejects_v1_raw_depth_head_format():
+    # v1 ckpt는 raw depth head로 학습됐다 — state_dict 키가 같아 조용히 로드되면 의미가 바뀐다
+    a, _ = _pair()
+    obj = two_head.ckpt_payload("single", {**a, "format": "h8-two-head/v1"}, {})
+    obj["format"] = "h8-two-head/v1"
+    with pytest.raises(ValueError):
+        two_head.resolve_ckpt(obj)
+
+
+# ── H8 사전등록 문서 ↔ 코드 일치 ─────────────────────────────
+
+H8_DOC = Path(__file__).resolve().parents[1] / "docs" / "experiment" / "H8-two-head-mask-depth.md"
+
+
+def test_h8_doc_states_code_formulas_verbatim():
+    doc = H8_DOC.read_text(encoding="utf-8")
+    b = _build("two_head")
+    assert b["output"] in doc
+    assert b["loss"] in doc
+
+
+def test_h8_doc_parameter_increase_matches_mlp_param_counts():
+    doc = H8_DOC.read_text(encoding="utf-8")
+    d = two_head.mlp_param_counts()
+    assert f"{d['single']:,}" in doc and f"{d['two_head']:,}" in doc
+    assert f"+{d['extra_frac_total'] * 100:.1f}%" in doc  # 전체 파라미터 기준
+    assert "+100%" in doc  # 출력층 기준 (정확히 두 배)
+    assert "output-layer parameters" not in doc  # 41.8%를 출력층 증가로 적던 옛 문구
+
+
+def test_h8_doc_states_where_stop_gate_applies():
+    doc = H8_DOC.read_text(encoding="utf-8")
+    assert f"sigmoid(mask_logit) > {two_head.MASK_THRESHOLD}" in doc
+    assert "sim holdout" in doc and "로깅 전용" in doc
+
+
 # ══════════════════════════════════════════════════════════════
 # CLI 계약 — scripts/train_two_head.py, scripts/infer_two_head.py (Engineer B, 읽기 전용)
 # ══════════════════════════════════════════════════════════════
@@ -1046,6 +1090,25 @@ def test_make_arm_model_rng_and_init_parity():
     n_two = sum(p.numel() for p in two.parameters())
     assert n_single == 8_468_736
     assert n_two == 12_011_136
+
+
+def test_two_head_depth_path_is_functionally_arm_a_at_init():
+    # arm B의 depth 경로는 arm A와 같은 출력 비선형(sigmoid)을 가져야 한다 — raw Linear +
+    # 추론 clamp면 "head 분리" 외에 출력 비선형까지 바뀌어 단일 변수 비교가 깨진다.
+    # 같은 시드·같은 초기화에서 s_pos_hat은 arm A 출력과 bit 단위로 같아야 한다.
+    torch = pytest.importorskip("torch")
+
+    torch.manual_seed(42)
+    single = train_two_head.make_arm_model("single").eval()
+    torch.manual_seed(42)
+    two = train_two_head.make_arm_model("two_head").eval()
+
+    x = torch.rand(3, 1, 72, 48)
+    with torch.no_grad():
+        s_a = single(x)
+        _mask_logit, s_pos_hat = two(x)
+    assert torch.equal(s_a, s_pos_hat)
+    assert float(s_pos_hat.min()) >= 0.0 and float(s_pos_hat.max()) <= 1.0
 
 
 def test_subset_random_sampler_explicit_generator_is_immune_to_global_rng_state():

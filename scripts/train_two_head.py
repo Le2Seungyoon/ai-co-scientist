@@ -1,7 +1,8 @@
 """H8 — 2-head 구조 회귀 학습. arm A(single)/arm B(two_head) 공통 스크립트.
 
     arm A: 기존 단일 출력 s 회귀 (train_structure.PlainMLP, L1 loss)
-    arm B: mask_logit + s_pos_hat 2-head, BCEWithLogits + L1(m=1) 1:1 합산
+    arm B: mask_logit + sigmoid(depth_logit) 2-head, BCEWithLogits + L1(m=1) 1:1 합산
+           (depth 경로의 출력 비선형은 arm A와 같은 sigmoid)
 
 두 arm이 backbone·optimizer·schedule·seed·split을 전부 공유해야 비교가 성립한다(H8 pre-report
 "공통 backbone"). 이 스크립트는 그 공유 경로 하나이고, arm별 분기는 모델 생성·손실 두 곳뿐이다.
@@ -43,6 +44,7 @@ def make_arm_model(arm: str):
     mask_head는 그 다음에 새로 만든다(RNG 소비 순서). PlainMLP 객체 자체는 attribute로
     보관하지 않는다 — 보관하면 미사용 파라미터가 두 번 등록될 위험이 있다(n_params 계약).
     """
+    import torch
     import torch.nn as nn
     from train_structure import H, W, PlainMLP  # noqa: E402  (지연 import)
 
@@ -53,7 +55,9 @@ def make_arm_model(arm: str):
         raise ValueError(f"알 수 없는 arm: {arm}")
 
     class TwoHeadMLP(nn.Module):
-        """forward는 항상 (mask_logit, s_pos_hat) — 둘 다 (B,1,H,W), 활성화 없는 raw 값."""
+        """forward는 항상 (mask_logit, s_pos_hat) — 둘 다 (B,1,H,W). mask_logit은 raw,
+        s_pos_hat = sigmoid(depth_logit)으로 arm A(PlainMLP.out)와 **같은 출력 비선형**이다 —
+        raw+clamp로 두면 head 분리 외에 비선형까지 달라져 단일 변수 비교가 깨진다."""
 
         def __init__(self, base_model: nn.Module):
             super().__init__()
@@ -67,7 +71,7 @@ def make_arm_model(arm: str):
             b = x.shape[0]
             z = self.backbone(self.encoder(x.view(b, -1)))
             mask_logit = self.mask_head(z).view(b, 1, H, W)
-            s_pos_hat = self.depth_head(z).view(b, 1, H, W)
+            s_pos_hat = torch.sigmoid(self.depth_head(z)).view(b, 1, H, W)
             return mask_logit, s_pos_hat
 
     return TwoHeadMLP(base)
