@@ -101,6 +101,8 @@ def main():
         "uv run python scripts/train_self_training.py train --arm arm1",
         "uv run python scripts/train_cyclegan.py --manifest plan.json",
         "uv run python scripts/translate_sim.py --ckpt generator.pt",
+        "uv run python scripts/train_two_head.py --arm two_head",
+        "uv run python scripts/infer_two_head.py --ckpt model.pt",
     ):
         out, rc = run(worktree, cmd)
         check(f"denies: {cmd.split()[3]}", denied(out), out[:120] or "silent")
@@ -210,7 +212,8 @@ def main():
 
         for script in ("train_level.py", "train_structure.py", "infer_decomposed.py",
                        "dacon_submit.py", "train_dann.py", "build_pseudo_labels.py",
-                       "train_self_training.py", "train_cyclegan.py", "translate_sim.py"):
+                       "train_self_training.py", "train_cyclegan.py", "translate_sim.py",
+                       "train_two_head.py", "infer_two_head.py"):
             out, _ = run(root, "uv run python scripts/{0} --submit a.zip".format(script),
                          env_extra={"ACS_RUNTIME_EXEMPT": "measured one-off"})
             if out.strip():
