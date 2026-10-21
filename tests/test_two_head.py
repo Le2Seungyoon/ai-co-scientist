@@ -5,6 +5,7 @@ dev 환경에서 전부 통과해야 하므로, torch가 필요한 두 함수(tw
 compose_output_torch)의 테스트만 `pytest.importorskip("torch")`로 개별 스킵한다 —
 모듈 자체나 이 파일은 torch 없이도 수집(collect)되어야 한다.
 """
+import builtins
 import os
 import subprocess
 import sys
@@ -28,6 +29,20 @@ import train_two_head  # noqa: E402
 
 PREREG_DEFAULTS = dict(arch="mlp", batch_size=128, lr=1e-3, optimizer="AdamW", schedule="cosine",
                        epochs=15, seed=42, split_seed=0, val_frac=0.2)
+
+
+def _record_torch_imports(monkeypatch):
+    """Record imports attempted by the code under test, even when torch is already cached."""
+    attempted = []
+    real_import = builtins.__import__
+
+    def tracked(name, *args, **kwargs):
+        if name == "torch" or name.startswith("torch."):
+            attempted.append(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", tracked)
+    return attempted
 
 
 def _fingerprint(**overrides) -> dict:
@@ -1156,6 +1171,7 @@ def test_train_two_head_main_exits_2_and_never_touches_torch_when_gpu_lock_busy(
     monkeypatch.setattr(train_two_head, "_git",
                         lambda *a: "abc123" if a[0] == "rev-parse" else "")
     monkeypatch.setattr(sys, "argv", ["x", "--arm", "single", "--out", str(tmp_path / "x.pt")])
+    torch_imports = _record_torch_imports(monkeypatch)
 
     with pytest.raises(SystemExit) as exc_info:
         train_two_head.main()
@@ -1163,9 +1179,8 @@ def test_train_two_head_main_exits_2_and_never_touches_torch_when_gpu_lock_busy(
     assert calls == [two_head.GPU_LOCK]
     # _run()(그 안에서 `import torch`가 일어난다)은 `with resource_lock(...):`의 __enter__가
     # 끝난 뒤에야 불린다 — ResourceBusy가 __enter__에서 나면 _run은 절대 호출되지 않는다. 이
-    # 환경엔 애초에 torch가 없으므로, _run이 잘못 호출됐다면 SystemExit(2)가 아니라
-    # ModuleNotFoundError로 죽었을 것이다 — 깔끔한 SystemExit(2) 자체가 이미 증거다.
-    assert "torch" not in sys.modules
+    # 이미 다른 테스트가 torch를 sys.modules에 올렸더라도 이 경로에서 새 import 시도가 없어야 한다.
+    assert torch_imports == []
 
 
 def test_train_two_head_main_validates_hparams_before_lock_and_torch_import():
@@ -1344,11 +1359,12 @@ def test_infer_two_head_refuses_existing_dump_structure_before_torch(monkeypatch
     monkeypatch.setattr(sys, "argv", ["x", "--ckpt", "a.pt", "--peer-ckpt", "b.pt",
                                       "--submit", str(tmp_path / "z.zip"),
                                       "--dump-structure", str(dump)])
+    torch_imports = _record_torch_imports(monkeypatch)
     with pytest.raises(SystemExit) as exc_info:
         infer_two_head.main()
     assert exc_info.value.code == 2
     assert "dump-structure" in capsys.readouterr().out
-    assert "torch" not in sys.modules
+    assert torch_imports == []
 
 
 def test_git_preflight_flags_failed_git_status():
