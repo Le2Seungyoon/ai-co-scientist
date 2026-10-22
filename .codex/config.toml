@@ -1,21 +1,19 @@
-# Project config for ai-co-scientist. Codex ignores this file until the project is trusted
-# (`[projects."<abs path>"] trust_level = "trusted"` in ~/.codex/config.toml, or the trust prompt
-# on first run from this directory -- the IDE never shows that prompt).
-# Whether that has happened here is UNMEASURED: docs/codex-verification-ledger.md item 1.
+# Project config for ai-co-scientist. Codex ignores this file until the project is trusted.
+# Measured 2026-09-24 in the retained Orca Codex lane: `/hooks` reports all three project hooks
+# active and trusted. Project trust and exact hook-definition trust are separate states.
 #
 # No sandbox_mode / approval_policy. Whether the sandbox starts on this Windows machine has not
 # been measured, and a sandbox that cannot start kills every shell command. It is also the only
 # thing on this side that could enforce a read-only lane -- Codex has no per-lane tool allowlist,
 # so `tools.claude` generates nothing here. Ledger item 5.
 #
-# Hook commands resolve two things instead of naming them:
-#   - the repo, through `git rev-parse --show-toplevel`, because Codex may start in a
-#     subdirectory and a cwd-relative path that misses is indistinguishable from a clean run;
-#   - the interpreter, because this machine has `python` (3.8) and no `python3` at all.
-# When either is unresolvable the hook says so on stderr and exits 0. It never passes in silence:
-# "checked and clean" and "never ran" must not look the same (.agents/rules/enforcement.md ->
-# Hook contracts). Claude Code's half of these is .claude/settings.json; the schemas are
-# unrelated and `.agent-hooks/test_harness_parity.py` fails when the two drift apart.
+# Codex launches command hooks through the Windows platform shell, so POSIX `$()` / `command -v`
+# wrappers fail before Python starts. Each registration therefore gives cmd.exe only one portable
+# job (`python -c`) and resolves the repo/script inside Python while walking up from the cwd. The
+# bare `python` prerequisite is measured on this machine (3.8.10). An unresolved script drains the
+# payload, reports on stderr, and exits 0; it never passes in silence. Claude Code's registrations
+# remain shell-native in `.claude/settings.json`; `.agent-hooks/test_harness_parity.py` checks both
+# name parity and that every Codex command actually launches in the platform shell.
 
 project_doc_max_bytes = 65536
 project_root_markers = [".git"]
@@ -23,19 +21,19 @@ project_root_markers = [".git"]
 [[hooks.PostToolUse]]
 [[hooks.PostToolUse.hooks]]
 type = "command"
-command = 'r=$(git rev-parse --show-toplevel 2>/dev/null); p=$(command -v python3 || command -v python); s="$r/.agent-hooks/check_rules_size.py"; if [ -n "$r" ] && [ -n "$p" ] && [ -f "$s" ]; then "$p" "$s"; else cat >/dev/null 2>&1 || :; echo "[rules-size] repo or interpreter unresolved -- size budget NOT checked" >&2; fi'
+command = '''python -c "import pathlib,runpy,sys;root=pathlib.Path.cwd();rel=pathlib.Path('.agent-hooks/check_rules_size.py');script=next((str(p/rel) for p in (root,*root.parents) if (p/rel).is_file()),'');sys.argv=[script];runpy.run_path(script,run_name='__main__') if script else (sys.stdin.read(),print('[rules-size] repo or script unresolved -- size budget NOT checked',file=sys.stderr))"'''
 timeout = 15
 
 [[hooks.PostToolUse]]
 [[hooks.PostToolUse.hooks]]
 type = "command"
-command = 'r=$(git rev-parse --show-toplevel 2>/dev/null); p=$(command -v python3 || command -v python); s="$r/.agent-hooks/build-agents.py"; if [ -n "$r" ] && [ -n "$p" ] && [ -f "$s" ]; then "$p" "$s" --hook; else cat >/dev/null 2>&1 || :; echo "[build-agents] repo or interpreter unresolved -- generated lanes NOT rebuilt" >&2; fi'
+command = '''python -c "import pathlib,runpy,sys;root=pathlib.Path.cwd();rel=pathlib.Path('.agent-hooks/build-agents.py');script=next((str(p/rel) for p in (root,*root.parents) if (p/rel).is_file()),'');sys.argv=[script,'--hook'];runpy.run_path(script,run_name='__main__') if script else (sys.stdin.read(),print('[build-agents] repo or script unresolved -- generated lanes NOT rebuilt',file=sys.stderr))"'''
 timeout = 20
 
 [[hooks.PreToolUse]]
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = 'r=$(git rev-parse --show-toplevel 2>/dev/null); p=$(command -v python3 || command -v python); s="$r/.agent-hooks/block_runtime_commands.py"; if [ -n "$r" ] && [ -n "$p" ] && [ -f "$s" ]; then "$p" "$s"; else cat >/dev/null 2>&1 || :; echo "[runtime-lane] repo or interpreter unresolved -- command NOT checked" >&2; fi'
+command = '''python -c "import pathlib,runpy,sys;root=pathlib.Path.cwd();rel=pathlib.Path('.agent-hooks/block_runtime_commands.py');script=next((str(p/rel) for p in (root,*root.parents) if (p/rel).is_file()),'');sys.argv=[script];runpy.run_path(script,run_name='__main__') if script else (sys.stdin.read(),print('[runtime-lane] repo or script unresolved -- command NOT checked',file=sys.stderr))"'''
 timeout = 10
 
 # Lane registration. `config_file` is relative to this file's directory. The role files are

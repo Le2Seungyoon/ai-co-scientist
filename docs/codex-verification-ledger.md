@@ -16,28 +16,39 @@ vs *resolved*).
 
 ### 1. Codex가 이 저장소를 trusted로 잡고 `.codex/config.toml`을 읽는가
 
-- **상태**: **부정 관측** (2026-09-08, Claude Code 세션에서 측정) — 아직 trusted가 아니다
+- **상태**: **확인됨** (2026-09-24, 유지 중인 Orca Codex lane에서 측정)
 - **왜 중요한가**: 이게 아니면 아래 전부가 무의미하다. 훅도 레인도 등록되지 않은 채 "설정돼 있다"고
   보인다 — 정확히 이 원장이 막으려는 상태다.
-- **확인**: 이 디렉토리에서 Codex CLI를 한 번 띄우고 트러스트 프롬프트에서 'Trust all and continue'를
-  받는다. **IDE는 이 프롬프트를 띄우지 않는다.** 그 다음 `~/.codex/config.toml`에 이 저장소 경로의
-  `[hooks.state.…]` 항목이 생겼는지 본다.
-- **관측**: `~/.codex/config.toml`에 이 저장소의 `.codex/config.toml`을 가리키는
-  `[hooks.state.…]` 항목이 **0개**다(훅 항목은 3개). `.agent-hooks/test_harness_parity.py`가
-  실행될 때마다 이 사실을 NOTE로 보고한다. 즉 **현재 Codex 쪽 훅 3개는 하나도 돌지 않는다.**
-- **결론 → 고칠 파일**: 없음 — 파일 문제가 아니라 트러스트 미부여다. 이 디렉토리에서 Codex CLI를
-  한 번 띄워 'Trust all and continue'를 받으면 해소된다. 그 전까지 2번은 확인할 수 없다.
+- **확인**: Codex의 `/hooks` 화면에서 project config가 로드됐는지와 각 hook의 Active/Trust를 본다.
+  프로젝트 trust와 개별 hook-definition hash trust는 서로 다른 상태이므로, 사용자 config의
+  `[hooks.state.…]` 개수로 프로젝트 trust를 추론하지 않는다.
+- **관측**: `/hooks`가 `Project config - …/ai-co-scientist/.codex/config.toml`의 PreToolUse를
+  `Active`, `Trusted`로 표시했고, 전체 표는 PreToolUse 3/3·PostToolUse 4/4였다. 사용자 config에도
+  이 저장소 경로의 `trust_level = "trusted"`가 있다. 반면 child hook hash 항목은 0개였으므로,
+  이전 parity NOTE는 서로 다른 trust 상태를 한 값으로 취급한 오진이었다.
+- **결론 → 고칠 파일**: `.agent-hooks/test_harness_parity.py`에서 환경 의존적인 trust 추론을 제거했다.
+  parity gate는 이제 등록 대칭성과 플랫폼 shell 실행 가능성만 검사하고, live trust는 이 원장과
+  `/hooks`가 소유한다.
 
 ### 2. 훅 3개가 실제로 실행되는가
 
-- **상태**: 미측정
+- **상태**: **등록 실행 확인, deny 효과 live 미측정** (2026-09-24)
 - **확인** — 음성 케이스 먼저:
   1. Codex에서 레지스트리가 없는 트리(예: worktree)로 `uv run python scripts/train_level.py`를
      시도해 `block_runtime_commands`가 **막는지** 본다. 막지 않으면 6번이 원인일 수 있다.
   2. `.agents/rules/` 아무 파일을 예산 초과로 만들어 편집하고 `check_rules_size`의 nudge가 뜨는지 본다.
   3. `.agents/agents/reviewer.md`를 편집하고 `build-agents --hook`이 생성물을 다시 쓰는지 본다.
-- **관측**: (비어 있음)
-- **결론 → 고칠 파일**: `.codex/config.toml`의 훅 커맨드 문자열
+- **관측**: `/hooks`에서 세 project hook이 active/trusted인 상태에서도 모든 tool call 뒤
+  `Hook failed — hook exited with code 1`이 반복됐다. 상세 화면의 명령은 POSIX `$()`와
+  `command -v`를 사용했고, 같은 문자열을 Windows 플랫폼 shell에서 실행하자 세 개 모두 exit 1로
+  재현됐다. `python -c`로 shell 의존성을 제거한 뒤 parity의 실제 실행 probe는 세 명령 모두
+  exit 0이다. 새 hash를 trust한 뒤 `/hooks`는 다시 PreToolUse 3/3·PostToolUse 4/4 active를
+  표시했고, 같은 유지 세션에서 새로 실행한 `git status --short --branch` 전후에는 `Hook failed`가
+  없었다. 즉 세 등록 명령의 Windows live launch는 확인됐다. 현재 registry 없는 worktree는 모두
+  정리돼 있어 1번 음성 케이스는 live로 실행하지 않았다. worktree를 새로 만들지 않는 한 deny
+  효과와 Codex payload shape는 6번과 함께 미측정으로 남는다.
+- **결론 → 고칠 파일**: `.codex/config.toml`을 플랫폼 중립 Python wrapper로 교체했고,
+  `.agent-hooks/test_harness_parity.py`가 각 등록 명령을 실제 플랫폼 shell에서 실행한다.
 
 ### 3. agent 파일의 `name` / `nickname_candidates`가 사는가 죽는가
 
