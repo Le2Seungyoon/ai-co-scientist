@@ -1,7 +1,7 @@
 ---
 id: H7
-status: 측정됨
-verdict: 미검증
+status: 판정
+verdict: 기각
 axis: 갭
 lane: worker-task_205e65519182
 registry: [EXP-023]
@@ -39,27 +39,27 @@ registry: [EXP-023]
 
 ## 결과
 
-EXP-023을 실행 commit `444209ea0723ad2c7bac6f89a120010743d58ec5`에서 seed 42, AMP off로 직렬 실행했다. 두 arm의 manifest parity는 통과했다. 아래 수치는 최종 epoch의 기전 지표이며 leaderboard 성능은 아직 측정하지 않았다.
+EXP-023을 실행 commit `444209ea0723ad2c7bac6f89a120010743d58ec5`에서 seed 42, AMP off로 직렬 실행했다. 두 arm의 manifest parity는 통과했다.
 
 | report_id | arm | 지표 | 비고 |
 |---|---|---|---|
-| EXP-023 | A (`lambda_max=0`) | train L1 0.00616294 · domain loss 0.00996802 · probe AUC 0.99982544 | 232.816초 |
-| EXP-023 | B (`lambda_max=1`) | train L1 0.00851187 · domain loss 0.69313661 · probe AUC 0.50318308 | 206.696초 |
+| EXP-023 | A (`lambda_max=0`) | public 3.0377771396 · private 2.9873695626 · probe AUC 0.99982544 | 제출 1583705 · 232.816초 |
+| EXP-023 | B (`lambda_max=1`) | public 3.2349845103 · private 3.1860116352 · probe AUC 0.50318308 | 제출 1583707 · 206.696초 |
 
-두 제출 후보 ZIP은 각각 25,988장, 최대값 `{140,150,160,170}`, 허용 범위 밖 0장으로 검증됐다. 2026-09-24에 arm A 대조군(`[EXP-023] H7 control lambda0`)을 먼저, 성공 확인 뒤 arm B(`[EXP-023] H7 DANN lambda1`)를 제출했다. 두 응답 모두 `submitted=true`, `detail=Success`였으며 API는 제출 ID나 점수를 반환하지 않았다. leaderboard 점수는 수동 확인 대기 중이다.
+두 제출 후보 ZIP은 각각 25,988장, 최대값 `{140,150,160,170}`, 허용 범위 밖 0장으로 검증됐다. 2026-09-24에 arm A 대조군(`[EXP-023] H7 control lambda0`)을 먼저, 성공 확인 뒤 arm B(`[EXP-023] H7 DANN lambda1`)를 제출했다. B는 A보다 public `+0.1972073707`, private `+0.1986420726` 악화했다.
 
 ## 관찰
 
 - arm B의 probe AUC 0.5032와 domain loss 0.6931은 사전등록한 기전 기준(AUC 0.80 미만)을 충족한다. 같은 특징에서 sim/real 판별 정보가 arm A보다 크게 줄었다.
-- 동시에 arm B의 sim train L1은 arm A보다 높다. 도메인 정보 제거가 구조 회귀 적합도와 맞바뀌었을 가능성이 있으나, 이 수치로 real depth 성능을 추론하지 않는다.
-- A/B manifest parity와 제출본 검증, 두 제출 접수는 통과했다. leaderboard 점수 비교 전에는 채택·기각하지 않는다.
+- 동시에 arm B의 sim train L1은 0.00851187로 arm A의 0.00616294보다 높았고, real leaderboard도 두 split 모두 약 0.20 악화했다. 도메인 판별 정보를 지운 것이 이 설정에서는 depth에 필요한 정보까지 훼손했다는 해석과 일치한다.
+- 기전 지표는 의도대로 움직였지만 최종 지표가 반대로 움직였다. domain probe AUC 감소만으로 도메인 적응 성공을 판정할 수 없다는 직접 사례다.
 
-## 판정 · 미검증
+## 판정 · 기각
 
-**판정**: 미검증.
+**판정**: 기각. arm B가 arm A보다 public/private 모두 악화했고 악화폭이 각각 0.1972와 0.1986으로 사전등록 임계값 0.02를 크게 넘었다.
 
-**미검증**: DANN이 실제 leaderboard gap을 줄이는지는 아직 측정하지 않았다. 사전등록한 public/private 차이와 0.02 임계값 판정에는 A/B 제출 점수가 모두 필요하다.
+**미검증**: 다른 bottleneck, discriminator, `lambda_max`, schedule 또는 backbone에서도 같은 방향인지는 측정하지 않았다.
 
 ## 이관 범위
 
-채택 시 128차원 bottleneck·discriminator·GRL schedule과 exact manifest에만 결론을 적용한다. 다른 backbone이나 lambda에는 재검증 없이 일반화하지 않는다.
+현재 128차원 PlainMLP bottleneck, 256-256 discriminator, `lambda_max=1`, seed 42 조합은 이관하지 않는다. DANN 일반이나 다른 lambda·backbone까지 기각한 것으로 일반화하지 않는다.
