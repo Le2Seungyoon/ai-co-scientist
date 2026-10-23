@@ -3,8 +3,8 @@ id: H7
 status: 계획
 verdict: 미검증
 axis: 갭
-lane: null
-registry: []
+lane: worker-task_205e65519182
+registry: [EXP-023]
 ---
 
 # H7. DANN 특징 도메인 정렬
