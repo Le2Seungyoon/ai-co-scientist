@@ -1,6 +1,6 @@
 ---
 id: H7
-status: 계획
+status: 측정됨
 verdict: 미검증
 axis: 갭
 lane: worker-task_205e65519182
@@ -39,20 +39,26 @@ registry: [EXP-023]
 
 ## 결과
 
-아직 실행하지 않았다. report_id는 전용 실행 lane dispatch 직전에 main checkout에서 발급한다.
+EXP-023을 실행 commit `444209ea0723ad2c7bac6f89a120010743d58ec5`에서 seed 42, AMP off로 직렬 실행했다. 두 arm의 manifest parity는 통과했다. 아래 수치는 최종 epoch의 기전 지표이며 leaderboard 성능은 아직 측정하지 않았다.
 
 | report_id | arm | 지표 | 비고 |
 |---|---|---|---|
+| EXP-023 | A (`lambda_max=0`) | train L1 0.00616294 · domain loss 0.00996802 · probe AUC 0.99982544 | 232.816초 |
+| EXP-023 | B (`lambda_max=1`) | train L1 0.00851187 · domain loss 0.69313661 · probe AUC 0.50318308 | 206.696초 |
+
+두 제출 후보 ZIP은 각각 25,988장, 최대값 `{140,150,160,170}`, 허용 범위 밖 0장으로 검증됐다. 실제 제출은 하지 않았다.
 
 ## 관찰
 
-사전등록 단계다. domain probe는 정렬 여부를 설명하지만 real depth 성능의 대리 지표로 취급하지 않는다.
+- arm B의 probe AUC 0.5032와 domain loss 0.6931은 사전등록한 기전 기준(AUC 0.80 미만)을 충족한다. 같은 특징에서 sim/real 판별 정보가 arm A보다 크게 줄었다.
+- 동시에 arm B의 sim train L1은 arm A보다 높다. 도메인 정보 제거가 구조 회귀 적합도와 맞바뀌었을 가능성이 있으나, 이 수치로 real depth 성능을 추론하지 않는다.
+- A/B manifest parity와 제출본 검증은 통과했다. 실제 leaderboard 비교 전에는 채택·기각하지 않는다.
 
 ## 판정 · 미검증
 
 **판정**: 미검증.
 
-**미검증**: DANN이 도메인 정보와 함께 depth에 필요한 정보를 지우는지, 실제 leaderboard gap을 줄이는지 아직 측정하지 않았다.
+**미검증**: DANN이 실제 leaderboard gap을 줄이는지는 아직 측정하지 않았다. 사전등록한 public/private 차이와 0.02 임계값 판정에는 A/B 제출 점수가 모두 필요하다.
 
 ## 이관 범위
 
