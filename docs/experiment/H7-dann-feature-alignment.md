@@ -46,13 +46,13 @@ EXP-023을 실행 commit `444209ea0723ad2c7bac6f89a120010743d58ec5`에서 seed 4
 | EXP-023 | A (`lambda_max=0`) | train L1 0.00616294 · domain loss 0.00996802 · probe AUC 0.99982544 | 232.816초 |
 | EXP-023 | B (`lambda_max=1`) | train L1 0.00851187 · domain loss 0.69313661 · probe AUC 0.50318308 | 206.696초 |
 
-두 제출 후보 ZIP은 각각 25,988장, 최대값 `{140,150,160,170}`, 허용 범위 밖 0장으로 검증됐다. 실제 제출은 하지 않았다.
+두 제출 후보 ZIP은 각각 25,988장, 최대값 `{140,150,160,170}`, 허용 범위 밖 0장으로 검증됐다. 2026-09-24에 arm A 대조군(`[EXP-023] H7 control lambda0`)을 먼저, 성공 확인 뒤 arm B(`[EXP-023] H7 DANN lambda1`)를 제출했다. 두 응답 모두 `submitted=true`, `detail=Success`였으며 API는 제출 ID나 점수를 반환하지 않았다. leaderboard 점수는 수동 확인 대기 중이다.
 
 ## 관찰
 
 - arm B의 probe AUC 0.5032와 domain loss 0.6931은 사전등록한 기전 기준(AUC 0.80 미만)을 충족한다. 같은 특징에서 sim/real 판별 정보가 arm A보다 크게 줄었다.
 - 동시에 arm B의 sim train L1은 arm A보다 높다. 도메인 정보 제거가 구조 회귀 적합도와 맞바뀌었을 가능성이 있으나, 이 수치로 real depth 성능을 추론하지 않는다.
-- A/B manifest parity와 제출본 검증은 통과했다. 실제 leaderboard 비교 전에는 채택·기각하지 않는다.
+- A/B manifest parity와 제출본 검증, 두 제출 접수는 통과했다. leaderboard 점수 비교 전에는 채택·기각하지 않는다.
 
 ## 판정 · 미검증
 
