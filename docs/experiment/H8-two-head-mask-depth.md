@@ -1,7 +1,7 @@
 ---
 id: H8
-status: 측정됨
-verdict: 미검증
+status: 판정
+verdict: 채택
 axis: sim 구조
 lane: worker-task_205e65519182
 registry: [EXP-024]
@@ -47,25 +47,25 @@ zero-inflated `s`를 하나의 L1 회귀값으로 맞추는 대신 마스크와 
 
 EXP-024를 실행 commit `9532525128b59d8bdf38a0eafc3197d3297f76dc`에서 seed 42, AMP off로 직렬 실행했다. 두 arm의 manifest parity와 추론 게이트는 통과했다. 아래 수치는 마지막 epoch의 sim holdout 위생 지표이며 채택 지표가 아니다.
 
-| report_id | arm | 지표 | 비고 |
-|---|---|---|---|
-| EXP-024 | A (`single`) | depth RMSE 2.06512102 · positive RMSE 0.01879547 · mask AUROC 0.99773738 | 254.674초 |
-| EXP-024 | B (`two_head`) | depth RMSE 2.00870747 · positive RMSE 0.01832591 · mask AUROC 0.99989729 | 274.122초 |
+| report_id | arm | sim holdout 지표 | leaderboard | 비고 |
+|---|---|---|---|---|
+| EXP-024 | A (`single`) | depth RMSE 2.06512102 · positive RMSE 0.01879547 · mask AUROC 0.99773738 | public 3.0578249986 · private 3.0049607176 | 제출 1583722 · 254.674초 |
+| EXP-024 | B (`two_head`) | depth RMSE 2.00870747 · positive RMSE 0.01832591 · mask AUROC 0.99989729 | public 2.9460719789 · private 2.8952703674 | 제출 1583723 · 274.122초 |
 
-arm B의 마지막 sim holdout mask 양성률은 예측 0.48798323, GT 0.48820918로 차이가 약 0.000226이어서 0.10 붕괴 게이트를 통과했다. 두 제출 후보 ZIP은 각각 25,988장, 최대값 `{140,150,160,170}`, 허용 범위 밖 0장으로 검증됐다. A(`single`)를 먼저 제출해 `submitted=true`를 확인한 뒤 B(`two_head`)를 제출했으며, 두 요청 모두 `verified=true`, `detail=Success`로 끝났다. 제출 API는 ID와 점수를 반환하지 않아 leaderboard 반영을 기다린다.
+arm B의 마지막 sim holdout mask 양성률은 예측 0.48798323, GT 0.48820918로 차이가 약 0.000226이어서 0.10 붕괴 게이트를 통과했다. 두 제출 후보 ZIP은 각각 25,988장, 최대값 `{140,150,160,170}`, 허용 범위 밖 0장으로 검증됐다. 2026-09-24에 A(`single`)를 먼저 제출해 `submitted=true`를 확인한 뒤 B(`two_head`)를 제출했으며, 두 요청 모두 `verified=true`, `detail=Success`로 끝났다. B는 A보다 public `0.1117530197`, private `0.1096903502` 개선했다.
 
 ## 관찰
 
 - arm B의 sim holdout depth RMSE는 arm A보다 0.05641355 낮았고 positive-pixel RMSE도 낮았다. mask 붕괴 없이 사전등록한 2-head 묶음이 sim 지표를 개선했다.
 - A/B 추론의 output positive rate는 각각 0.49027485와 0.49001481로 비슷했고, B의 real-test mask rate는 0.48814989였다. real test mask 수치는 로깅 전용이며 성공 판정에 쓰지 않는다.
-- EXP-020/R6의 sim↔real 순위 반전 때문에 이 개선을 real 성능으로 투영하지 않는다. 실제 leaderboard 비교 전에는 채택·기각하지 않는다.
+- 이번에는 sim holdout의 방향이 real leaderboard 양쪽으로 전이됐다. 다만 R6의 반례는 그대로이므로 이것을 sim holdout 일반의 유효성으로 확대하지 않는다. 같은 backbone과 학습 조건에서 사전등록한 2-head 묶음의 paired 비교에만 해당한다.
 
-## 판정 · 미검증
+## 판정 · 채택
 
-**판정**: 미검증.
+**판정**: 채택. arm B가 arm A보다 public/private 모두 낮고, 더 작은 개선폭도 `0.1096903502`로 사전등록 임계값 `0.02`를 넘었다.
 
-**미검증**: 두 arm은 제출됐지만 leaderboard 점수가 아직 기록되지 않아 2-head 묶음이 real 성능을 높이는지는 판정할 수 없다. 채택되더라도 효과가 zero-inflated target 분해·mask head 용량 증가·손실 형태 중 무엇에서 오는지는 이 설계로 분리되지 않는다 — 분리하려면 별도 가설(예: 파라미터를 맞춘 single-head control)이 필요하다.
+**미검증**: 효과가 zero-inflated target 분해·mask head 용량 증가·손실 형태·soft product 추론 중 무엇에서 오는지는 이 설계로 분리되지 않는다 — 분리하려면 별도 가설(예: 파라미터를 맞춘 single-head control)이 필요하다.
 
 ## 이관 범위
 
-채택 시 2-head target 정의·sigmoid depth head·1:1 loss·soft product 추론까지 한 단위로 이관한다. loss weight, hard threshold, backbone을 바꾸면 별도 가설로 다시 등록한다.
+2-head target 정의·sigmoid depth head·1:1 loss·soft product 추론까지 한 단위로 이관한다. loss weight, hard threshold, backbone을 바꾸면 별도 가설로 다시 등록한다.
