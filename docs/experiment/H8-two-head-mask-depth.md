@@ -1,6 +1,6 @@
 ---
 id: H8
-status: 계획
+status: 측정됨
 verdict: 미검증
 axis: sim 구조
 lane: worker-task_205e65519182
@@ -45,20 +45,26 @@ zero-inflated `s`를 하나의 L1 회귀값으로 맞추는 대신 마스크와 
 
 ## 결과
 
-아직 실행하지 않았다. report_id는 전용 실행 lane dispatch 직전에 main checkout에서 발급한다.
+EXP-024를 실행 commit `9532525128b59d8bdf38a0eafc3197d3297f76dc`에서 seed 42, AMP off로 직렬 실행했다. 두 arm의 manifest parity와 추론 게이트는 통과했다. 아래 수치는 마지막 epoch의 sim holdout 위생 지표이며 채택 지표가 아니다.
 
 | report_id | arm | 지표 | 비고 |
 |---|---|---|---|
+| EXP-024 | A (`single`) | depth RMSE 2.06512102 · positive RMSE 0.01879547 · mask AUROC 0.99773738 | 254.674초 |
+| EXP-024 | B (`two_head`) | depth RMSE 2.00870747 · positive RMSE 0.01832591 · mask AUROC 0.99989729 | 274.122초 |
+
+arm B의 마지막 sim holdout mask 양성률은 예측 0.48798323, GT 0.48820918로 차이가 약 0.000226이어서 0.10 붕괴 게이트를 통과했다. 두 제출 후보 ZIP은 각각 25,988장, 최대값 `{140,150,160,170}`, 허용 범위 밖 0장으로 검증됐다. 실제 제출은 하지 않았다.
 
 ## 관찰
 
-사전등록 단계다. sim 구조 오차가 가장 큰 예산 성분이지만, EXP-020/R6 때문에 sim 개선이 real 개선으로 이어진다는 가정은 금지한다.
+- arm B의 sim holdout depth RMSE는 arm A보다 0.05641355 낮았고 positive-pixel RMSE도 낮았다. mask 붕괴 없이 사전등록한 2-head 묶음이 sim 지표를 개선했다.
+- A/B 추론의 output positive rate는 각각 0.49027485와 0.49001481로 비슷했고, B의 real-test mask rate는 0.48814989였다. real test mask 수치는 로깅 전용이며 성공 판정에 쓰지 않는다.
+- EXP-020/R6의 sim↔real 순위 반전 때문에 이 개선을 real 성능으로 투영하지 않는다. 실제 leaderboard 비교 전에는 채택·기각하지 않는다.
 
 ## 판정 · 미검증
 
 **판정**: 미검증.
 
-**미검증**: 2-head 묶음이 real 성능을 높이는지. 채택되더라도 효과가 zero-inflated target 분해·mask head 용량 증가·손실 형태 중 무엇에서 오는지는 이 설계로 분리되지 않는다 — 분리하려면 별도 가설(예: 파라미터를 맞춘 single-head control)이 필요하다.
+**미검증**: 2-head 묶음이 real 성능을 높이는지는 아직 측정하지 않았다. 채택되더라도 효과가 zero-inflated target 분해·mask head 용량 증가·손실 형태 중 무엇에서 오는지는 이 설계로 분리되지 않는다 — 분리하려면 별도 가설(예: 파라미터를 맞춘 single-head control)이 필요하다.
 
 ## 이관 범위
 
