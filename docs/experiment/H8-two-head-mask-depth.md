@@ -52,7 +52,7 @@ EXP-024를 실행 commit `9532525128b59d8bdf38a0eafc3197d3297f76dc`에서 seed 4
 | EXP-024 | A (`single`) | depth RMSE 2.06512102 · positive RMSE 0.01879547 · mask AUROC 0.99773738 | 254.674초 |
 | EXP-024 | B (`two_head`) | depth RMSE 2.00870747 · positive RMSE 0.01832591 · mask AUROC 0.99989729 | 274.122초 |
 
-arm B의 마지막 sim holdout mask 양성률은 예측 0.48798323, GT 0.48820918로 차이가 약 0.000226이어서 0.10 붕괴 게이트를 통과했다. 두 제출 후보 ZIP은 각각 25,988장, 최대값 `{140,150,160,170}`, 허용 범위 밖 0장으로 검증됐다. 실제 제출은 하지 않았다.
+arm B의 마지막 sim holdout mask 양성률은 예측 0.48798323, GT 0.48820918로 차이가 약 0.000226이어서 0.10 붕괴 게이트를 통과했다. 두 제출 후보 ZIP은 각각 25,988장, 최대값 `{140,150,160,170}`, 허용 범위 밖 0장으로 검증됐다. A(`single`)를 먼저 제출해 `submitted=true`를 확인한 뒤 B(`two_head`)를 제출했으며, 두 요청 모두 `verified=true`, `detail=Success`로 끝났다. 제출 API는 ID와 점수를 반환하지 않아 leaderboard 반영을 기다린다.
 
 ## 관찰
 
@@ -64,7 +64,7 @@ arm B의 마지막 sim holdout mask 양성률은 예측 0.48798323, GT 0.4882091
 
 **판정**: 미검증.
 
-**미검증**: 2-head 묶음이 real 성능을 높이는지는 아직 측정하지 않았다. 채택되더라도 효과가 zero-inflated target 분해·mask head 용량 증가·손실 형태 중 무엇에서 오는지는 이 설계로 분리되지 않는다 — 분리하려면 별도 가설(예: 파라미터를 맞춘 single-head control)이 필요하다.
+**미검증**: 두 arm은 제출됐지만 leaderboard 점수가 아직 기록되지 않아 2-head 묶음이 real 성능을 높이는지는 판정할 수 없다. 채택되더라도 효과가 zero-inflated target 분해·mask head 용량 증가·손실 형태 중 무엇에서 오는지는 이 설계로 분리되지 않는다 — 분리하려면 별도 가설(예: 파라미터를 맞춘 single-head control)이 필요하다.
 
 ## 이관 범위
 
