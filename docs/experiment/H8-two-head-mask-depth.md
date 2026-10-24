@@ -3,8 +3,8 @@ id: H8
 status: 계획
 verdict: 미검증
 axis: sim 구조
-lane: null
-registry: []
+lane: worker-task_205e65519182
+registry: [EXP-024]
 ---
 
 # H8. 마스크·양의 깊이 2-head 구조 회귀
