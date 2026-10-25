@@ -3,8 +3,8 @@ id: H5
 status: 계획
 verdict: 미검증
 axis: 갭
-lane: null
-registry: []
+lane: worker-task_205e65519182
+registry: [EXP-025]
 ---
 
 # H5. 실데이터 의사 라벨을 이용한 2단계 자기학습
