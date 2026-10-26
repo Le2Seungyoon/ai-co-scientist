@@ -1,6 +1,6 @@
 ---
 id: H5
-status: 계획
+status: 측정됨
 verdict: 미검증
 axis: 갭
 lane: worker-task_205e65519182
@@ -38,20 +38,25 @@ sim GT로 학습한 구조 예측기가 만든 real-train 의사 라벨을 다�
 
 ## 결과
 
-아직 실행하지 않았다. report_id는 전용 실행 lane을 dispatch하기 직전에 main checkout에서 발급한다.
+EXP-025를 commit `3dcc750b23f1e43c91be04694f2ad513c6065fcd`에서 직렬 실행했다. 고정 teacher로 만든 real-train 의사 라벨은 독립 2회 생성에서 label SHA-256 `777a49a897d9e4b7cd0cbfd8c3cb23ea6bd7b2d3a0dfdf9ac839ddfc9a7cade7`로 일치했고, 60,664장 모두 shape `[72, 48]`, finite float32였다. 세 arm의 사전·사후 parity gate도 모두 통과했다.
 
 | report_id | arm | 지표 | 비고 |
 |---|---|---|---|
+| EXP-025 | arm 0, sim-only seed 42 | final train L1 0.00573 | 23,370 steps, 2,989,680 sim presentations, 194.802초 |
+| EXP-025 | arm 0b, sim-only seed 43 | final train L1 0.00574 | 23,370 steps, 2,989,680 sim presentations, 190.188초 |
+| EXP-025 | arm 1, sim + real pseudo-label seed 42 | final train L1 0.00517 | 23,370 steps, sim 2,079,720 + real 909,960 presentations, 202.035초 |
+
+세 zip은 공통 EXP-019 추론 조건으로 만들었고 각각 25,988개 파일, maxima `{140, 150, 160, 170}`, 범위 밖 픽셀 0으로 `verify-only`를 통과했다. 아직 DACON에는 제출하지 않았다.
 
 ## 관찰
 
-사전등록 단계다. 결과 해석은 seed 대조군과 양쪽 리더보드 split을 함께 본 뒤 기록한다.
+arm 1의 학습 L1은 두 sim-only arm보다 낮지만 서로 다른 target 혼합에서 계산된 학습 손실이므로 도메인 갭 개선의 증거로 사용하지 않는다. 채택 여부에는 arm 0과 arm 0b로 계산한 실제 리더보드 seed band 및 arm 1의 public/private 점수가 모두 필요하다.
 
 ## 판정 · 미검증
 
 **판정**: 미검증.
 
-**미검증**: real pseudo-label이 실제 도메인 갭 정보를 전달하는지, 아니면 teacher 오류를 증폭하는지 아직 측정하지 않았다.
+**미검증**: 오프라인 실행·재현성·artifact 검증은 끝났지만 실제 real-depth 지표인 리더보드 점수가 아직 없다. arm 0 → arm 0b → arm 1 순서의 세 제출 결과를 기록한 뒤에만 사전등록 기준으로 판정한다.
 
 ## 이관 범위
 
