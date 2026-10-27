@@ -46,7 +46,7 @@ EXP-025를 commit `3dcc750b23f1e43c91be04694f2ad513c6065fcd`에서 직렬 실행
 | EXP-025 | arm 0b, sim-only seed 43 | final train L1 0.00574 | 23,370 steps, 2,989,680 sim presentations, 190.188초 |
 | EXP-025 | arm 1, sim + real pseudo-label seed 42 | final train L1 0.00517 | 23,370 steps, sim 2,079,720 + real 909,960 presentations, 202.035초 |
 
-세 zip은 공통 EXP-019 추론 조건으로 만들었고 각각 25,988개 파일, maxima `{140, 150, 160, 170}`, 범위 밖 픽셀 0으로 `verify-only`를 통과했다. 아직 DACON에는 제출하지 않았다.
+세 zip은 공통 EXP-019 추론 조건으로 만들었고 각각 25,988개 파일, maxima `{140, 150, 160, 170}`, 범위 밖 픽셀 0으로 `verify-only`를 통과했다. arm 0(`[EXP-025] H5 arm0 sim-only seed42`) → arm 0b(`[EXP-025] H5 arm0b sim-only seed43`) → arm 1(`[EXP-025] H5 arm1 sim-plus-real-pseudo seed42`) 순서로 제출했으며, 각 요청은 재시도 없이 `submitted=true`, `verified=true`, `detail=Success`로 끝났다. API는 제출 ID나 점수를 반환하지 않아 public/private leaderboard 점수는 수동 확인 대기 중이다.
 
 ## 관찰
 
@@ -56,7 +56,7 @@ arm 1의 학습 L1은 두 sim-only arm보다 낮지만 서로 다른 target 혼�
 
 **판정**: 미검증.
 
-**미검증**: 오프라인 실행·재현성·artifact 검증은 끝났지만 실제 real-depth 지표인 리더보드 점수가 아직 없다. arm 0 → arm 0b → arm 1 순서의 세 제출 결과를 기록한 뒤에만 사전등록 기준으로 판정한다.
+**미검증**: 오프라인 실행·재현성·artifact 검증과 arm 0 → arm 0b → arm 1 제출 접수는 끝났지만 실제 real-depth 지표인 public/private leaderboard 점수가 아직 없다. 세 점수를 모두 기록한 뒤에만 사전등록 기준으로 판정한다.
 
 ## 이관 범위
 
