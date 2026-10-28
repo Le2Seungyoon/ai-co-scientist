@@ -1,7 +1,7 @@
 ---
 id: H5
-status: 측정됨
-verdict: 미검증
+status: 판정
+verdict: 기각
 axis: 갭
 lane: worker-task_205e65519182
 registry: [EXP-025]
@@ -40,24 +40,26 @@ sim GT로 학습한 구조 예측기가 만든 real-train 의사 라벨을 다�
 
 EXP-025를 commit `3dcc750b23f1e43c91be04694f2ad513c6065fcd`에서 직렬 실행했다. 고정 teacher로 만든 real-train 의사 라벨은 독립 2회 생성에서 label SHA-256 `777a49a897d9e4b7cd0cbfd8c3cb23ea6bd7b2d3a0dfdf9ac839ddfc9a7cade7`로 일치했고, 60,664장 모두 shape `[72, 48]`, finite float32였다. 세 arm의 사전·사후 parity gate도 모두 통과했다.
 
-| report_id | arm | 지표 | 비고 |
-|---|---|---|---|
-| EXP-025 | arm 0, sim-only seed 42 | final train L1 0.00573 | 23,370 steps, 2,989,680 sim presentations, 194.802초 |
-| EXP-025 | arm 0b, sim-only seed 43 | final train L1 0.00574 | 23,370 steps, 2,989,680 sim presentations, 190.188초 |
-| EXP-025 | arm 1, sim + real pseudo-label seed 42 | final train L1 0.00517 | 23,370 steps, sim 2,079,720 + real 909,960 presentations, 202.035초 |
+| report_id | arm | 학습 지표 | leaderboard | 비고 |
+|---|---|---|---|---|
+| EXP-025 | arm 0, sim-only seed 42 | final train L1 0.00573 | public 2.9931130178 · private 2.9437985746 | 제출 1583741 · 194.802초 |
+| EXP-025 | arm 0b, sim-only seed 43 | final train L1 0.00574 | public 2.9793695292 · private 2.9341431261 | 제출 1583742 · 190.188초 |
+| EXP-025 | arm 1, sim + real pseudo-label seed 42 | final train L1 0.00517 | public 3.2516599469 · private 3.2023513897 | 제출 1583743 · 202.035초 |
 
-세 zip은 공통 EXP-019 추론 조건으로 만들었고 각각 25,988개 파일, maxima `{140, 150, 160, 170}`, 범위 밖 픽셀 0으로 `verify-only`를 통과했다. arm 0(`[EXP-025] H5 arm0 sim-only seed42`) → arm 0b(`[EXP-025] H5 arm0b sim-only seed43`) → arm 1(`[EXP-025] H5 arm1 sim-plus-real-pseudo seed42`) 순서로 제출했으며, 각 요청은 재시도 없이 `submitted=true`, `verified=true`, `detail=Success`로 끝났다. API는 제출 ID나 점수를 반환하지 않아 public/private leaderboard 점수는 수동 확인 대기 중이다.
+세 zip은 공통 EXP-019 추론 조건으로 만들었고 각각 25,988개 파일, maxima `{140, 150, 160, 170}`, 범위 밖 픽셀 0으로 `verify-only`를 통과했다. arm 0(`[EXP-025] H5 arm0 sim-only seed42`) → arm 0b(`[EXP-025] H5 arm0b sim-only seed43`) → arm 1(`[EXP-025] H5 arm1 sim-plus-real-pseudo seed42`) 순서로 재시도 없이 제출했고, 세 요청 모두 `submitted=true`, `verified=true`, `detail=Success`로 끝났다. DACON 화면에서 확인한 제출 ID는 각각 1583741, 1583742, 1583743이며, 가장 낮은 점수는 arm 0b의 public `2.9793695292`, private `2.9341431261`이다.
 
 ## 관찰
 
-arm 1의 학습 L1은 두 sim-only arm보다 낮지만 서로 다른 target 혼합에서 계산된 학습 손실이므로 도메인 갭 개선의 증거로 사용하지 않는다. 채택 여부에는 arm 0과 arm 0b로 계산한 실제 리더보드 seed band 및 arm 1의 public/private 점수가 모두 필요하다.
+- arm 0과 arm 0b의 seed 차이는 public `0.0137434886`, private `0.0096554485`이고 사전 정의한 `seed_band`는 `0.0137434886`이다.
+- arm 1은 같은 seed의 arm 0보다 public `+0.2585469291`, private `+0.2585528151` 악화했다. 두 split 모두 악화했으므로 seed band나 `0.02` 여유폭을 따질 필요 없이 사전등록 기각 기준을 충족한다.
+- arm 1의 final train L1 `0.00517`은 arm 0의 `0.00573`과 arm 0b의 `0.00574`보다 낮았지만 real leaderboard로 전이되지 않았다. 서로 다른 target 혼합에서 계산한 낮은 학습 손실은 도메인 갭 개선의 증거가 아니다.
 
-## 판정 · 미검증
+## 판정 · 기각
 
-**판정**: 미검증.
+**판정**: 기각. 의사 라벨 arm 1이 sim-only arm 0보다 public/private 모두 약 `0.259` 악화해 사전등록 기준을 충족했다.
 
-**미검증**: 오프라인 실행·재현성·artifact 검증과 arm 0 → arm 0b → arm 1 제출 접수는 끝났지만 실제 real-depth 지표인 public/private leaderboard 점수가 아직 없다. 세 점수를 모두 기록한 뒤에만 사전등록 기준으로 판정한다.
+**미검증**: 다른 teacher, student backbone, pseudo-label 생성법·혼합비 또는 추론 조건에서도 같은 방향인지는 측정하지 않았다. 이 기각은 고정 EXP-005 teacher, scratch PlainMLP student, 등록된 pseudo-label 혼합과 EXP-019 추론 설계에 한정하며 자기학습 일반을 기각하지 않는다.
 
 ## 이관 범위
 
-채택되면 pseudo-label manifest, student checkpoint, 재현 명령과 추론 zip만 다음 실험의 입력으로 이관한다. teacher·데이터·추론 조건이 하나라도 달라지면 H5의 결론을 재사용하지 않는다.
+현재 고정 teacher·student·혼합·추론 설계는 다음 실험으로 이관하지 않는다. 다른 teacher, student backbone, pseudo-label 생성법·혼합비 또는 추론 조건은 H5의 기각을 재사용하지 말고 별도 가설로 등록한다.
