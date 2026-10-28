@@ -3,8 +3,8 @@ id: H6
 status: 계획
 verdict: 미검증
 axis: 갭
-lane: null
-registry: []
+lane: worker-task_205e65519182
+registry: [EXP-026]
 ---
 
 # H6. CycleGAN 기반 sim→real 외관 변환
