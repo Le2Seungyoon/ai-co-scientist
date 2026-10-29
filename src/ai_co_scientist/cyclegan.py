@@ -19,10 +19,16 @@ from pathlib import Path
 
 import numpy as np
 
+from ai_co_scientist.sem import map_level_split
+
 # ── 상수 ──────────────────────────────────────────────────────
 
 IMG_H, IMG_W = 72, 48
+SIM_TOTAL_N = 173_304
 SIM_TRAIN_N = 138_648
+SIM_VAL_N = 34_656
+SIM_SPLIT_VAL_FRAC = 0.2
+SIM_SPLIT_SEED = 42
 REAL_TRAIN_N = 60_664
 GATE_SAMPLE_N = 2048
 SHIFT_MEDIAN_MAX = 0.5
@@ -255,6 +261,91 @@ def gate_sample_indices(n_total: int, n_sample: int = GATE_SAMPLE_N, seed: int =
     rng = np.random.default_rng(seed)
     idx = rng.choice(n_total, size=n_sample, replace=False)
     return np.sort(idx).astype(np.int64)
+
+
+def sim_split_indices(case: np.ndarray, *, expected_total: "int | None" = None,
+                      expected_train: "int | None" = None,
+                      expected_val: "int | None" = None,
+                      val_frac: "float | None" = None,
+                      seed: "int | None" = None) -> "tuple[np.ndarray, np.ndarray]":
+    """EXP-005와 같은 depth-map pair 단위 train/validation 전역 인덱스를 반환한다.
+
+    작은 독립 fixture로 계약을 검증할 수 있도록 기대 개수와 split 인자는 주입 가능하지만,
+    정상 실행은 H6 사전등록 상수를 사용한다. 반환값은 둘 다 정렬된 ``int64`` 전역 인덱스다.
+    """
+    total_n = SIM_TOTAL_N if expected_total is None else expected_total
+    train_n = SIM_TRAIN_N if expected_train is None else expected_train
+    val_n = SIM_VAL_N if expected_val is None else expected_val
+    split_frac = SIM_SPLIT_VAL_FRAC if val_frac is None else val_frac
+    split_seed = SIM_SPLIT_SEED if seed is None else seed
+
+    a = np.asarray(case)
+    if a.ndim != 1:
+        raise ValueError(f"sim_case: 1차원 배열이어야 한다 — 받은 shape {a.shape}")
+    if len(a) != total_n:
+        raise ValueError(f"sim_case: 길이가 {total_n}이어야 한다 — 받은 길이 {len(a)}")
+    if not np.issubdtype(a.dtype, np.integer):
+        raise ValueError(f"sim_case: 정수 dtype이어야 한다 — 받은 dtype {a.dtype}")
+    if len(a) % 2 or not np.array_equal(a[::2], a[1::2]):
+        raise ValueError("sim_case: 연속한 두 SEM iteration의 case가 같은 depth-map pair여야 한다")
+
+    val_mask = map_level_split(a, split_frac, split_seed)
+    train_idx = np.flatnonzero(~val_mask).astype(np.int64)
+    val_idx = np.flatnonzero(val_mask).astype(np.int64)
+    if len(train_idx) != train_n or len(val_idx) != val_n:
+        raise ValueError(
+            "sim split 개수가 사전등록과 다르다 — "
+            f"train {len(train_idx)} != {train_n} 또는 val {len(val_idx)} != {val_n}")
+    return train_idx, val_idx
+
+
+def validation_gate_indices(case: np.ndarray, *, n_sample: "int | None" = None,
+                            gate_seed: int = 42, **split_contract) -> np.ndarray:
+    """validation pool에서 뽑은 gate 표본을 원본 cache의 전역 인덱스로 반환한다."""
+    sample_n = GATE_SAMPLE_N if n_sample is None else n_sample
+    _train_idx, val_idx = sim_split_indices(case, **split_contract)
+    local_idx = gate_sample_indices(len(val_idx), sample_n, gate_seed)
+    return val_idx[local_idx]
+
+
+def load_sim_cache_split(sim_path, case_path, **split_contract):
+    """전체 sim cache를 검증해 원본 배열과 EXP-005 전역 split 인덱스를 반환한다."""
+    require_source_name(sim_path, "sim_sem.npy")
+    require_source_name(case_path, "sim_case.npy")
+    sim = np.load(sim_path, mmap_mode="r")
+    case = np.load(case_path, mmap_mode="r")
+    expected_total = split_contract.get("expected_total", SIM_TOTAL_N)
+    check_sem_array(sim, "sim_sem", expected_total)
+    train_idx, val_idx = sim_split_indices(case, **split_contract)
+    return sim, case, train_idx, val_idx
+
+
+def sim_split_provenance(train_idx: np.ndarray, val_idx: np.ndarray, *,
+                         total_n: "int | None" = None,
+                         val_frac: "float | None" = None,
+                         seed: "int | None" = None) -> dict:
+    """split의 파라미터·개수·전역 인덱스 지문을 JSON 직렬화 가능한 형태로 묶는다."""
+    train = np.asarray(train_idx, dtype=np.int64)
+    val = np.asarray(val_idx, dtype=np.int64)
+    total = SIM_TOTAL_N if total_n is None else total_n
+    split_frac = SIM_SPLIT_VAL_FRAC if val_frac is None else val_frac
+    split_seed = SIM_SPLIT_SEED if seed is None else seed
+    if train.ndim != 1 or val.ndim != 1:
+        raise ValueError("sim split 인덱스는 1차원이어야 한다")
+    combined = np.concatenate([train, val])
+    if (len(combined) != total or len(np.unique(combined)) != total
+            or not np.array_equal(np.sort(combined), np.arange(total, dtype=np.int64))):
+        raise ValueError("sim split 인덱스는 전체 cache 전역 인덱스를 중복 없이 분할해야 한다")
+    return {
+        "method": "map_level_split",
+        "total_n": int(total),
+        "train_n": int(len(train)),
+        "val_n": int(len(val)),
+        "val_frac": float(split_frac),
+        "seed": int(split_seed),
+        "train_indices_sha256": indices_sha256(train),
+        "val_indices_sha256": indices_sha256(val),
+    }
 
 
 def _parabolic_subpixel(vec: np.ndarray, peak_idx: int, n: int) -> float:
@@ -628,6 +719,22 @@ def _binding_problems(m: dict) -> list:
     if gate.get("report_id") != m.get("report_id"):
         problems.append(f"gate의 report_id({gate.get('report_id')!r})가 manifest"
                         f"({m.get('report_id')!r})와 다르다")
+    case_entry = srcs.get("sim_case") or {}
+    if gate.get("sim_case_sha256") != case_entry.get("sha256"):
+        problems.append("gate의 sim_case_sha256이 manifest source:sim_case와 다르다")
+    case_path = case_entry.get("path")
+    if case_path:
+        try:
+            case = np.load(case_path, mmap_mode="r")
+            train_idx, val_idx = sim_split_indices(case)
+            expected_split = sim_split_provenance(train_idx, val_idx)
+            expected_gate_sha = indices_sha256(validation_gate_indices(case))
+            if gate.get("split") != expected_split:
+                problems.append("gate의 split provenance가 source:sim_case와 다르다")
+            if gate.get("indices_sha256") != expected_gate_sha:
+                problems.append("gate의 indices_sha256이 validation 전역 표본과 다르다")
+        except (OSError, ValueError) as e:
+            problems.append(f"source:sim_case split 검증 실패: {e}")
     for label, cfg in (("manifest", m.get("config")), ("gate", gate.get("config"))):
         try:
             validate_config(CycleGANConfig.from_dict(cfg if isinstance(cfg, dict) else {}))
@@ -771,7 +878,8 @@ def indices_sha256(idx: np.ndarray) -> str:
     return hashlib.sha256(np.asarray(idx, dtype=np.int64).tobytes()).hexdigest()
 
 
-def require_gate_passed(gate_json_path, ckpt_path, *, report_id: str, sim_sem_path=None) -> dict:
+def require_gate_passed(gate_json_path, ckpt_path, *, report_id: str, sim_case_path=None,
+                        sim_sem_path=None) -> dict:
     """`translate_sim.py`가 torch를 import하기 **전**에 부르는 하드 스톱.
 
     저장된 `passed` 불리언은 **신뢰하지 않는다** — 저장된 per-image `shifts`와
@@ -785,12 +893,12 @@ def require_gate_passed(gate_json_path, ckpt_path, *, report_id: str, sim_sem_pa
     - `config`가 `validate_config`를 통과하지 못함(가설과 다른 하이퍼파라미터로 학습한 것 차단)
     - 기록된 임계값이 현재 모듈 상수와 다름(코드가 바뀌었는데 오래된 gate를 재사용하는 것 차단)
     - 표본 크기가 `GATE_SAMPLE_N`이 아님
-    - `indices_sha256`이 `gate_sample_indices(SIM_TRAIN_N, GATE_SAMPLE_N, 42)`의 지문과 다름
-      (다른 표본으로 gate를 통과시키는 것 차단)
+    - sim_case의 sha256이나 그 case로 재계산한 고정 train/validation split provenance가 다름
+    - `indices_sha256`이 validation global index pool에서 뽑은 고정 2,048장 지문과 다름
+      (train 표본 또는 다른 validation 표본으로 gate를 통과시키는 것 차단)
     - 기록된 `ckpt_sha256`이 실제 `ckpt_path`와 다름(다른 체크포인트로 gate를 통과시키고 엉뚱한
       체크포인트로 변환하는 것 차단)
-    - `sim_sem_path`가 주어졌는데 `sim_sem_sha256`이 실제 파일과 다름(gate 당시와 다른 sim 캐시로
-      변환하는 것 차단)
+    - `sim_sem_sha256`이 실제 `sim_sem_path`와 다름(gate 당시와 다른 sim 캐시로 변환하는 것 차단)
     """
     gate_json_path = Path(gate_json_path)
     if not gate_json_path.exists():
@@ -837,7 +945,28 @@ def require_gate_passed(gate_json_path, ckpt_path, *, report_id: str, sim_sem_pa
     except GateFailedError as e:
         raise GateFailedError(f"{e}: {gate_json_path}") from e
 
-    idx = gate_sample_indices(SIM_TRAIN_N, GATE_SAMPLE_N, 42)
+    sim_case_path = (gate_json_path.parent / "sim_case.npy"
+                     if sim_case_path is None else Path(sim_case_path))
+    if not sim_case_path.exists():
+        raise GateFailedError(f"sim_case 파일이 없다: {sim_case_path}")
+    try:
+        case = np.load(sim_case_path, mmap_mode="r")
+        train_idx, val_idx = sim_split_indices(case)
+    except (OSError, ValueError) as e:
+        raise GateFailedError(f"sim_case/split 검증 실패: {e}") from e
+
+    actual_case_sha = sha256_file(sim_case_path)
+    if gate.get("sim_case_sha256") != actual_case_sha:
+        raise GateFailedError(
+            f"gate의 sim_case_sha256이 실제 파일과 다르다: "
+            f"{gate.get('sim_case_sha256')!r} != {actual_case_sha!r}")
+    expected_split = sim_split_provenance(train_idx, val_idx)
+    if gate.get("split") != expected_split:
+        raise GateFailedError(
+            f"gate의 split provenance가 실제 sim_case split과 다르다: "
+            f"{gate.get('split')!r} != {expected_split!r}")
+
+    idx = validation_gate_indices(case)
     expected_idx_sha = indices_sha256(idx)
     if gate.get("indices_sha256") != expected_idx_sha:
         raise GateFailedError(

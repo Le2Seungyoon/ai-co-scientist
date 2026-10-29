@@ -1,12 +1,14 @@
 """H6 — 학습된 CycleGAN으로 sim SEM을 real 외관으로 한 번 변환해 고정한다.
 
 기하 위생 gate(`scripts/train_cyclegan.py gate`)를 통과한 체크포인트만 받는다 —
-`ai_co_scientist.cyclegan.require_gate_passed(gate_json, ckpt, report_id=, sim_sem_path=)`가
+`ai_co_scientist.cyclegan.require_gate_passed(gate_json, ckpt, report_id=, sim_case_path=,
+sim_sem_path=)`가
 gate JSON을 읽어 확인하고, 실패하면 **torch를 import하기도 전에** 거부한다(이 워크트리엔 torch가
 없으므로 이 순서가 곧 "torch 없이 거부 테스트 가능"의 근거다). 이 한 번의 호출이 체크포인트
 파일명 규약·gate의 report_id·저장된 epoch(=사전등록 총 에폭)·config·임계값·표본 크기·원본
 shifts/roundtrip_mae 재평가(저장된 `passed`를 신뢰하지 않고 다시 계산)·인덱스 지문·ckpt
-sha256·(주어지면) sim_sem.npy sha256까지 전부 확인하는 단일 하드 스톱이다. 그 뒤로도 경로
+sha256·sim_case 분할 provenance·sim_sem.npy sha256까지 전부 확인하는 단일 하드 스톱이다.
+그 뒤로도 경로
 위생·출력 디렉터리 안전·누수 가드까지 전부 순수 경로/해시 비교로 끝내고, 실제 배열을 읽고
 번역기를 돌리는 지점에서만 torch를 불러온다.
 
@@ -54,14 +56,12 @@ import numpy as np
 
 from ai_co_scientist.config import ensure_utf8_console
 from ai_co_scientist.cyclegan import (
-    GATE_SAMPLE_N,
     GPU_LOCK,
-    SIM_TRAIN_N,
     GateFailedError,
     build_manifest,
-    check_sem_array,
+    check_ckpt_name,
     evaluate_gate,
-    gate_sample_indices,
+    load_sim_cache_split,
     load_generators,
     measure_geometry,
     reject_test_paths,
@@ -69,6 +69,7 @@ from ai_co_scientist.cyclegan import (
     require_source_name,
     sha256_file,
     translate_u8,
+    validation_gate_indices,
     verify_manifest,
     write_once_json,
 )
@@ -115,21 +116,9 @@ def main() -> int:
         reject_test_paths([sim_path, depth_path, case_path, real_path, ckpt_path, gate_json_path,
                            out_dir, partial_dir])
         require_source_name(sim_path, "sim_sem.npy")
-    except ValueError as e:
+        check_ckpt_name(ckpt_path, args.report_id)
+    except (ValueError, GateFailedError) as e:
         return _refuse(str(e))
-
-    # 1) gate 통과 여부. torch도 배열도 아직 안 건드린다. 이 한 번의 호출이
-    #    ckpt 파일명 규약(재개점 차단 포함) · gate의 report_id · 저장된 epoch/config ·
-    #    임계값·표본 크기 · 원본 shifts/roundtrip_mae 재평가 · 인덱스 지문 · ckpt sha256 ·
-    #    sim_sem.npy sha256(줬으므로)까지 전부 확인한다(require_gate_passed는 numpy-only 모듈의
-    #    순수 함수라 여기서 부를 수 있다).
-    try:
-        gate = require_gate_passed(gate_json_path, ckpt_path,
-                                   report_id=args.report_id, sim_sem_path=sim_path)
-    except GateFailedError as e:
-        return _refuse(f"gate 실패: {e}")
-    except OSError as e:
-        return _refuse(f"gate/ckpt/sim 파일 접근 실패: {e}")
 
     # 3) 출력 디렉터리 안전 -- 최종본과 임시(.partial)본 둘 다 없어야 한다
     if out_dir.exists():
@@ -152,6 +141,15 @@ def main() -> int:
 
     try:
         with resource_lock(GPU_LOCK):  # 여기부터 real 데이터·GPU·쓰기 (모듈 docstring 순서)
+            # sim_case split을 읽는 gate provenance 검사도 lock 안에서, torch import 전 수행한다.
+            try:
+                gate = require_gate_passed(
+                    gate_json_path, ckpt_path, report_id=args.report_id,
+                    sim_sem_path=sim_path, sim_case_path=case_path)
+            except GateFailedError as e:
+                return _refuse(f"gate 실패: {e}")
+            except OSError as e:
+                return _refuse(f"gate/ckpt/sim 파일 접근 실패: {e}")
             return _translate_locked(args, gate, sim_path, depth_path, case_path, real_path,
                                      ckpt_path, out_dir, partial_dir)
     except ResourceBusy as e:
@@ -162,8 +160,7 @@ def main() -> int:
 
 def _translate_locked(args, gate, sim_path, depth_path, case_path, real_path, ckpt_path,
                       out_dir, partial_dir) -> int:
-    sim = np.load(sim_path, mmap_mode="r")
-    check_sem_array(sim, "sim_sem", SIM_TRAIN_N)
+    sim, case, _train_idx, _val_idx = load_sim_cache_split(sim_path, case_path)
 
     # ── 여기서부터만 torch -- 위 모든 거부 경로는 torch 없이 통과해야 한다 ──
     import torch
@@ -185,8 +182,9 @@ def _translate_locked(args, gate, sim_path, depth_path, case_path, real_path, ck
 
     # 5) 쓰기 후 재검증 -- 디스크에 실제로 쓰인 배열로, gate와 같은 표본 인덱스에 대해 다시 잰다.
     written = np.load(out_sim_path, mmap_mode="r")
-    idx = gate_sample_indices(SIM_TRAIN_N, GATE_SAMPLE_N, seed=42)
+    idx = validation_gate_indices(case)
     geo = measure_geometry(np.ascontiguousarray(sim[idx]), np.ascontiguousarray(written[idx]))
+    del written  # Windows에서 열린 memmap이 .partial 디렉터리 rename을 막지 않게 한다.
     post_write_gate = evaluate_gate(geo["shifts"], float(gate["roundtrip_mae"]), local=geo["local"])
     if not post_write_gate["passed"]:
         print(json.dumps({

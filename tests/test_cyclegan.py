@@ -3,6 +3,7 @@
 합성 numpy 픽스처만 쓴다. torch/cv2는 이 워크트리에 없다 — torch가 필요한 케이스는
 `pytest.importorskip("torch")`로 건너뛴다(실제로는 skip된다. 그것이 이 파일이 서 있는 이유다).
 """
+import argparse
 import ast
 import hashlib
 import json
@@ -207,6 +208,84 @@ def test_gate_sample_indices_is_sorted_unique_and_deterministic():
 def test_gate_sample_indices_rejects_oversized_sample():
     with pytest.raises(ValueError):
         cyclegan.gate_sample_indices(10, 20)
+
+
+def _small_paired_case_fixture():
+    """Production split shape in miniature: eight depth maps, two SEM iterations each."""
+    return np.repeat(np.array([1, 1, 1, 1, 2, 2, 2, 2], dtype=np.int8), 2)
+
+
+def _small_split_contract():
+    return {
+        "expected_total": 16,
+        "expected_train": 12,
+        "expected_val": 4,
+        "val_frac": 0.25,
+        "seed": 7,
+    }
+
+
+def test_h6_split_contract_distinguishes_full_cache_from_training_rows():
+    # Regression: H6 treated the 138,648 training count as the raw cache length, so the real
+    # 173,304-row cache was rejected before GPU work instead of selecting EXP-005's train split.
+    assert cyclegan.SIM_TOTAL_N == 173_304
+    assert cyclegan.SIM_TRAIN_N == 138_648
+    assert cyclegan.SIM_VAL_N == 34_656
+    assert cyclegan.SIM_TRAIN_N + cyclegan.SIM_VAL_N == cyclegan.SIM_TOTAL_N
+
+
+def test_sim_split_indices_match_literal_paired_expectation_and_are_disjoint():
+    # Literal indices are independently pinned so a helper that merely partitions at 12 rows
+    # cannot masquerade as the established case-stratified, depth-map-paired split.
+    train_idx, val_idx = cyclegan.sim_split_indices(
+        _small_paired_case_fixture(), **_small_split_contract())
+    assert train_idx.tolist() == [0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 14, 15]
+    assert val_idx.tolist() == [6, 7, 12, 13]
+    assert np.intersect1d(train_idx, val_idx).size == 0
+    assert np.sort(np.concatenate([train_idx, val_idx])).tolist() == list(range(16))
+
+
+def test_validation_gate_indices_are_global_members_of_validation_pool():
+    # Regression: sampling 0..138647 fingerprints local/train positions, not the global validation
+    # rows required by H6.  Seed 11 selects validation-pool positions 0 and 3 => globals 6 and 13.
+    gate_idx = cyclegan.validation_gate_indices(
+        _small_paired_case_fixture(), n_sample=2, gate_seed=11, **_small_split_contract())
+    assert gate_idx.tolist() == [6, 13]
+    assert set(gate_idx).issubset({6, 7, 12, 13})
+
+
+def test_train_input_contract_accepts_full_cache_and_selects_only_train_globals(tmp_path):
+    # Regression: the train path must validate a full cache, then expose only its train globals;
+    # validating the image array against expected_train recreates the 173,304-vs-138,648 failure.
+    sem = np.zeros((16, cyclegan.IMG_H, cyclegan.IMG_W), dtype=np.uint8)
+    sem[:, 0, 0] = np.arange(16, dtype=np.uint8)
+    sem_path = tmp_path / "sim_sem.npy"
+    case_path = tmp_path / "sim_case.npy"
+    np.save(sem_path, sem)
+    np.save(case_path, _small_paired_case_fixture())
+
+    loaded, case, train_idx, val_idx = cyclegan.load_sim_cache_split(
+        sem_path, case_path, **_small_split_contract())
+    assert len(loaded) == 16 and len(case) == 16
+    assert loaded[train_idx, 0, 0].tolist() == [0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 14, 15]
+    assert loaded[val_idx, 0, 0].tolist() == [6, 7, 12, 13]
+
+
+def test_split_provenance_hashes_literal_global_indices():
+    train_idx = np.array([0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 14, 15], dtype=np.int64)
+    val_idx = np.array([6, 7, 12, 13], dtype=np.int64)
+    provenance = cyclegan.sim_split_provenance(
+        train_idx, val_idx, total_n=16, val_frac=0.25, seed=7)
+    assert provenance == {
+        "method": "map_level_split",
+        "total_n": 16,
+        "train_n": 12,
+        "val_n": 4,
+        "val_frac": 0.25,
+        "seed": 7,
+        "train_indices_sha256": hashlib.sha256(train_idx.tobytes()).hexdigest(),
+        "val_indices_sha256": hashlib.sha256(val_idx.tobytes()).hexdigest(),
+    }
 
 
 # ── phase correlation: 정수 roll 복원 ────────────────────────────
@@ -595,13 +674,21 @@ def _write_bytes(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
-def _passing_gate(report_id="EXP-900", ckpt=None) -> dict:
+def _passing_gate(report_id="EXP-900", ckpt=None, sim_case=None) -> dict:
     # manifest에 들어가는 gate는 재검증 가능한 원본 값과 결속 정보(ckpt·report_id·config)를 든다
     shifts = np.zeros(cyclegan.GATE_SAMPLE_N, dtype=np.float64)
     gate = cyclegan.evaluate_gate(shifts, 0.0, local=_ZL)
     gate.update({"shifts": shifts.tolist(), "local_shifts": _ZL.tolist(), "report_id": report_id,
                  "config": dict(cyclegan.PREREGISTERED),
                  "ckpt_sha256": cyclegan.sha256_file(ckpt) if ckpt is not None else None})
+    if sim_case is not None:
+        case = np.load(sim_case)
+        train_idx, val_idx = cyclegan.sim_split_indices(case)
+        gate.update({
+            "sim_case_sha256": cyclegan.sha256_file(sim_case),
+            "split": cyclegan.sim_split_provenance(train_idx, val_idx),
+            "indices_sha256": cyclegan.indices_sha256(cyclegan.validation_gate_indices(case)),
+        })
     return gate
 
 
@@ -611,18 +698,21 @@ def _manifest_parts(tmp_path, report_id, out_name="out"):
     _write_bytes(ckpt, b"ckpt-bytes")
     cache = tmp_path / "cache"
     sources = {}
-    for name, data in (("sim_sem", b"sim"), ("sim_depth", b"depth"), ("sim_case", b"case"),
-                       ("real_sem", b"real")):
+    for name, data in (("sim_sem", b"sim"), ("sim_depth", b"depth"), ("real_sem", b"real")):
         sources[name] = cache / f"{name}.npy"
         _write_bytes(sources[name], data)
+    sources["sim_case"] = cache / "sim_case.npy"
+    sources["sim_case"].parent.mkdir(parents=True, exist_ok=True)
+    np.save(sources["sim_case"], _production_case_fixture())
     out = tmp_path / out_name
     outputs = {"sim_sem": out / "sim_sem.npy", "sim_depth": out / "sim_depth.npy",
                "sim_case": out / "sim_case.npy"}
     _write_bytes(outputs["sim_sem"], b"translated")
     _write_bytes(outputs["sim_depth"], b"depth")
-    _write_bytes(outputs["sim_case"], b"case")
+    _write_bytes(outputs["sim_case"], sources["sim_case"].read_bytes())
     return dict(report_id=report_id, config=cyclegan.PREREGISTERED,
-                gate=_passing_gate(report_id, ckpt), ckpt_path=ckpt, source_files=sources,
+                gate=_passing_gate(report_id, ckpt, sources["sim_case"]), ckpt_path=ckpt,
+                source_files=sources,
                 output_files=outputs, git_commit="deadbeef")
 
 
@@ -690,6 +780,9 @@ def test_build_manifest_rejects_outputs_outside_one_directory(tmp_path):
     (lambda p: p["output_files"]["sim_depth"].write_bytes(b"depth-CHANGED"), "sim_depth"),
     (lambda p: p["gate"].update(ckpt_sha256="0" * 64), "ckpt_sha256"),
     (lambda p: p["gate"].update(report_id="EXP-OTHER"), "report_id"),
+    (lambda p: p["gate"].update(sim_case_sha256="0" * 64), "sim_case_sha256"),
+    (lambda p: p["gate"]["split"].update(seed=43), "split"),
+    (lambda p: p["gate"].update(indices_sha256="0" * 64), "indices_sha256"),
     (lambda p: p.update(config={**cyclegan.PREREGISTERED, "seed": 43}), "config"),
 ])
 def test_build_manifest_refuses_unbound_parts(tmp_path, mutate, expect):
@@ -702,11 +795,20 @@ def test_build_manifest_refuses_unbound_parts(tmp_path, mutate, expect):
 
 # ── require_gate_passed: 강화된 하드 스톱 ──────────────────────
 
+def _production_case_fixture():
+    """Four balanced cases whose paired 80/20 split is exactly 138,648 / 34,656."""
+    return np.repeat(np.repeat(np.arange(1, 5, dtype=np.int8), 21_663), 2)
+
+
 def _valid_gate_and_ckpt(tmp_path, *, report_id="EXP-910"):
     """`require_gate_passed`를 통과해야 하는 최소 gate JSON + ckpt 쌍을 만든다."""
     ckpt = tmp_path / cyclegan.expected_ckpt_name(report_id)
     _write_bytes(ckpt, b"ckpt-bytes")
-    idx = cyclegan.gate_sample_indices(cyclegan.SIM_TRAIN_N, cyclegan.GATE_SAMPLE_N, 42)
+    case = _production_case_fixture()
+    case_path = tmp_path / "sim_case.npy"
+    np.save(case_path, case)
+    train_idx, val_idx = cyclegan.sim_split_indices(case)
+    idx = cyclegan.validation_gate_indices(case)
     shifts = [0.0] * cyclegan.GATE_SAMPLE_N
     evaluated = cyclegan.evaluate_gate(np.asarray(shifts, dtype=np.float64), 0.0,
                                        local=np.zeros(cyclegan.GATE_SAMPLE_N))
@@ -720,6 +822,8 @@ def _valid_gate_and_ckpt(tmp_path, *, report_id="EXP-910"):
         "shifts": shifts,
         "signed_shifts": [[0.0, 0.0]] * cyclegan.GATE_SAMPLE_N,
         "indices_sha256": cyclegan.indices_sha256(idx),
+        "sim_case_sha256": cyclegan.sha256_file(case_path),
+        "split": cyclegan.sim_split_provenance(train_idx, val_idx),
     })
     gate_path = tmp_path / "gate.json"
     cyclegan.write_once_json(gate_path, gate)
@@ -821,6 +925,17 @@ def test_require_gate_passed_raises_on_indices_sha_mismatch(tmp_path):
     cyclegan.write_once_json(gate_path, data)
     with pytest.raises(cyclegan.GateFailedError):
         cyclegan.require_gate_passed(gate_path, ckpt, report_id="EXP-920")
+
+
+def test_require_gate_passed_rejects_wrong_sim_case_before_runtime(tmp_path):
+    gate_path, ckpt, _gate = _valid_gate_and_ckpt(tmp_path, report_id="EXP-923")
+    case_path = tmp_path / "sim_case.npy"
+    tampered = np.load(case_path).copy()
+    tampered[:2] = 4
+    np.save(case_path, tampered)
+    with pytest.raises(cyclegan.GateFailedError, match="sim_case"):
+        cyclegan.require_gate_passed(
+            gate_path, ckpt, report_id="EXP-923", sim_case_path=case_path)
 
 
 def test_require_gate_passed_rejects_resume_ckpt_filename(tmp_path):
@@ -970,6 +1085,7 @@ def _no_torch_leak(proc) -> bool:
 def _touch_sem_cache(cache_dir: Path) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     (cache_dir / "sim_sem.npy").touch()
+    (cache_dir / "sim_case.npy").touch()
     (cache_dir / "real_sem.npy").touch()
 
 
@@ -980,7 +1096,8 @@ def _expected_ckpt_name(report_id: str) -> str:
 
 def _make_gate_json(path: Path, ckpt_path: Path, *, report_id="H6-TEST",
                     shifts_ok=True, sha_override=None, report_id_field=None,
-                    ckpt_epoch_override=None, config_override=None, sim_sem_path=None):
+                    ckpt_epoch_override=None, config_override=None, sim_sem_path=None,
+                    sim_case_path=None):
     """`require_gate_passed`가 요구하는 모든 필드를 채운 gate JSON을 합성한다.
 
     기본값은 전부 "통과"하도록 만들어 두고, 파라미터로 정확히 하나씩만 어긋나게 할 수 있다
@@ -996,7 +1113,13 @@ def _make_gate_json(path: Path, ckpt_path: Path, *, report_id="H6-TEST",
         indices_sha256,
         sha256_file,
     )
-    idx = gate_sample_indices(SIM_TRAIN_N, GATE_SAMPLE_N, seed=42)
+    if sim_case_path is None:
+        idx = gate_sample_indices(SIM_TRAIN_N, GATE_SAMPLE_N, seed=42)
+        train_idx = val_idx = None
+    else:
+        case = np.load(sim_case_path)
+        train_idx, val_idx = cyclegan.sim_split_indices(case)
+        idx = cyclegan.validation_gate_indices(case)
     shift_val = 0.0 if shifts_ok else 10.0  # 10.0 > SHIFT_P95_MAX(1.0) -- 재평가하면 반드시 실패
     total_epochs = PREREGISTERED["epochs_fixed"] + PREREGISTERED["epochs_decay"]
     # 요약값은 evaluate_gate가 만든 그대로(recheck_gate가 정확 일치를 본다). passed만 True로
@@ -1017,6 +1140,9 @@ def _make_gate_json(path: Path, ckpt_path: Path, *, report_id="H6-TEST",
     }
     if sim_sem_path is not None:
         gate["sim_sem_sha256"] = sha256_file(sim_sem_path)
+    if sim_case_path is not None:
+        gate["sim_case_sha256"] = sha256_file(sim_case_path)
+        gate["split"] = cyclegan.sim_split_provenance(train_idx, val_idx)
     path.write_text(json.dumps(gate), encoding="utf-8")
     return path
 
@@ -1030,10 +1156,11 @@ def _full_environment(tmp_path, *, report_id="H6-TEST"):
     cache.mkdir()
     (cache / "sim_sem.npy").write_bytes(b"sim-bytes")
     (cache / "sim_depth.npy").write_bytes(b"depth-bytes")
-    (cache / "sim_case.npy").write_bytes(b"case-bytes")
+    np.save(cache / "sim_case.npy", _production_case_fixture())
     (cache / "real_sem.npy").write_bytes(b"real-bytes")
     gate_json = _make_gate_json(tmp_path / "gate.json", ckpt, report_id=report_id,
-                                sim_sem_path=cache / "sim_sem.npy")
+                                sim_sem_path=cache / "sim_sem.npy",
+                                sim_case_path=cache / "sim_case.npy")
     return ckpt, cache, gate_json
 
 
@@ -1071,6 +1198,24 @@ def test_plan_emits_preregistered_config(tmp_path):
     from ai_co_scientist.cyclegan import PREREGISTERED
     assert last["config"] == PREREGISTERED
     assert last["expected_ckpt_name"] == _expected_ckpt_name("H6-TEST")
+
+
+def test_plan_declares_full_cache_train_validation_contract(tmp_path):
+    _touch_sem_cache(tmp_path)
+    proc = _run(TRAIN_SCRIPT, "plan", "--report-id", "H6-TEST", "--cache-dir", str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    plan = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert plan["inputs"]["sim_case"].endswith("sim_case.npy")
+    assert plan["split"] == {
+        "method": "map_level_split",
+        "total_n": 173_304,
+        "train_n": 138_648,
+        "val_n": 34_656,
+        "val_frac": 0.2,
+        "seed": 42,
+        "gate_pool": "validation",
+        "gate_sample_n": 2_048,
+    }
 
 
 def test_plan_rejects_config_deviation(tmp_path):
@@ -1509,6 +1654,32 @@ def _load_script(path: Path, name: str):
     return mod
 
 
+def _patch_small_split_contract(monkeypatch, *script_modules):
+    values = {
+        "SIM_TOTAL_N": 16,
+        "SIM_TRAIN_N": 12,
+        "SIM_VAL_N": 4,
+        "SIM_SPLIT_VAL_FRAC": 0.25,
+        "SIM_SPLIT_SEED": 7,
+        "GATE_SAMPLE_N": 2,
+    }
+    for name, value in values.items():
+        monkeypatch.setattr(cyclegan, name, value)
+        for mod in script_modules:
+            if hasattr(mod, name):
+                monkeypatch.setattr(mod, name, value)
+
+
+def _write_small_split_cache(cache: Path):
+    cache.mkdir(parents=True, exist_ok=True)
+    sem = np.zeros((16, cyclegan.IMG_H, cyclegan.IMG_W), dtype=np.uint8)
+    sem[:, 0, 0] = np.arange(16, dtype=np.uint8)
+    np.save(cache / "sim_sem.npy", sem)
+    np.save(cache / "sim_case.npy", _small_paired_case_fixture())
+    np.save(cache / "sim_depth.npy", np.arange(16, dtype=np.uint8))
+    return sem
+
+
 class _FakeLock:
     """`resource_lock` 대역. 진입·해제를 `events`에 적고, `busy`면 진입 시 `ResourceBusy`."""
 
@@ -1559,6 +1730,7 @@ def _gate_args(tmp_path):
     cache = tmp_path / "cache"
     cache.mkdir()
     (cache / "sim_sem.npy").touch()
+    (cache / "sim_case.npy").touch()
     ckpt = tmp_path / _expected_ckpt_name("H6-TEST")
     ckpt.write_bytes(b"dummy")
     return argparse.Namespace(report_id="H6-TEST", ckpt=str(ckpt), cache_dir=str(cache),
@@ -1618,6 +1790,52 @@ def test_plan_takes_no_gpu_lock(tmp_path, monkeypatch):
     assert fake.names == []
 
 
+def test_gate_payload_fingerprints_global_validation_indices_and_case(tmp_path, monkeypatch):
+    # The old gate sampled 0..138647 and could not prove which case-derived validation rows it saw.
+    mod = _load_script(TRAIN_SCRIPT, "_h6_gate_split_contract")
+    _patch_small_split_contract(monkeypatch, mod)
+    cache = tmp_path / "cache"
+    sem = _write_small_split_cache(cache)
+    ckpt = tmp_path / _expected_ckpt_name("H6-TEST")
+    ckpt.write_bytes(b"checkpoint")
+    out_json = tmp_path / "gate.json"
+    args = argparse.Namespace(report_id="H6-TEST", batch_size=2)
+
+    monkeypatch.setattr(mod, "load_generators", lambda *_a, **_k: (
+        cyclegan.CycleGANConfig(), 100, object(), object()))
+    monkeypatch.setattr(mod, "translate_u8", lambda _model, arr, _bs, _device: arr.copy())
+    monkeypatch.setattr(mod, "measure_geometry", lambda orig, moved: {
+        "shifts": np.zeros(len(orig)), "local": np.zeros(len(orig)),
+        "signed": np.zeros((len(orig), 2)),
+    })
+    monkeypatch.setattr(mod, "roundtrip_mae", lambda _orig, _roundtrip: 0.0)
+
+    assert mod._gate_locked(
+        args, cache / "sim_sem.npy", cache / "sim_case.npy", ckpt, out_json) == 0
+    gate = json.loads(out_json.read_text(encoding="utf-8"))
+    expected_global = np.array([6, 13], dtype=np.int64)
+    assert gate["indices_sha256"] == hashlib.sha256(expected_global.tobytes()).hexdigest()
+    assert gate["sim_case_sha256"] == cyclegan.sha256_file(cache / "sim_case.npy")
+    assert gate["split"]["train_n"] == 12 and gate["split"]["val_n"] == 4
+    assert sem[expected_global, 0, 0].tolist() == [6, 13]
+
+
+def test_train_dataset_exposes_only_train_global_rows(monkeypatch):
+    # This pins the CLI consumer, not only the split helper: the Dataset length and row mapping
+    # must be the 12 train globals while retaining the full 16-row cache behind it.
+    torch = pytest.importorskip("torch")
+    mod = _load_script(TRAIN_SCRIPT, "_h6_train_dataset_split_contract")
+    _patch_small_split_contract(monkeypatch, mod)
+    sem = np.zeros((16, cyclegan.IMG_H, cyclegan.IMG_W), dtype=np.uint8)
+    sem[:, 0, 0] = np.arange(16, dtype=np.uint8)
+    train_idx, _val_idx = cyclegan.sim_split_indices(_small_paired_case_fixture())
+    dataset = mod._make_sim_dataset(torch, sem, train_idx)
+    assert len(dataset) == 12
+    recovered = [int(round(float(dataset[i][0, 0, 0].item() + 1.0) * 127.5))
+                 for i in range(len(dataset))]
+    assert recovered == [0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 14, 15]
+
+
 def _translate_main(monkeypatch, mod, ckpt, cache, gate_json, out_dir):
     monkeypatch.setattr(mod, "ensure_utf8_console", lambda: None)
     monkeypatch.setattr(sys, "argv", [
@@ -1651,6 +1869,48 @@ def test_translate_reads_data_only_inside_gpu_lock(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="stop"):
         _translate_main(monkeypatch, mod, ckpt, cache, gate_json, tmp_path / "out")
     assert events == ["lock", "np.load", "unlock"]
+
+
+def test_translation_keeps_full_cache_and_post_write_gate_uses_validation_globals(
+        tmp_path, monkeypatch):
+    # H6 must translate all rows so downstream recreates the paired split; only the post-write
+    # hygiene sample is restricted to the original validation globals.
+    mod = _load_script(TRANSLATE_SCRIPT, "_h6_translate_split_contract")
+    _patch_small_split_contract(monkeypatch, mod)
+    cache = tmp_path / "cache"
+    source = _write_small_split_cache(cache)
+    real_path = cache / "real_sem.npy"
+    real_path.write_bytes(b"real")
+    ckpt = tmp_path / _expected_ckpt_name("H6-TEST")
+    ckpt.write_bytes(b"checkpoint")
+    out_dir = tmp_path / "translated"
+    partial_dir = tmp_path / "translated.partial"
+    args = argparse.Namespace(report_id="H6-TEST", batch_size=4, git_commit="abc123")
+    seen = {}
+
+    monkeypatch.setattr(mod, "load_generators", lambda *_a, **_k: (
+        cyclegan.CycleGANConfig(), 100, object(), object()))
+    def _translate(_model, arr, _batch_size, _device):
+        seen["translated_globals"] = arr[:, 0, 0].tolist()
+        return arr.copy()
+    monkeypatch.setattr(mod, "translate_u8", _translate)
+    def _measure(orig, moved):
+        seen["gate_globals"] = orig[:, 0, 0].tolist()
+        return {"shifts": np.zeros(len(orig)), "local": np.zeros(len(orig)),
+                "signed": np.zeros((len(orig), 2))}
+    monkeypatch.setattr(mod, "measure_geometry", _measure)
+    monkeypatch.setattr(mod, "build_manifest", lambda **_kwargs: {})
+    monkeypatch.setattr(mod, "verify_manifest", lambda _path: {})
+
+    gate = {"roundtrip_mae": 0.0}
+    assert mod._translate_locked(
+        args, gate, cache / "sim_sem.npy", cache / "sim_depth.npy",
+        cache / "sim_case.npy", real_path, ckpt, out_dir, partial_dir) == 0
+    written = np.load(out_dir / "sim_sem.npy")
+    assert len(written) == 16
+    assert seen["translated_globals"] == list(range(16))
+    assert seen["gate_globals"] == [6, 13]
+    assert np.array_equal(written, source)
 
 
 def test_translate_refuses_test_path_before_hashing_anything(tmp_path, monkeypatch, capsys):

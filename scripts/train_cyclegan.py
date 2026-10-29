@@ -5,7 +5,8 @@
 `plan`/`gate`의 거부 경로(경로 위생·설정 편차·체크포인트 이름/존재)는 전부 numpy만으로 끝나고,
 `train`/`gate`가 실제로 학습·번역을 돌리는 지점에서만 함수 안에서 `import torch`한다.
 
-에폭의 정의: 1 에폭 = sim 전체(138,648장, batch_size=8)를 한 번 통과하는 것이다(`DataLoader`
+에폭의 정의: 1 에폭 = 전체 sim cache 173,304장 중 고정 train split 138,648장
+(batch_size=8)을 한 번 통과하는 것이다(`DataLoader`
 `shuffle=True`, `drop_last=True` — sim이 `--num-workers` 순회의 기준 로더다). real은 작은
 도메인(60,664장)이라 매 스텝 `torch.Generator(seed=42)`로 **복원추출**해 sim 배치와 짝짓는다.
 **이 표본추출 방식(에폭=sim 기준·real 복원추출·시드 42)은 사전등록(H6 pre-report)에 없다** —
@@ -57,7 +58,11 @@ from ai_co_scientist.cyclegan import (
     GPU_LOCK,
     PREREGISTERED,
     REAL_TRAIN_N,
+    SIM_SPLIT_SEED,
+    SIM_SPLIT_VAL_FRAC,
+    SIM_TOTAL_N,
     SIM_TRAIN_N,
+    SIM_VAL_N,
     CycleGANConfig,
     GateFailedError,
     build_discriminator,
@@ -66,8 +71,8 @@ from ai_co_scientist.cyclegan import (
     check_sem_array,
     evaluate_gate,
     expected_ckpt_name,
-    gate_sample_indices,
     indices_sha256,
+    load_sim_cache_split,
     load_generators,
     lr_multiplier,
     measure_geometry,
@@ -75,8 +80,10 @@ from ai_co_scientist.cyclegan import (
     require_source_name,
     roundtrip_mae,
     sha256_file,
+    sim_split_provenance,
     to_signed,
     translate_u8,
+    validation_gate_indices,
     validate_config,
     write_once_json,
 )
@@ -128,15 +135,24 @@ def plan(args) -> int:
     cfg = _resolve_config(args.config_json)
     cache_dir = Path(args.cache_dir)
     sim_path = cache_dir / "sim_sem.npy"
+    case_path = cache_dir / "sim_case.npy"
     real_path = cache_dir / "real_sem.npy"
-    reject_test_paths([sim_path, real_path])
+    reject_test_paths([sim_path, case_path, real_path])
     require_source_name(sim_path, "sim_sem.npy")
+    require_source_name(case_path, "sim_case.npy")
     require_source_name(real_path, "real_sem.npy")
     print(json.dumps({
         "report_id": args.report_id,
         "config": cfg.to_dict(),
         "cache_dir": str(cache_dir),
-        "inputs": {"sim_sem": str(sim_path), "real_sem": str(real_path)},
+        "inputs": {"sim_sem": str(sim_path), "sim_case": str(case_path),
+                   "real_sem": str(real_path)},
+        "split": {
+            "method": "map_level_split", "total_n": SIM_TOTAL_N,
+            "train_n": SIM_TRAIN_N, "val_n": SIM_VAL_N,
+            "val_frac": SIM_SPLIT_VAL_FRAC, "seed": SIM_SPLIT_SEED,
+            "gate_pool": "validation", "gate_sample_n": GATE_SAMPLE_N,
+        },
         "expected_ckpt_name": expected_ckpt_name(args.report_id),
         "x_domain": "sim+real_train_sem_unpaired", "y_source": "none",
     }, ensure_ascii=False))
@@ -150,12 +166,14 @@ def train(args) -> int:
     cache_dir = Path(args.cache_dir)
     out_dir = Path(args.out_dir)
     sim_path = cache_dir / "sim_sem.npy"
+    case_path = cache_dir / "sim_case.npy"
     real_path = cache_dir / "real_sem.npy"
     ckpt_path = out_dir / expected_ckpt_name(args.report_id)
     resume_path = out_dir / f"{args.report_id}-cyclegan.resume.pt"
 
-    reject_test_paths([sim_path, real_path, out_dir, ckpt_path])
+    reject_test_paths([sim_path, case_path, real_path, out_dir, ckpt_path])
     require_source_name(sim_path, "sim_sem.npy")
+    require_source_name(case_path, "sim_case.npy")
     require_source_name(real_path, "real_sem.npy")
 
     # 출력 존재 검사 — torch/배열 어느 것도 건드리기 전에 (덮어쓰기 정책: 모듈 docstring)
@@ -169,41 +187,45 @@ def train(args) -> int:
                          f"-> {resume_path}")
     if not sim_path.exists():
         raise SystemExit(f"거부: sim SEM 캐시가 없다 -> {sim_path}")
+    if not case_path.exists():
+        raise SystemExit(f"거부: sim case 캐시가 없다 -> {case_path}")
     if not real_path.exists():
         raise SystemExit(f"거부: real SEM 캐시가 없다 -> {real_path}")
 
     with resource_lock(GPU_LOCK):  # 여기부터 real 데이터·GPU — 모듈 docstring의 GPU 락
-        return _train_locked(args, cfg, sim_path, real_path, out_dir, ckpt_path, resume_path)
+        return _train_locked(
+            args, cfg, sim_path, case_path, real_path, out_dir, ckpt_path, resume_path)
 
 
-def _train_locked(args, cfg, sim_path, real_path, out_dir, ckpt_path, resume_path) -> int:
-    sim = np.load(sim_path, mmap_mode="r")
+def _make_sim_dataset(torch, sim, train_idx):
+    """전체 cache를 보유하되 H6 train 전역 인덱스만 노출하는 lazy Dataset."""
+    class _SimDataset(torch.utils.data.Dataset):
+        def __len__(self):
+            return len(train_idx)
+
+        def __getitem__(self, i):
+            x = to_signed(np.ascontiguousarray(sim[train_idx[i]]))[None]
+            return torch.from_numpy(x)
+
+    return _SimDataset()
+
+
+def _train_locked(args, cfg, sim_path, case_path, real_path, out_dir, ckpt_path,
+                  resume_path) -> int:
+    sim, _case, train_idx, _val_idx = load_sim_cache_split(sim_path, case_path)
     real = np.load(real_path, mmap_mode="r")
-    check_sem_array(sim, "sim_sem", SIM_TRAIN_N)
     check_sem_array(real, "real_sem", REAL_TRAIN_N)
 
     # ── 여기서부터만 torch를 불러온다 — 위 거부 경로는 전부 torch 없이 통과해야 한다 ──
     import torch
     import torch.nn as nn
-    from torch.utils.data import DataLoader, Dataset
+    from torch.utils.data import DataLoader
 
     _seed_everything(cfg.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    class _SimDataset(Dataset):
-        """sim SEM(도메인 A) — 이 로더의 한 바퀴가 "1 에폭"의 정의다(모듈 docstring)."""
-
-        def __init__(self, arr):
-            self.arr = arr
-
-        def __len__(self):
-            return len(self.arr)
-
-        def __getitem__(self, i):
-            x = to_signed(np.ascontiguousarray(self.arr[i]))[None]
-            return torch.from_numpy(x)
-
-    loader_a = DataLoader(_SimDataset(sim), batch_size=cfg.batch_size, shuffle=True,
+    loader_a = DataLoader(_make_sim_dataset(torch, sim, train_idx),
+                          batch_size=cfg.batch_size, shuffle=True,
                           num_workers=args.num_workers, drop_last=True)
 
     real_gen = torch.Generator().manual_seed(REAL_SAMPLE_SEED)  # 미사전등록 (모듈 docstring)
@@ -360,9 +382,11 @@ def gate(args) -> int:
     ckpt_path = Path(args.ckpt)
     out_json = Path(args.out_json)
     sim_path = cache_dir / "sim_sem.npy"
+    case_path = cache_dir / "sim_case.npy"
 
-    reject_test_paths([sim_path, ckpt_path, out_json])
+    reject_test_paths([sim_path, case_path, ckpt_path, out_json])
     require_source_name(sim_path, "sim_sem.npy")
+    require_source_name(case_path, "sim_case.npy")
     check_ckpt_name(ckpt_path, args.report_id)  # torch 이전 — 이름만 본다
 
     if out_json.exists():
@@ -371,16 +395,16 @@ def gate(args) -> int:
         raise SystemExit(f"거부: 체크포인트가 없다 -> {ckpt_path}")
     if not sim_path.exists():
         raise SystemExit(f"거부: sim SEM 캐시가 없다 -> {sim_path}")
+    if not case_path.exists():
+        raise SystemExit(f"거부: sim case 캐시가 없다 -> {case_path}")
 
     with resource_lock(GPU_LOCK):  # 여기부터 real 데이터·GPU — 모듈 docstring의 GPU 락
-        return _gate_locked(args, sim_path, ckpt_path, out_json)
+        return _gate_locked(args, sim_path, case_path, ckpt_path, out_json)
 
 
-def _gate_locked(args, sim_path, ckpt_path, out_json) -> int:
-    sim = np.load(sim_path, mmap_mode="r")
-    check_sem_array(sim, "sim_sem", SIM_TRAIN_N)
-
-    idx = gate_sample_indices(SIM_TRAIN_N, GATE_SAMPLE_N, seed=42)
+def _gate_locked(args, sim_path, case_path, ckpt_path, out_json) -> int:
+    sim, case, train_idx, val_idx = load_sim_cache_split(sim_path, case_path)
+    idx = validation_gate_indices(case)
     orig = np.ascontiguousarray(sim[idx])
 
     # ── 여기서부터만 torch — 위 거부 경로는 전부 torch 없이 통과해야 한다 ──
@@ -409,6 +433,8 @@ def _gate_locked(args, sim_path, ckpt_path, out_json) -> int:
         "roundtrip_mae": mae,
         "indices_sha256": indices_sha256(idx),
         "sim_sem_sha256": sha256_file(sim_path),
+        "sim_case_sha256": sha256_file(case_path),
+        "split": sim_split_provenance(train_idx, val_idx),
     }
     print(json.dumps(payload, ensure_ascii=False))  # 쓰기 전에 — 쓰기가 실패해도 결과는 남는다
     write_once_json(out_json, payload)
