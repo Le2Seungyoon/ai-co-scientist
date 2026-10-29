@@ -385,7 +385,7 @@ Back-derivation with the measured EXP-020 coefficient: (1-p) = 0.0380 (level pat
 - **X**: `sim` — unpaired CycleGAN consumes sim train 138648 plus real train 60664; downstream regressor consumes geometry-gated translated sim; real test excluded
 - **y**: `sim_depth_gt` — CycleGAN has no supervised target; downstream translated-sim regressor uses the original paired sim depth GT
 - **모델+하이퍼**: ResNet-6 CycleGAN plus PlainMLP structure regressor
-- **방법론**: global and local geometry-gated translated-sim versus original-sim paired training, seed 42
+- **방법론**: global geometry-gated translated-sim versus original-sim paired training, with local diagnostic probe, seed 42
 - **목적**: test whether geometry-preserving learned appearance translation lowers real leaderboard RMSE beyond 0.02 on both splits
 - **판정지표**: leaderboard_rmse (X=real, y=real_depth_gt)
 - **출처**: `feature/lane-harness` @ `c02816f5f254bd52a97c920e3d0b357d680c48c1`
