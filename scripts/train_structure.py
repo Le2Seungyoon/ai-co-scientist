@@ -298,8 +298,7 @@ def main():
     saved_state = None  # --save-epoch가 강제 저장한 가중치 (사전등록 선택, holdout 무관)
     if args.resume and resume_path.exists():
         ck = torch.load(resume_path, map_location=DEVICE, weights_only=False)
-        if data_provenance["cache_manifest"] is not None:
-            require_matching_structure_provenance(ck.get("data_provenance"), data_provenance)
+        require_matching_structure_provenance(ck.get("data_provenance"), data_provenance)
         model.load_state_dict(ck["state_dict"])
         opt.load_state_dict(ck["opt"])
         sched.load_state_dict(ck["sched"])

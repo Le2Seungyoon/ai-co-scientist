@@ -688,6 +688,9 @@ def _passing_gate(report_id="EXP-900", ckpt=None, sim_case=None) -> dict:
             "sim_case_sha256": cyclegan.sha256_file(sim_case),
             "split": cyclegan.sim_split_provenance(train_idx, val_idx),
             "indices_sha256": cyclegan.indices_sha256(cyclegan.validation_gate_indices(case)),
+            "training_data": cyclegan.cyclegan_training_data_provenance(
+                Path(sim_case).with_name("sim_sem.npy"), sim_case,
+                Path(sim_case).with_name("real_sem.npy"), train_idx, val_idx),
         })
     return gate
 
@@ -821,6 +824,10 @@ def _valid_gate_and_ckpt(tmp_path, *, report_id="EXP-910"):
     case = _production_case_fixture()
     case_path = tmp_path / "sim_case.npy"
     np.save(case_path, case)
+    sim_path = tmp_path / "sim_sem.npy"
+    real_path = tmp_path / "real_sem.npy"
+    sim_path.write_bytes(b"current-sim")
+    real_path.write_bytes(b"current-real")
     train_idx, val_idx = cyclegan.sim_split_indices(case)
     idx = cyclegan.validation_gate_indices(case)
     shifts = [0.0] * cyclegan.GATE_SAMPLE_N
@@ -836,12 +843,34 @@ def _valid_gate_and_ckpt(tmp_path, *, report_id="EXP-910"):
         "shifts": shifts,
         "signed_shifts": [[0.0, 0.0]] * cyclegan.GATE_SAMPLE_N,
         "indices_sha256": cyclegan.indices_sha256(idx),
+        "sim_sem_sha256": cyclegan.sha256_file(sim_path),
         "sim_case_sha256": cyclegan.sha256_file(case_path),
         "split": cyclegan.sim_split_provenance(train_idx, val_idx),
+        "training_data": cyclegan.cyclegan_training_data_provenance(
+            sim_path, case_path, real_path, train_idx, val_idx),
     })
     gate_path = tmp_path / "gate.json"
     cyclegan.write_once_json(gate_path, gate)
     return gate_path, ckpt, gate
+
+
+@pytest.mark.parametrize("changed", ["sim_sem.npy", "sim_case.npy", "real_sem.npy"])
+def test_require_gate_passed_rejects_current_data_that_differs_from_checkpoint_binding(
+        tmp_path, changed):
+    gate_path, ckpt, _gate = _valid_gate_and_ckpt(tmp_path, report_id="EXP-909")
+    if changed == "sim_case.npy":
+        case = np.load(tmp_path / changed)
+        case[0] = 4 if case[0] != 4 else 3
+        np.save(tmp_path / changed, case)
+    else:
+        (tmp_path / changed).write_bytes(b"changed-current-input")
+
+    with pytest.raises(cyclegan.GateFailedError):
+        cyclegan.require_gate_passed(
+            gate_path, ckpt, report_id="EXP-909",
+            sim_sem_path=tmp_path / "sim_sem.npy",
+            sim_case_path=tmp_path / "sim_case.npy",
+            real_sem_path=tmp_path / "real_sem.npy")
 
 
 def test_require_gate_passed_accepts_correct_gate(tmp_path):
@@ -966,6 +995,7 @@ def test_require_gate_passed_checks_sim_sem_sha_when_given(tmp_path):
     sim_sem.write_bytes(b"sim-sem-bytes")
     data = json.loads(gate_path.read_text(encoding="utf-8"))
     data["sim_sem_sha256"] = cyclegan.sha256_file(sim_sem)
+    data["training_data"]["inputs"]["sim_sem"]["sha256"] = cyclegan.sha256_file(sim_sem)
     gate_path.unlink()
     cyclegan.write_once_json(gate_path, data)
     result = cyclegan.require_gate_passed(
@@ -1123,7 +1153,7 @@ def _expected_ckpt_name(report_id: str) -> str:
 def _make_gate_json(path: Path, ckpt_path: Path, *, report_id="H6-TEST",
                     shifts_ok=True, sha_override=None, report_id_field=None,
                     ckpt_epoch_override=None, config_override=None, sim_sem_path=None,
-                    sim_case_path=None):
+                    sim_case_path=None, real_sem_path=None):
     """`require_gate_passed`가 요구하는 모든 필드를 채운 gate JSON을 합성한다.
 
     기본값은 전부 "통과"하도록 만들어 두고, 파라미터로 정확히 하나씩만 어긋나게 할 수 있다
@@ -1169,6 +1199,9 @@ def _make_gate_json(path: Path, ckpt_path: Path, *, report_id="H6-TEST",
     if sim_case_path is not None:
         gate["sim_case_sha256"] = sha256_file(sim_case_path)
         gate["split"] = cyclegan.sim_split_provenance(train_idx, val_idx)
+        if sim_sem_path is not None and real_sem_path is not None:
+            gate["training_data"] = cyclegan.cyclegan_training_data_provenance(
+                sim_sem_path, sim_case_path, real_sem_path, train_idx, val_idx)
     path.write_text(json.dumps(gate), encoding="utf-8")
     return path
 
@@ -1186,7 +1219,8 @@ def _full_environment(tmp_path, *, report_id="H6-TEST"):
     (cache / "real_sem.npy").write_bytes(b"real-bytes")
     gate_json = _make_gate_json(tmp_path / "gate.json", ckpt, report_id=report_id,
                                 sim_sem_path=cache / "sim_sem.npy",
-                                sim_case_path=cache / "sim_case.npy")
+                                sim_case_path=cache / "sim_case.npy",
+                                real_sem_path=cache / "real_sem.npy")
     return ckpt, cache, gate_json
 
 
@@ -1438,9 +1472,13 @@ def test_translate_sim_leakage_guard_reachable_before_torch(tmp_path):
     (cache / "test_sem.npy").write_bytes(payload)  # real_sem.npy와 바이트가 같은 사본
 
     out_dir = tmp_path / "out"
+    repo = Path(__file__).resolve().parents[1]
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True, encoding="utf-8").stdout.strip()
     proc = _run(TRANSLATE_SCRIPT, "--report-id", "H6-TEST", "--ckpt", str(ckpt),
                "--gate-json", str(gate_json), "--cache-dir", str(cache),
-               "--out-cache-dir", str(out_dir))
+               "--out-cache-dir", str(out_dir), "--git-commit", head)
     assert proc.returncode == 3, proc.stderr
     last = json.loads(proc.stdout.strip().splitlines()[-1])
     assert last["status"] == "refused"
@@ -1794,6 +1832,7 @@ def _gate_args(tmp_path):
     cache.mkdir()
     (cache / "sim_sem.npy").touch()
     (cache / "sim_case.npy").touch()
+    (cache / "real_sem.npy").touch()
     ckpt = tmp_path / _expected_ckpt_name("H6-TEST")
     ckpt.write_bytes(b"dummy")
     return argparse.Namespace(report_id="H6-TEST", ckpt=str(ckpt), cache_dir=str(cache),
@@ -1859,13 +1898,19 @@ def test_gate_payload_fingerprints_global_validation_indices_and_case(tmp_path, 
     _patch_small_split_contract(monkeypatch, mod)
     cache = tmp_path / "cache"
     sem = _write_small_split_cache(cache)
+    real_path = cache / "real_sem.npy"
+    np.save(real_path, np.zeros((8, cyclegan.IMG_H, cyclegan.IMG_W), dtype=np.uint8))
     ckpt = tmp_path / _expected_ckpt_name("H6-TEST")
     ckpt.write_bytes(b"checkpoint")
     out_json = tmp_path / "gate.json"
     args = argparse.Namespace(report_id="H6-TEST", batch_size=2)
 
+    current_training_data = cyclegan.cyclegan_training_data_provenance(
+        cache / "sim_sem.npy", cache / "sim_case.npy", real_path,
+        np.array([0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 14, 15]), np.array([6, 7, 12, 13]))
+    monkeypatch.setattr(mod, "REAL_TRAIN_N", 8)
     monkeypatch.setattr(mod, "load_generators", lambda *_a, **_k: (
-        cyclegan.CycleGANConfig(), 100, object(), object()))
+        cyclegan.CycleGANConfig(), 100, object(), object(), current_training_data))
     monkeypatch.setattr(mod, "translate_u8", lambda _model, arr, _bs, _device: arr.copy())
     monkeypatch.setattr(mod, "measure_geometry", lambda orig, moved: {
         "shifts": np.zeros(len(orig)), "local": np.zeros(len(orig)),
@@ -1874,13 +1919,59 @@ def test_gate_payload_fingerprints_global_validation_indices_and_case(tmp_path, 
     monkeypatch.setattr(mod, "roundtrip_mae", lambda _orig, _roundtrip: 0.0)
 
     assert mod._gate_locked(
-        args, cache / "sim_sem.npy", cache / "sim_case.npy", ckpt, out_json) == 0
+        args, cache / "sim_sem.npy", cache / "sim_case.npy", real_path, ckpt, out_json) == 0
     gate = json.loads(out_json.read_text(encoding="utf-8"))
     expected_global = np.array([6, 13], dtype=np.int64)
     assert gate["indices_sha256"] == hashlib.sha256(expected_global.tobytes()).hexdigest()
     assert gate["sim_case_sha256"] == cyclegan.sha256_file(cache / "sim_case.npy")
     assert gate["split"]["train_n"] == 12 and gate["split"]["val_n"] == 4
+    assert gate["training_data"] == current_training_data
     assert sem[expected_global, 0, 0].tolist() == [6, 13]
+
+
+def test_gate_refuses_checkpoint_training_data_mismatch_before_generator_use(tmp_path,
+                                                                             monkeypatch):
+    mod = _load_script(TRAIN_SCRIPT, "_h6_gate_checkpoint_binding")
+    _patch_small_split_contract(monkeypatch, mod)
+    monkeypatch.setattr(mod, "REAL_TRAIN_N", 8)
+    cache = tmp_path / "cache"
+    _write_small_split_cache(cache)
+    real_path = cache / "real_sem.npy"
+    np.save(real_path, np.zeros((8, cyclegan.IMG_H, cyclegan.IMG_W), dtype=np.uint8))
+    ckpt = tmp_path / _expected_ckpt_name("H6-TEST")
+    ckpt.write_bytes(b"checkpoint")
+    train_idx, val_idx = cyclegan.sim_split_indices(np.load(cache / "sim_case.npy"))
+    stored = cyclegan.cyclegan_training_data_provenance(
+        cache / "sim_sem.npy", cache / "sim_case.npy", real_path, train_idx, val_idx)
+    stored = json.loads(json.dumps(stored))
+    stored["inputs"]["real_sem"]["sha256"] = "0" * 64
+    monkeypatch.setattr(mod, "load_generators", lambda *_a, **_k: (
+        cyclegan.CycleGANConfig(), 100, object(), object(), stored))
+    monkeypatch.setattr(
+        mod, "translate_u8", lambda *_a, **_k: pytest.fail("generator inference reached"))
+
+    with pytest.raises(cyclegan.GateFailedError, match="training_data"):
+        mod._gate_locked(
+            argparse.Namespace(report_id="H6-TEST", batch_size=2),
+            cache / "sim_sem.npy", cache / "sim_case.npy", real_path,
+            ckpt, tmp_path / "gate.json")
+
+
+def test_manifest_rejects_gate_training_data_that_does_not_match_sources(tmp_path):
+    parts = _manifest_parts(tmp_path, "EXP-907")
+    parts["gate"]["training_data"]["inputs"]["real_sem"]["sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="training_data"):
+        cyclegan.build_manifest(**parts)
+
+
+def test_current_git_commit_helper_accepts_head_and_rejects_other_sha():
+    repo = Path(__file__).resolve().parents[1]
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    assert cyclegan.require_current_git_commit(head, repo) == head
+    with pytest.raises(ValueError, match="HEAD"):
+        cyclegan.require_current_git_commit("0" * 40, repo)
 
 
 def test_train_dataset_exposes_only_train_global_rows(monkeypatch):
@@ -1901,9 +1992,14 @@ def test_train_dataset_exposes_only_train_global_rows(monkeypatch):
 
 def _translate_main(monkeypatch, mod, ckpt, cache, gate_json, out_dir):
     monkeypatch.setattr(mod, "ensure_utf8_console", lambda: None)
+    repo = Path(__file__).resolve().parents[1]
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True, encoding="utf-8").stdout.strip()
     monkeypatch.setattr(sys, "argv", [
         "translate_sim.py", "--report-id", "H6-TEST", "--ckpt", str(ckpt),
-        "--gate-json", str(gate_json), "--cache-dir", str(cache), "--out-cache-dir", str(out_dir)])
+        "--gate-json", str(gate_json), "--cache-dir", str(cache), "--out-cache-dir", str(out_dir),
+        "--git-commit", head])
     return mod.main()
 
 
@@ -1948,11 +2044,11 @@ def test_translation_keeps_full_cache_and_post_write_gate_uses_validation_global
     ckpt.write_bytes(b"checkpoint")
     out_dir = tmp_path / "translated"
     partial_dir = tmp_path / "translated.partial"
-    args = argparse.Namespace(report_id="H6-TEST", batch_size=4, git_commit="abc123")
+    args = argparse.Namespace(report_id="H6-TEST", batch_size=4, git_commit="a" * 40)
     seen = {}
 
     monkeypatch.setattr(mod, "load_generators", lambda *_a, **_k: (
-        cyclegan.CycleGANConfig(), 100, object(), object()))
+        cyclegan.CycleGANConfig(), 100, object(), object(), {}))
     def _translate(_model, arr, _batch_size, _device):
         seen["translated_globals"] = arr[:, 0, 0].tolist()
         return arr.copy()

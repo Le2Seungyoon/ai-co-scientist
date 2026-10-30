@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from dataclasses import fields as dc_fields
 from pathlib import Path
@@ -410,6 +411,22 @@ def require_matching_training_data(stored: dict, current: dict) -> None:
     validate_cyclegan_training_data(current)
     if stored != current:
         raise GateFailedError("resume checkpoint의 training_data가 현재 입력/split과 다르다")
+
+
+def require_current_git_commit(claimed_commit: str, repo_root) -> str:
+    """artifact 생성 시 받은 commit이 그 순간 알려진 repository HEAD와 정확히 같은지 확인한다."""
+    if not _GIT_COMMIT_RE.fullmatch(str(claimed_commit)):
+        raise ValueError("--git-commit은 40자리 16진 SHA여야 한다")
+    repo = Path(repo_root).resolve()
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise ValueError(f"현재 repository HEAD를 확인할 수 없다: {repo}") from e
+    if claimed_commit != head:
+        raise ValueError(f"--git-commit이 현재 repository HEAD와 다르다: {claimed_commit} != {head}")
+    return head
 
 
 def _parabolic_subpixel(vec: np.ndarray, peak_idx: int, n: int) -> float:
@@ -810,7 +827,16 @@ def _binding_problems(m: dict) -> list:
                 problems.append("gate의 split provenance가 source:sim_case와 다르다")
             if gate.get("indices_sha256") != expected_gate_sha:
                 problems.append("gate의 indices_sha256이 validation 전역 표본과 다르다")
-        except (OSError, ValueError) as e:
+            if set(srcs) == set(REQUIRED_SOURCES):
+                expected_training_data = cyclegan_training_data_provenance(
+                    srcs["sim_sem"]["path"], srcs["sim_case"]["path"],
+                    srcs["real_sem"]["path"], train_idx, val_idx)
+                try:
+                    require_matching_training_data(
+                        gate.get("training_data"), expected_training_data)
+                except GateFailedError as e:
+                    problems.append(f"gate training_data가 manifest source와 다르다: {e}")
+        except (OSError, ValueError, GateFailedError) as e:
             problems.append(f"source:sim_case split 검증 실패: {e}")
     for label, cfg in (("manifest", m.get("config")), ("gate", gate.get("config"))):
         try:
@@ -936,6 +962,9 @@ def resolve_structure_cache_provenance(cache_dir, manifest_path=None) -> dict:
     """
     cache = Path(cache_dir).resolve()
     if manifest_path is None:
+        if (cache / "manifest.json").exists():
+            raise ValueError(
+                f"cache에 manifest.json이 있다 — --cache-manifest로 명시해야 한다: {cache}")
         return {
             "cache_dir": str(cache), "cache_manifest": None,
             "report_id": None, "hypothesis": None, "git_commit": None,
@@ -976,8 +1005,6 @@ def resolve_structure_cache_provenance(cache_dir, manifest_path=None) -> dict:
 
 def bind_structure_checkpoint(payload: dict, provenance: dict) -> dict:
     """best/save-epoch/resume checkpoint에 검증된 cache provenance를 빠짐없이 붙인다."""
-    if provenance.get("cache_manifest") is None:
-        return payload
     return {**payload, "data_provenance": provenance}
 
 
@@ -991,6 +1018,8 @@ def structure_result_provenance(provenance: dict) -> dict:
 
 def require_matching_structure_provenance(stored: dict, current: dict) -> None:
     """resume state를 적용하기 전 저장된 cache/manifest provenance의 정확 일치를 요구한다."""
+    if stored is None and current.get("cache_manifest") is None and current.get("x_domain") == "sim":
+        return  # 명시적 legacy raw checkpoint 정책: manifest 없는 raw cache에서만 허용
     if stored != current:
         raise ValueError("resume checkpoint의 data_provenance가 현재 cache/manifest와 다르다")
 
@@ -1025,7 +1054,7 @@ def indices_sha256(idx: np.ndarray) -> str:
 
 
 def require_gate_passed(gate_json_path, ckpt_path, *, report_id: str, sim_case_path=None,
-                        sim_sem_path=None) -> dict:
+                        sim_sem_path=None, real_sem_path=None) -> dict:
     """`translate_sim.py`가 torch를 import하기 **전**에 부르는 하드 스톱.
 
     저장된 `passed` 불리언은 **신뢰하지 않는다** — 저장된 per-image `shifts`와
@@ -1040,6 +1069,7 @@ def require_gate_passed(gate_json_path, ckpt_path, *, report_id: str, sim_case_p
     - 기록된 임계값이 현재 모듈 상수와 다름(코드가 바뀌었는데 오래된 gate를 재사용하는 것 차단)
     - 표본 크기가 `GATE_SAMPLE_N`이 아님
     - sim_case의 sha256이나 그 case로 재계산한 고정 train/validation split provenance가 다름
+    - gate의 training_data가 현재 sim_sem/sim_case/real_sem 해시와 split provenance와 다름
     - `indices_sha256`이 validation global index pool에서 뽑은 고정 2,048장 지문과 다름
       (train 표본 또는 다른 validation 표본으로 gate를 통과시키는 것 차단)
     - 기록된 `ckpt_sha256`이 실제 `ckpt_path`와 다름(다른 체크포인트로 gate를 통과시키고 엉뚱한
@@ -1112,6 +1142,17 @@ def require_gate_passed(gate_json_path, ckpt_path, *, report_id: str, sim_case_p
             f"gate의 split provenance가 실제 sim_case split과 다르다: "
             f"{gate.get('split')!r} != {expected_split!r}")
 
+    sim_sem_path = (gate_json_path.parent / "sim_sem.npy"
+                    if sim_sem_path is None else Path(sim_sem_path))
+    real_sem_path = (gate_json_path.parent / "real_sem.npy"
+                     if real_sem_path is None else Path(real_sem_path))
+    if not sim_sem_path.exists() or not real_sem_path.exists():
+        raise GateFailedError(
+            f"현재 sim_sem/real_sem 파일이 없다: {sim_sem_path}, {real_sem_path}")
+    current_training_data = cyclegan_training_data_provenance(
+        sim_sem_path, sim_case_path, real_sem_path, train_idx, val_idx)
+    require_matching_training_data(gate.get("training_data"), current_training_data)
+
     idx = validation_gate_indices(case)
     expected_idx_sha = indices_sha256(idx)
     if gate.get("indices_sha256") != expected_idx_sha:
@@ -1126,12 +1167,11 @@ def require_gate_passed(gate_json_path, ckpt_path, *, report_id: str, sim_case_p
         raise GateFailedError(
             f"gate의 ckpt_sha256이 실제 ckpt와 다르다: {gate.get('ckpt_sha256')!r} != {actual_sha!r}")
 
-    if sim_sem_path is not None:
-        actual_sim_sha = sha256_file(sim_sem_path)
-        if gate.get("sim_sem_sha256") != actual_sim_sha:
-            raise GateFailedError(
-                f"gate의 sim_sem_sha256이 실제 파일과 다르다: {gate.get('sim_sem_sha256')!r} "
-                f"!= {actual_sim_sha!r}")
+    actual_sim_sha = sha256_file(sim_sem_path)
+    if gate.get("sim_sem_sha256") != actual_sim_sha:
+        raise GateFailedError(
+            f"gate의 sim_sem_sha256이 실제 파일과 다르다: {gate.get('sim_sem_sha256')!r} "
+            f"!= {actual_sim_sha!r}")
 
     return gate
 
@@ -1232,11 +1272,12 @@ def build_discriminator(cfg: CycleGANConfig):
 
 
 def load_generators(ckpt_path, device):
-    """최종 ckpt를 읽어 `(cfg, epoch, G_sim2real, G_real2sim)`을 eval 모드로 돌려준다.
+    """최종 ckpt를 읽어 `(cfg, epoch, G_sim2real, G_real2sim, training_data)`를 반환한다.
 
     이름 검사(`check_ckpt_name`)는 부르기 **전에** 끝나 있어야 한다 — 여기는 torch.load 이후의
-    내용 검사다: 저장된 config가 사전등록과 같고, epoch이 총 epoch(= 학습 완료)이어야 한다.
-    중간 resume ckpt나 다른 설정으로 학습한 ckpt는 `GateFailedError`.
+    내용 검사다: 저장된 config가 사전등록과 같고, epoch이 총 epoch(= 학습 완료)이며 training_data
+    블록이 세 입력 해시와 고정 split 형태를 갖춰야 한다. 중간 resume ckpt나 다른 설정/입력 형태의
+    ckpt는 `GateFailedError`.
     """
     try:
         import torch
@@ -1259,7 +1300,7 @@ def load_generators(ckpt_path, device):
         g.load_state_dict(ckpt["state_dict"][key])
         g.eval()
         gens.append(g)
-    return cfg, ckpt["epoch"], gens[0], gens[1]
+    return cfg, ckpt["epoch"], gens[0], gens[1], ckpt["training_data"]
 
 
 def translate_u8(generator, arr_u8: np.ndarray, batch_size: int, device) -> np.ndarray:

@@ -51,6 +51,8 @@ def _valid_translated_cache(tmp_path: Path) -> tuple[Path, Path]:
         "sim_case_sha256": cyclegan.sha256_file(sim_case),
         "split": cyclegan.sim_split_provenance(train_idx, val_idx),
         "indices_sha256": cyclegan.indices_sha256(cyclegan.validation_gate_indices(case)),
+        "training_data": cyclegan.cyclegan_training_data_provenance(
+            sources["sim_sem"], sim_case, sources["real_sem"], train_idx, val_idx),
     })
     manifest = cyclegan.build_manifest(
         report_id=report_id, config=dict(cyclegan.PREREGISTERED), gate=gate,
@@ -88,7 +90,13 @@ def test_raw_control_without_manifest_keeps_existing_sim_domain(tmp_path):
     assert cyclegan.structure_result_provenance(got) == {
         "x_domain": "sim", "y_source": "sim_depth_gt",
     }
-    assert cyclegan.bind_structure_checkpoint({"state_dict": {}}, got) == {"state_dict": {}}
+    assert cyclegan.bind_structure_checkpoint({"state_dict": {}}, got)["data_provenance"] == got
+
+
+def test_cache_with_manifest_cannot_be_consumed_as_raw_control(tmp_path):
+    cache, _manifest_path = _valid_translated_cache(tmp_path)
+    with pytest.raises(ValueError, match="--cache-manifest"):
+        cyclegan.resolve_structure_cache_provenance(cache)
 
 
 def test_structure_manifest_must_be_exactly_inside_selected_cache(tmp_path):
@@ -125,6 +133,15 @@ def test_structure_resume_refuses_different_verified_manifest_provenance(tmp_pat
 
     with pytest.raises(ValueError, match="data_provenance"):
         cyclegan.require_matching_structure_provenance(stored, current)
+
+
+def test_structure_resume_allows_legacy_missing_provenance_only_for_raw_cache(tmp_path):
+    raw = cyclegan.resolve_structure_cache_provenance(tmp_path / "raw")
+    assert cyclegan.require_matching_structure_provenance(None, raw) is None
+    cache, manifest_path = _valid_translated_cache(tmp_path)
+    translated = cyclegan.resolve_structure_cache_provenance(cache, manifest_path)
+    with pytest.raises(ValueError, match="data_provenance"):
+        cyclegan.require_matching_structure_provenance(None, translated)
 
 
 def test_train_structure_rejects_tampered_manifest_before_opening_cache_arrays(tmp_path):

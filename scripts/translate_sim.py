@@ -66,6 +66,7 @@ from ai_co_scientist.cyclegan import (
     measure_geometry,
     reject_test_paths,
     require_gate_passed,
+    require_current_git_commit,
     require_source_name,
     sha256_file,
     translate_u8,
@@ -120,6 +121,12 @@ def main() -> int:
     except (ValueError, GateFailedError) as e:
         return _refuse(str(e))
 
+    repo_root = Path(__file__).resolve().parents[1]
+    try:
+        require_current_git_commit(args.git_commit, repo_root)
+    except ValueError as e:
+        return _refuse(str(e))
+
     # 3) 출력 디렉터리 안전 -- 최종본과 임시(.partial)본 둘 다 없어야 한다
     if out_dir.exists():
         return _refuse(f"출력 디렉터리가 이미 있다 -> {out_dir}")
@@ -145,7 +152,7 @@ def main() -> int:
             try:
                 gate = require_gate_passed(
                     gate_json_path, ckpt_path, report_id=args.report_id,
-                    sim_sem_path=sim_path, sim_case_path=case_path)
+                    sim_sem_path=sim_path, sim_case_path=case_path, real_sem_path=real_path)
             except GateFailedError as e:
                 return _refuse(f"gate 실패: {e}")
             except OSError as e:
@@ -167,7 +174,8 @@ def _translate_locked(args, gate, sim_path, depth_path, case_path, real_path, ck
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     try:
-        cfg, ckpt_epoch, g_sim2real, _g_real2sim = load_generators(ckpt_path, device)
+        cfg, ckpt_epoch, g_sim2real, _g_real2sim, _training_data = load_generators(
+            ckpt_path, device)
     except GateFailedError as e:
         return _refuse(str(e))
 

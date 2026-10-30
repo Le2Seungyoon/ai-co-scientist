@@ -391,10 +391,12 @@ def gate(args) -> int:
     out_json = Path(args.out_json)
     sim_path = cache_dir / "sim_sem.npy"
     case_path = cache_dir / "sim_case.npy"
+    real_path = cache_dir / "real_sem.npy"
 
-    reject_test_paths([sim_path, case_path, ckpt_path, out_json])
+    reject_test_paths([sim_path, case_path, real_path, ckpt_path, out_json])
     require_source_name(sim_path, "sim_sem.npy")
     require_source_name(case_path, "sim_case.npy")
+    require_source_name(real_path, "real_sem.npy")
     check_ckpt_name(ckpt_path, args.report_id)  # torch 이전 — 이름만 본다
 
     if out_json.exists():
@@ -405,13 +407,19 @@ def gate(args) -> int:
         raise SystemExit(f"거부: sim SEM 캐시가 없다 -> {sim_path}")
     if not case_path.exists():
         raise SystemExit(f"거부: sim case 캐시가 없다 -> {case_path}")
+    if not real_path.exists():
+        raise SystemExit(f"거부: real SEM 캐시가 없다 -> {real_path}")
 
     with resource_lock(GPU_LOCK):  # 여기부터 real 데이터·GPU — 모듈 docstring의 GPU 락
-        return _gate_locked(args, sim_path, case_path, ckpt_path, out_json)
+        return _gate_locked(args, sim_path, case_path, real_path, ckpt_path, out_json)
 
 
-def _gate_locked(args, sim_path, case_path, ckpt_path, out_json) -> int:
+def _gate_locked(args, sim_path, case_path, real_path, ckpt_path, out_json) -> int:
     sim, case, train_idx, val_idx = load_sim_cache_split(sim_path, case_path)
+    real = np.load(real_path, mmap_mode="r")
+    check_sem_array(real, "real_sem", REAL_TRAIN_N)
+    current_training_data = cyclegan_training_data_provenance(
+        sim_path, case_path, real_path, train_idx, val_idx)
     idx = validation_gate_indices(case)
     orig = np.ascontiguousarray(sim[idx])
 
@@ -419,8 +427,9 @@ def _gate_locked(args, sim_path, case_path, ckpt_path, out_json) -> int:
     import torch
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    cfg, ckpt_epoch, g_sim2real, g_real2sim = load_generators(
+    cfg, ckpt_epoch, g_sim2real, g_real2sim, checkpoint_training_data = load_generators(
         ckpt_path, device)  # epoch/config 검사는 torch.load 이후
+    require_matching_training_data(checkpoint_training_data, current_training_data)
 
     translated = translate_u8(g_sim2real, orig, args.batch_size, device)
     roundtrip = translate_u8(g_real2sim, translated, args.batch_size, device)
@@ -443,6 +452,7 @@ def _gate_locked(args, sim_path, case_path, ckpt_path, out_json) -> int:
         "sim_sem_sha256": sha256_file(sim_path),
         "sim_case_sha256": sha256_file(case_path),
         "split": sim_split_provenance(train_idx, val_idx),
+        "training_data": current_training_data,
     }
     print(json.dumps(payload, ensure_ascii=False))  # 쓰기 전에 — 쓰기가 실패해도 결과는 남는다
     write_once_json(out_json, payload)
