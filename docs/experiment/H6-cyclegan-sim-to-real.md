@@ -22,7 +22,7 @@ sim의 픽셀 대응 depth GT를 보존한 채 외관만 real 쪽으로 옮기�
 - **downstream y**: 변환 전 sim 원본의 픽셀별 `s = (L-depth)/L` GT를 변환본과 동일 좌표로 사용한다.
 - **구조 모델**: H5/H7과 같은 PlainMLP, L1 loss, batch size 128, AdamW, `lr=1e-3`, cosine schedule, 15 epochs, seed 42.
 - **arm 0**: 원본 sim-only 구조 학습.
-- **arm 1**: CycleGAN으로 sim 173,304장 전체를 한 번 변환해 manifest와 함께 고정한다. 변환기 학습에는 train 138,648장만 쓰지만, downstream `train_structure.py`가 원본과 똑같은 138,648/34,656 paired split을 다시 만들 수 있도록 depth/case와 행 수를 그대로 보존한다.
+- **arm 1**: CycleGAN으로 sim 173,304장 전체를 한 번 변환해 manifest와 함께 고정한다. 변환기 학습에는 train 138,648장만 쓰지만, downstream `train_structure.py`가 원본과 똑같은 138,648/34,656 paired split을 다시 만들 수 있도록 depth/case와 행 수를 그대로 보존한다. 구조 학습은 `--cache-manifest <cache-dir>/manifest.json`을 반드시 함께 받아 배열을 열기 전에 manifest를 재검증하고, 그 파일의 절대경로·SHA-256·report/hypothesis/domain provenance를 checkpoint에 결속한다. 이 SHA-256은 자유롭게 편집 가능한 JSON의 인증 서명이 아니라 검증 뒤 변경을 탐지하기 위한 결속이다.
 - **공통 추론**: EXP-019의 level 경로, shuffled real AdaBN seed 42, `tau=0`, level smoothing 9를 유지한다.
 - **예산**: CycleGAN 1회, 구조 학습 최대 2회, 제출 최대 2회. 다른 가설의 control을 재사용하려면 코드 commit·입력 manifest·seed·모든 hyperparameter가 동일해야 하며, 하나라도 다르면 재학습한다.
 
@@ -46,9 +46,14 @@ EXP-026은 이미 발급되었다. 첫 실행은 GPU 학습 전에 전체 cache 
 
 사전등록 단계다. 현재 근거는 단순 입력 통계 정합이 실패했다는 점뿐이며, 학습형 변환이 유효하다는 증거는 아니다.
 
-2026-09-24에 실제 `sim_sem.npy`의 고정 gate 표본 2,048장(seed 42)으로 CPU-only 합성
-calibration을 수행했다. 모델·GPU·depth GT·registry는 사용하지 않았고 어떤 runtime 산출물도 쓰지
-않았다. 아래 값은 각각 표본별 이동량의 median / p95다.
+2026-09-24에 실제 `sim_sem.npy`의 **과거 혼합 pool** 표본 2,048장(seed 42)으로 CPU-only 합성
+진단을 수행했다. 당시 표본은 수정 전 `range(138648)` sampler에서 뽑혀, 현재 분할 기준 train
+1,640장과 validation 408장이 섞였고 현재 validation-only gate 표본과 겹치는 행은 22장뿐이다.
+따라서 아래 표는 수정된 gate 표본을 calibration한 결과가 아니라 legacy/historical diagnostics다.
+정확한 생성 코드도 커밋돼 있지 않으므로 수치를 재생성 가능하다고 해석하지 않는다. 모델·GPU·
+depth GT·registry는 사용하지 않았고 어떤 runtime 산출물도 쓰지 않았다. 아래 값은 각각 표본별
+이동량의 median / p95이며, 이 계약 수정으로 임계값이나 local probe의 진단 전용 역할은 바꾸지
+않는다.
 
 | 변환 | 전역 phase correlation | local probe | 전역 판정 |
 |---|---:|---:|---|
@@ -59,12 +64,12 @@ calibration을 수행했다. 모델·GPU·depth GT·registry는 사용하지 않
 | 중심 확대 `1.02×` | 0.016 / 0.035 | 0.633 / 0.664 | 통과 |
 | sinusoidal x warp 진폭 `0.75 px` | 0.018 / 0.043 | 0.614 / 0.658 | 통과 |
 
-이 결과는 local probe를 정지 규칙으로 올리지 않는 근거다. 강한 외관 전용 변환이 확대·국소
+이 과거 진단은 local probe를 정지 규칙으로 올리지 않는 참고 근거다. 강한 외관 전용 변환이 확대·국소
 warp보다 더 큰 local 값을 내므로 현재 값에는 둘을 가르는 임계값이 없다. 동시에 전역 기준이 1px
 이동은 막지만 확대·국소 warp는 놓친다는 잔여 위험을 실제 sim 표본에서도 재현했다. 따라서 현행
 3기준 gate는 강체 이동과 cycle 붕괴를 거르는 제한된 위생 검사로만 해석하고, 형태 보존 보증으로
 승격하지 않는다. 이 calibration은 CycleGAN 출력 자체의 분포를 측정한 것이 아니므로 성능 또는
-실제 generator의 안전성 증거도 아니다.
+실제 generator의 안전성 증거도 아니며, 수정된 validation-only gate 표본의 calibration도 아니다.
 
 ## 판정 · 미검증
 

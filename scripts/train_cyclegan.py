@@ -69,6 +69,7 @@ from ai_co_scientist.cyclegan import (
     build_generator,
     check_ckpt_name,
     check_sem_array,
+    cyclegan_training_data_provenance,
     evaluate_gate,
     expected_ckpt_name,
     indices_sha256,
@@ -78,6 +79,7 @@ from ai_co_scientist.cyclegan import (
     measure_geometry,
     reject_test_paths,
     require_source_name,
+    require_matching_training_data,
     roundtrip_mae,
     sha256_file,
     sim_split_provenance,
@@ -212,9 +214,11 @@ def _make_sim_dataset(torch, sim, train_idx):
 
 def _train_locked(args, cfg, sim_path, case_path, real_path, out_dir, ckpt_path,
                   resume_path) -> int:
-    sim, _case, train_idx, _val_idx = load_sim_cache_split(sim_path, case_path)
+    sim, _case, train_idx, val_idx = load_sim_cache_split(sim_path, case_path)
     real = np.load(real_path, mmap_mode="r")
     check_sem_array(real, "real_sem", REAL_TRAIN_N)
+    training_data = cyclegan_training_data_provenance(
+        sim_path, case_path, real_path, train_idx, val_idx)
 
     # ── 여기서부터만 torch를 불러온다 — 위 거부 경로는 전부 torch 없이 통과해야 한다 ──
     import torch
@@ -261,6 +265,7 @@ def _train_locked(args, cfg, sim_path, case_path, real_path, out_dir, ckpt_path,
     start_ep = 0
     if args.resume:  # 존재는 train()이 락 전에 확인했다
         ck = torch.load(resume_path, map_location=device, weights_only=False)
+        require_matching_training_data(ck.get("training_data"), training_data)
         g_sim2real.load_state_dict(ck["state_dict"]["G_sim2real"])
         g_real2sim.load_state_dict(ck["state_dict"]["G_real2sim"])
         d_sim.load_state_dict(ck["state_dict"]["D_sim"])
@@ -344,6 +349,7 @@ def _train_locked(args, cfg, sim_path, case_path, real_path, out_dir, ckpt_path,
             "opt_g": opt_g.state_dict(), "opt_d": opt_d.state_dict(),
             "sched_g": sched_g.state_dict(), "sched_d": sched_d.state_dict(),
             "config": cfg.to_dict(),
+            "training_data": training_data,
         }, resume_tmp)
         os.replace(resume_tmp, resume_path)  # 매 에폭 원자적으로 덮는 별도 파일 — 찢긴 재개점 없음
 
@@ -361,6 +367,7 @@ def _train_locked(args, cfg, sim_path, case_path, real_path, out_dir, ckpt_path,
         # 미사전등록 실행 옵션 — 판정엔 안 쓰지만 재현을 위해 기록한다(모듈 docstring)
         "runtime_options": {"amp": bool(args.amp), "num_workers": int(args.num_workers),
                             "real_sample_seed": REAL_SAMPLE_SEED, "resumed": bool(args.resume)},
+        "training_data": training_data,
     }, final_tmp)
     os.link(final_tmp, ckpt_path)
     final_tmp.unlink()
@@ -369,6 +376,7 @@ def _train_locked(args, cfg, sim_path, case_path, real_path, out_dir, ckpt_path,
         "report_id": args.report_id,
         "x_domain": "sim+real_train_sem_unpaired", "y_source": "none",
         "config": cfg.to_dict(),
+        "training_data": training_data,
         "ckpt": str(ckpt_path), "ckpt_sha256": sha256_file(ckpt_path),
         "epochs": total_epochs,
     }, ensure_ascii=False))

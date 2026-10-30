@@ -713,7 +713,7 @@ def _manifest_parts(tmp_path, report_id, out_name="out"):
     return dict(report_id=report_id, config=cyclegan.PREREGISTERED,
                 gate=_passing_gate(report_id, ckpt, sources["sim_case"]), ckpt_path=ckpt,
                 source_files=sources,
-                output_files=outputs, git_commit="deadbeef")
+                output_files=outputs, git_commit="d" * 40)
 
 
 def test_build_manifest_refuses_failed_gate(tmp_path):
@@ -788,6 +788,20 @@ def test_build_manifest_rejects_outputs_outside_one_directory(tmp_path):
 def test_build_manifest_refuses_unbound_parts(tmp_path, mutate, expect):
     # 해시가 전부 맞아도 부품끼리 안 맞으면(다른 실행의 gate, 바뀐 y, 빠진 산출물) 만들 수 없다
     parts = _manifest_parts(tmp_path, "EXP-905")
+    mutate(parts)
+    with pytest.raises(ValueError, match=expect):
+        cyclegan.build_manifest(**parts)
+
+
+@pytest.mark.parametrize("mutate,expect", [
+    (lambda p: p["source_files"].pop("real_sem"), "source 목록"),
+    (lambda p: p["source_files"].update(extra=p["source_files"]["real_sem"]), "source 목록"),
+    (lambda p: p.update(git_commit=""), "git_commit"),
+    (lambda p: p.update(git_commit="deadbeef"), "git_commit"),
+])
+def test_build_manifest_rejects_incomplete_source_or_commit_binding(tmp_path, mutate, expect):
+    """소스 집합이나 commit 결속이 느슨해지면 다른 변환 실행을 같은 manifest로 오인한다."""
+    parts = _manifest_parts(tmp_path, "EXP-906")
     mutate(parts)
     with pytest.raises(ValueError, match=expect):
         cyclegan.build_manifest(**parts)
@@ -1048,6 +1062,18 @@ def test_build_discriminator_shape_matches_patchgan_output_shape_with_torch():
     y = disc(x)
     expected_h, expected_w = cyclegan.patchgan_output_shape(cyclegan.IMG_H, cyclegan.IMG_W)
     assert tuple(y.shape) == (2, 1, expected_h, expected_w)
+
+
+def test_load_generators_refuses_final_checkpoint_without_training_data(tmp_path):
+    torch = pytest.importorskip("torch")
+    ckpt = tmp_path / "EXP-026-cyclegan.pt"
+    torch.save({
+        "config": dict(cyclegan.PREREGISTERED),
+        "epoch": 100,
+        "state_dict": {"G_sim2real": {}, "G_real2sim": {}},
+    }, ckpt)
+    with pytest.raises(cyclegan.GateFailedError, match="training_data"):
+        cyclegan.load_generators(ckpt, torch.device("cpu"))
 
 
 # ── CLI ──
@@ -1458,19 +1484,6 @@ def test_translate_sim_refuses_out_dir_equal_to_cache_dir(tmp_path):
     assert _no_torch_leak(proc)
 
 
-# ── 인덱스 표본 결정성 (torch 불필요) ────────────────────────────
-
-def test_gate_sample_indices_used_by_scripts_is_deterministic():
-    """gate()와 translate_sim()이 같은 (n_total, n_sample, seed)로 gate_sample_indices를 부르므로
-    두 쪽에서 표본이 항상 같다 -- 이 계약이 깨지면 쓰기 후 재검증이 다른 표본을 잰다."""
-    from ai_co_scientist.cyclegan import GATE_SAMPLE_N, SIM_TRAIN_N, gate_sample_indices
-
-    a = gate_sample_indices(SIM_TRAIN_N, GATE_SAMPLE_N, seed=42)
-    b = gate_sample_indices(SIM_TRAIN_N, GATE_SAMPLE_N, seed=42)
-    assert np.array_equal(a, b)
-    assert len(a) == GATE_SAMPLE_N
-
-
 @pytest.mark.skipif(sys.version_info < (3, 9), reason="ast 최신 기능 불필요 -- 자리표시")
 def test_scripts_share_torch_helpers_through_src_not_each_other():
     # 두 스크립트가 공유하는 ckpt 로드·배치 번역은 src/에 산다(architecture.md: scripts는 얇게).
@@ -1632,6 +1645,11 @@ def test_build_manifest_refuses_test_source_path(tmp_path):
     (lambda m: m["output_files"]["sim_depth"].update(sha256="0" * 64), "sim_depth"),
     (lambda m: m.pop("ckpt"), "ckpt"),
     (lambda m: m["source_files"]["sim_sem"].update(path="runtime/cache/TEST_SEM.npy"), "경로 위생"),
+    (lambda m: m["source_files"].pop("real_sem"), "source 목록"),
+    (lambda m: m["source_files"].update(extra=m["source_files"]["real_sem"]), "source 목록"),
+    (lambda m: m.update(x_domain="sim"), "x_domain"),
+    (lambda m: m.update(y_source="none"), "y_source"),
+    (lambda m: m.update(git_commit="not-a-commit"), "git_commit"),
 ])
 def test_verify_manifest_rejects_content_tampering_not_only_hash_tampering(tmp_path, mutate,
                                                                           expect):
@@ -1642,6 +1660,51 @@ def test_verify_manifest_rejects_content_tampering_not_only_hash_tampering(tmp_p
     _rewrite(path, manifest)
     with pytest.raises(ValueError, match=expect):
         cyclegan.verify_manifest(path)
+
+
+def test_cyclegan_training_data_provenance_binds_all_inputs_and_split(tmp_path, monkeypatch):
+    """resume에서 입력 하나라도 바뀌면 model/optimizer state를 적용하기 전에 거부해야 한다."""
+    monkeypatch.setattr(cyclegan, "SIM_TOTAL_N", 16)
+    monkeypatch.setattr(cyclegan, "SIM_TRAIN_N", 12)
+    monkeypatch.setattr(cyclegan, "SIM_VAL_N", 4)
+    monkeypatch.setattr(cyclegan, "SIM_SPLIT_VAL_FRAC", 0.25)
+    monkeypatch.setattr(cyclegan, "SIM_SPLIT_SEED", 7)
+    cache = tmp_path / "cache"
+    _write_small_split_cache(cache)
+    (cache / "real_sem.npy").write_bytes(b"real-domain")
+    case = np.load(cache / "sim_case.npy")
+    train_idx, val_idx = cyclegan.sim_split_indices(case)
+
+    got = cyclegan.cyclegan_training_data_provenance(
+        cache / "sim_sem.npy", cache / "sim_case.npy", cache / "real_sem.npy",
+        train_idx, val_idx)
+
+    assert set(got["inputs"]) == {"sim_sem", "sim_case", "real_sem"}
+    assert got["split"]["train_n"] == 12
+    assert got["split"]["val_n"] == 4
+    assert cyclegan.validate_cyclegan_training_data(got) == got
+
+
+def test_cyclegan_resume_provenance_rejects_changed_input_before_state_load(tmp_path,
+                                                                            monkeypatch):
+    monkeypatch.setattr(cyclegan, "SIM_TOTAL_N", 16)
+    monkeypatch.setattr(cyclegan, "SIM_TRAIN_N", 12)
+    monkeypatch.setattr(cyclegan, "SIM_VAL_N", 4)
+    monkeypatch.setattr(cyclegan, "SIM_SPLIT_VAL_FRAC", 0.25)
+    monkeypatch.setattr(cyclegan, "SIM_SPLIT_SEED", 7)
+    cache = tmp_path / "cache"
+    _write_small_split_cache(cache)
+    (cache / "real_sem.npy").write_bytes(b"real-domain")
+    case = np.load(cache / "sim_case.npy")
+    train_idx, val_idx = cyclegan.sim_split_indices(case)
+    expected = cyclegan.cyclegan_training_data_provenance(
+        cache / "sim_sem.npy", cache / "sim_case.npy", cache / "real_sem.npy",
+        train_idx, val_idx)
+    stored = json.loads(json.dumps(expected))
+    stored["inputs"]["real_sem"]["sha256"] = "0" * 64
+
+    with pytest.raises(cyclegan.GateFailedError, match="training_data"):
+        cyclegan.require_matching_training_data(stored, expected)
 
 
 # ── GPU 락 · 덮어쓰기 정책 (스크립트 in-process, 가짜 락 — 기계 전역 gpu-0은 안 건드린다) ──

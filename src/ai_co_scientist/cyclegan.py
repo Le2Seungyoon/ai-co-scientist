@@ -13,6 +13,7 @@ correlation 판정 + 진단 전용 국소 NCC probe) · manifest의 불변성(wr
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from dataclasses import fields as dc_fields
 from pathlib import Path
@@ -348,6 +349,69 @@ def sim_split_provenance(train_idx: np.ndarray, val_idx: np.ndarray, *,
     }
 
 
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+_GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+
+
+def cyclegan_training_data_provenance(sim_path, case_path, real_path,
+                                      train_idx: np.ndarray, val_idx: np.ndarray) -> dict:
+    """CycleGAN checkpoint가 결속할 세 입력과 고정 split provenance를 만든다."""
+    provenance = {
+        "inputs": {
+            "sim_sem": _hashed_entry(sim_path),
+            "sim_case": _hashed_entry(case_path),
+            "real_sem": _hashed_entry(real_path),
+        },
+        "split": sim_split_provenance(train_idx, val_idx),
+    }
+    return validate_cyclegan_training_data(provenance)
+
+
+def validate_cyclegan_training_data(provenance: dict) -> dict:
+    """checkpoint 안 training_data의 필수 입력·해시·split 형태를 검증한다."""
+    if not isinstance(provenance, dict) or set(provenance) != {"inputs", "split"}:
+        raise GateFailedError("ckpt training_data는 inputs와 split만 가져야 한다")
+    inputs = provenance.get("inputs")
+    expected_inputs = {"sim_sem", "sim_case", "real_sem"}
+    if not isinstance(inputs, dict) or set(inputs) != expected_inputs:
+        raise GateFailedError(
+            f"ckpt training_data inputs가 {sorted(expected_inputs)}와 정확히 같아야 한다")
+    for name, entry in inputs.items():
+        if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
+            raise GateFailedError(f"ckpt training_data input:{name}의 path/sha256 형태가 잘못됐다")
+        if not Path(str(entry["path"])).is_absolute():
+            raise GateFailedError(f"ckpt training_data input:{name} path가 절대경로가 아니다")
+        if not _SHA256_RE.fullmatch(str(entry["sha256"])):
+            raise GateFailedError(f"ckpt training_data input:{name} sha256 형태가 잘못됐다")
+    split = provenance.get("split")
+    expected_split_keys = {
+        "method", "total_n", "train_n", "val_n", "val_frac", "seed",
+        "train_indices_sha256", "val_indices_sha256",
+    }
+    if not isinstance(split, dict) or set(split) != expected_split_keys:
+        raise GateFailedError("ckpt training_data split provenance 형태가 잘못됐다")
+    expected_values = {
+        "method": "map_level_split", "total_n": SIM_TOTAL_N,
+        "train_n": SIM_TRAIN_N, "val_n": SIM_VAL_N,
+        "val_frac": SIM_SPLIT_VAL_FRAC, "seed": SIM_SPLIT_SEED,
+    }
+    drift = [key for key, value in expected_values.items() if split.get(key) != value]
+    if drift:
+        raise GateFailedError(f"ckpt training_data split 값이 사전등록과 다르다: {drift}")
+    for key in ("train_indices_sha256", "val_indices_sha256"):
+        if not _SHA256_RE.fullmatch(str(split.get(key, ""))):
+            raise GateFailedError(f"ckpt training_data split {key} 형태가 잘못됐다")
+    return provenance
+
+
+def require_matching_training_data(stored: dict, current: dict) -> None:
+    """resume state를 적용하기 전에 저장·현재 training_data가 정확히 같은지 확인한다."""
+    validate_cyclegan_training_data(stored)
+    validate_cyclegan_training_data(current)
+    if stored != current:
+        raise GateFailedError("resume checkpoint의 training_data가 현재 입력/split과 다르다")
+
+
 def _parabolic_subpixel(vec: np.ndarray, peak_idx: int, n: int) -> float:
     """정수 peak 주변 3점(순환 이웃)에 1차원 포물선을 맞춰 subpixel 위치를 추정한다.
 
@@ -631,8 +695,10 @@ def sha256_file(path, chunk_size: int = 1 << 20) -> str:
 def write_once_json(path, obj) -> None:
     """`path`가 이미 있으면 예외 — **덮어쓰기 거부**(overwrite-refusing)이지 불변(immutable)이
     아니다: 파일 자체를 잠그거나 보호하지 않고, 오직 "같은 경로에 두 번째로 쓰는 것"만 막는다.
-    실제 위·변조 방지는 이 함수가 아니라 `verify_manifest`/`require_gate_passed`의 **재해시
-    검증**이 한다 — gate 결과·manifest는 한 번 쓰고, 쓸 때마다 그 내용을 다시 확인한다.
+    이후 변경 탐지는 이 함수가 아니라 `verify_manifest`/`require_gate_passed`의 **재해시 검증**이
+    한다 — gate 결과·manifest는 한 번 쓰고, 쓸 때마다 그 내용을 다시 확인한다. 자유롭게 편집
+    가능한 JSON의 hash는 인증 서명이 아니며, downstream checkpoint가 검증 시점 manifest 자체의
+    sha256을 결속해 나중 변경을 탐지할 근거만 남긴다.
 
     `O_CREAT|O_EXCL`은 POSIX·Windows 모두 원자적이다(`ai_co_scientist.locks`와 같은 원리).
     Windows에서 막 unlink된 파일이 delete-pending 상태면 `EEXIST`가 아니라 `EACCES`
@@ -693,6 +759,7 @@ def _hashed_entry(path) -> dict:
     return {"path": str(Path(path).resolve()), "sha256": sha256_file(path)}
 
 
+REQUIRED_SOURCES = ("sim_sem", "sim_depth", "sim_case", "real_sem")
 REQUIRED_OUTPUTS = ("sim_sem", "sim_depth", "sim_case")  # 번역본 + y/case 원본 사본
 UNCHANGED_OUTPUTS = ("sim_depth", "sim_case")  # y는 원본 sim GT 그대로다 — 바이트가 같아야 한다
 
@@ -708,8 +775,18 @@ def _binding_problems(m: dict) -> list:
     outs = m.get("output_files") or {}
     srcs = m.get("source_files") or {}
     gate = m.get("gate") or {}
+    if sorted(srcs) != sorted(REQUIRED_SOURCES):
+        problems.append(f"source 목록이 {list(REQUIRED_SOURCES)}이어야 한다: {sorted(srcs)}")
     if sorted(outs) != sorted(REQUIRED_OUTPUTS):
         problems.append(f"output 목록이 {list(REQUIRED_OUTPUTS)}이어야 한다: {sorted(outs)}")
+    if m.get("hypothesis") != "H6":
+        problems.append(f"hypothesis가 'H6'이어야 한다: {m.get('hypothesis')!r}")
+    if m.get("x_domain") != "sim_translated_to_real_appearance":
+        problems.append("x_domain이 'sim_translated_to_real_appearance'이어야 한다")
+    if m.get("y_source") != "sim_depth_gt":
+        problems.append("y_source가 'sim_depth_gt'이어야 한다")
+    if not _GIT_COMMIT_RE.fullmatch(str(m.get("git_commit", ""))):
+        problems.append("git_commit은 40자리 16진 commit이어야 한다")
     for name in UNCHANGED_OUTPUTS:
         o, s = outs.get(name) or {}, srcs.get(name) or {}
         if not o.get("sha256") or o.get("sha256") != s.get("sha256"):
@@ -793,8 +870,9 @@ def verify_manifest(manifest_path) -> dict:
        걸리지 않음, 저장된 gate가 `recheck_gate`를 통과함.
     3. 결속: `_binding_problems` — 필수 output, y/case 무변경, gate↔ckpt·report_id·config.
 
-    이 함수는 `translate_sim.py`가 승격 전에 부른다. **downstream 구조 학습이 로드 시점에 부르는
-    배선은 이 lane 밖이다**(`train_structure.py`) — arm 1 실행 전에 통합돼야 한다.
+    이 함수는 `translate_sim.py`가 승격 전에, `train_structure.py --cache-manifest`가 배열을 열기
+    전에 부른다. JSON 자체는 인증되지 않으므로 downstream checkpoint에는 검증한 manifest 파일의
+    절대경로와 sha256도 함께 결속한다.
 
     문제를 **전부** 나열한 뒤 `ValueError`를 던진다 — 하나 찾고 바로 멈추면 두 번째 결함이
     다음 실행까지 숨는다.
@@ -847,6 +925,74 @@ def verify_manifest(manifest_path) -> dict:
     if problems:
         raise ValueError("manifest 검증 실패 — " + "; ".join(problems))
     return manifest
+
+
+def resolve_structure_cache_provenance(cache_dir, manifest_path=None) -> dict:
+    """구조 학습이 cache 배열을 열기 전에 H6 manifest와 도메인 provenance를 확정한다.
+
+    manifest를 주지 않은 control은 기존 sim 도메인으로 남는다. 주었다면 선택한 cache 바로 안의
+    ``manifest.json``만 허용하고, 본문/파일 해시를 재검증한 뒤 각 output이 실제로 그 cache의
+    고정 파일명인지 확인한다.
+    """
+    cache = Path(cache_dir).resolve()
+    if manifest_path is None:
+        return {
+            "cache_dir": str(cache), "cache_manifest": None,
+            "report_id": None, "hypothesis": None, "git_commit": None,
+            "x_domain": "sim", "y_source": "sim_depth_gt",
+            "output_files": None,
+        }
+    manifest_path = Path(manifest_path).resolve()
+    expected = cache / "manifest.json"
+    if manifest_path != expected:
+        raise ValueError(
+            f"--cache-manifest는 선택한 cache-dir의 manifest.json이어야 한다: "
+            f"{manifest_path} != {expected}")
+    if not manifest_path.is_file():
+        raise ValueError(f"cache manifest 파일이 없다: {manifest_path}")
+    manifest = verify_manifest(manifest_path)
+    resolved_outputs = {}
+    for name, entry in manifest["output_files"].items():
+        actual = (manifest_path.parent / entry["path"]).resolve()
+        wanted = cache / f"{name}.npy"
+        if actual != wanted:
+            raise ValueError(
+                f"manifest output:{name}이 선택한 cache-dir의 고정 파일이 아니다: "
+                f"{actual} != {wanted}")
+        resolved_outputs[name] = {"path": str(actual), "sha256": entry["sha256"]}
+    return {
+        "cache_dir": str(cache),
+        "cache_manifest": {
+            "path": str(manifest_path), "sha256": sha256_file(manifest_path),
+        },
+        "report_id": manifest["report_id"],
+        "hypothesis": manifest["hypothesis"],
+        "git_commit": manifest["git_commit"],
+        "x_domain": manifest["x_domain"],
+        "y_source": manifest["y_source"],
+        "output_files": resolved_outputs,
+    }
+
+
+def bind_structure_checkpoint(payload: dict, provenance: dict) -> dict:
+    """best/save-epoch/resume checkpoint에 검증된 cache provenance를 빠짐없이 붙인다."""
+    if provenance.get("cache_manifest") is None:
+        return payload
+    return {**payload, "data_provenance": provenance}
+
+
+def structure_result_provenance(provenance: dict) -> dict:
+    """구조 학습 최종 JSON의 도메인 라벨과, H6 arm이면 manifest 결속을 반환한다."""
+    result = {"x_domain": provenance["x_domain"], "y_source": provenance["y_source"]}
+    if provenance.get("cache_manifest") is not None:
+        result["data_provenance"] = provenance
+    return result
+
+
+def require_matching_structure_provenance(stored: dict, current: dict) -> None:
+    """resume state를 적용하기 전 저장된 cache/manifest provenance의 정확 일치를 요구한다."""
+    if stored != current:
+        raise ValueError("resume checkpoint의 data_provenance가 현재 cache/manifest와 다르다")
 
 
 def expected_ckpt_name(report_id: str) -> str:
@@ -1106,6 +1252,7 @@ def load_generators(ckpt_path, device):
         raise GateFailedError(
             f"ckpt의 epoch({ckpt.get('epoch')!r})이 총 epoch({cfg.total_epochs})이 아니다 — "
             "중간 resume ckpt이거나 학습이 끝나지 않았다")
+    validate_cyclegan_training_data(ckpt.get("training_data"))
     gens = []
     for key in ("G_sim2real", "G_real2sim"):
         g = build_generator(cfg).to(device)

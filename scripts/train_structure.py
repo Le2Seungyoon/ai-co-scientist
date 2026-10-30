@@ -34,6 +34,12 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
 from ai_co_scientist.config import ensure_utf8_console  # noqa: E402
+from ai_co_scientist.cyclegan import (  # noqa: E402
+    bind_structure_checkpoint,
+    require_matching_structure_provenance,
+    resolve_structure_cache_provenance,
+    structure_result_provenance,
+)
 from ai_co_scientist.sem import CASE_LEVEL, depth_to_s, map_level_split  # noqa: E402
 
 H, W = 72, 48
@@ -221,6 +227,8 @@ def main():
                     help="mlp | unet | smp:<arch>:<encoder> (smp는 --group baseline 필요)")
     ap.add_argument("--width", type=int, default=32, help="unet 채널 폭")
     ap.add_argument("--cache-dir", default="runtime/cache")
+    ap.add_argument("--cache-manifest", default="",
+                    help="H6 translated cache는 반드시 <cache-dir>/manifest.json을 지정")
     ap.add_argument("--out", default="")
     ap.add_argument("--val-frac", type=float, default=0.2, help="홀드아웃할 depth-map 비율")
     ap.add_argument("--epochs", type=int, default=15)
@@ -240,9 +248,15 @@ def main():
                          "--out에 강제 저장한다 (사전등록 체크포인트 선택, H4)")
     args = ap.parse_args()
 
+    cache = Path(args.cache_dir)
+    try:
+        data_provenance = resolve_structure_cache_provenance(
+            cache, args.cache_manifest or None)
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        ap.error(f"cache manifest 검증 실패: {e}")
+
     seed_everything(args.seed)
     out = args.out or f"runtime/ckpt/structure-{args.arch.replace(':', '_')}.pt"
-    cache = Path(args.cache_dir)
     sem = np.load(cache / "sim_sem.npy", mmap_mode="r")
     depth = np.load(cache / "sim_depth.npy", mmap_mode="r")
     case = np.load(cache / "sim_case.npy")
@@ -284,6 +298,8 @@ def main():
     saved_state = None  # --save-epoch가 강제 저장한 가중치 (사전등록 선택, holdout 무관)
     if args.resume and resume_path.exists():
         ck = torch.load(resume_path, map_location=DEVICE, weights_only=False)
+        if data_provenance["cache_manifest"] is not None:
+            require_matching_structure_provenance(ck.get("data_provenance"), data_provenance)
         model.load_state_dict(ck["state_dict"])
         opt.load_state_dict(ck["opt"])
         sched.load_state_dict(ck["sched"])
@@ -319,23 +335,29 @@ def main():
                         "depth_rmse": m["depth_rmse_by_tau"][0.0],
                         "depth_rmse_by_tau": m["depth_rmse_by_tau"],
                         "note": "pre-registered save-epoch, not holdout-selected"}
-                torch.save({"arch": args.arch, "width": args.width,
-                            "blur_sigma": args.blur_sigma,
-                            "state_dict": saved_state}, out)
+                torch.save(bind_structure_checkpoint({
+                    "arch": args.arch, "width": args.width,
+                    "blur_sigma": args.blur_sigma,
+                    "state_dict": saved_state,
+                }, data_provenance), out)
         elif best is None or m["depth_rmse_by_tau"][bt] < best["depth_rmse"]:
             best = {"epoch": ep, "s_rmse": m["s_rmse"], "tau": bt,
                     "depth_rmse": m["depth_rmse_by_tau"][bt],
                     "depth_rmse_by_tau": m["depth_rmse_by_tau"]}
-            torch.save({"arch": args.arch, "width": args.width,
-                        "blur_sigma": args.blur_sigma,
-                        "state_dict": model.state_dict()}, out)
+            torch.save(bind_structure_checkpoint({
+                "arch": args.arch, "width": args.width,
+                "blur_sigma": args.blur_sigma,
+                "state_dict": model.state_dict(),
+            }, data_provenance), out)
         # 에폭마다 재개점을 덮어쓴다. 이 머신은 학습 중 0x10E(비디오 메모리 관리자) BSOD가
         # 재발하므로 크래시 손실을 1에폭으로 묶는다. 샘플러 RNG는 복원하지 않으므로 재개 후
         # 배치 순서는 달라진다 — 재현성이 필요한 실행은 처음부터 돌릴 것.
-        torch.save({"arch": args.arch, "width": args.width, "epoch": ep, "best": best,
-                    "blur_sigma": args.blur_sigma,
-                    "state_dict": model.state_dict(), "opt": opt.state_dict(),
-                    "sched": sched.state_dict(), "scaler": scaler.state_dict()}, resume_path)
+        torch.save(bind_structure_checkpoint({
+            "arch": args.arch, "width": args.width, "epoch": ep, "best": best,
+            "blur_sigma": args.blur_sigma,
+            "state_dict": model.state_dict(), "opt": opt.state_dict(),
+            "sched": sched.state_dict(), "scaler": scaler.state_dict(),
+        }, data_provenance), resume_path)
 
     # --save-epoch 강제 저장이 학습 마지막 에폭보다 먼저 걸렸을 수 있으니(예: epochs>save-epoch),
     # 이후 raw-sim 평가는 반드시 저장된 그 가중치로 한다 — 루프 종료 시점의 model이 아니라.
@@ -349,8 +371,10 @@ def main():
               f"depth_rmse(tau=0)={raw_sim_holdout['depth_rmse_by_tau'][0.0]:.4f}", flush=True)
 
     print(json.dumps({
-        "x_domain": "sim", "y_source": "sim_depth_gt",
-        "metric": {"name": "sim_holdout_s_rmse", "x_domain": "sim", "y_source": "sim_depth_gt"},
+        **structure_result_provenance(data_provenance),
+        "metric": {"name": "sim_holdout_s_rmse",
+                   "x_domain": data_provenance["x_domain"],
+                   "y_source": data_provenance["y_source"]},
         "target": "s = (L - d) / L", "levels": CASE_LEVEL,
         "arch": args.arch, "width": args.width, "params": n_par,
         "split": "depth-map id 단위", "val_frac": args.val_frac, "seed": args.seed,
