@@ -2046,9 +2046,13 @@ def test_translation_keeps_full_cache_and_post_write_gate_uses_validation_global
     partial_dir = tmp_path / "translated.partial"
     args = argparse.Namespace(report_id="H6-TEST", batch_size=4, git_commit="a" * 40)
     seen = {}
+    case = np.load(cache / "sim_case.npy")
+    train_idx, val_idx = cyclegan.sim_split_indices(case)
+    training_data = cyclegan.cyclegan_training_data_provenance(
+        cache / "sim_sem.npy", cache / "sim_case.npy", real_path, train_idx, val_idx)
 
     monkeypatch.setattr(mod, "load_generators", lambda *_a, **_k: (
-        cyclegan.CycleGANConfig(), 100, object(), object(), {}))
+        cyclegan.CycleGANConfig(), 100, object(), object(), training_data))
     def _translate(_model, arr, _batch_size, _device):
         seen["translated_globals"] = arr[:, 0, 0].tolist()
         return arr.copy()
@@ -2061,7 +2065,7 @@ def test_translation_keeps_full_cache_and_post_write_gate_uses_validation_global
     monkeypatch.setattr(mod, "build_manifest", lambda **_kwargs: {})
     monkeypatch.setattr(mod, "verify_manifest", lambda _path: {})
 
-    gate = {"roundtrip_mae": 0.0}
+    gate = {"roundtrip_mae": 0.0, "training_data": training_data}
     assert mod._translate_locked(
         args, gate, cache / "sim_sem.npy", cache / "sim_depth.npy",
         cache / "sim_case.npy", real_path, ckpt, out_dir, partial_dir) == 0
@@ -2070,6 +2074,40 @@ def test_translation_keeps_full_cache_and_post_write_gate_uses_validation_global
     assert seen["translated_globals"] == list(range(16))
     assert seen["gate_globals"] == [6, 13]
     assert np.array_equal(written, source)
+
+
+def test_translation_refuses_checkpoint_training_data_mismatch_before_inference_or_write(
+        tmp_path, monkeypatch):
+    # Regression: gate/current-cache provenance was validated before the GPU lock, but translation
+    # discarded load_generators()' checkpoint provenance and could infer/write with another model.
+    mod = _load_script(TRANSLATE_SCRIPT, "_h6_translate_checkpoint_binding")
+    _patch_small_split_contract(monkeypatch, mod)
+    cache = tmp_path / "cache"
+    _write_small_split_cache(cache)
+    real_path = cache / "real_sem.npy"
+    real_path.write_bytes(b"real-domain")
+    case = np.load(cache / "sim_case.npy")
+    train_idx, val_idx = cyclegan.sim_split_indices(case)
+    current = cyclegan.cyclegan_training_data_provenance(
+        cache / "sim_sem.npy", cache / "sim_case.npy", real_path, train_idx, val_idx)
+    checkpoint = json.loads(json.dumps(current))
+    checkpoint["inputs"]["real_sem"]["sha256"] = "0" * 64
+    ckpt = tmp_path / _expected_ckpt_name("H6-TEST")
+    ckpt.write_bytes(b"checkpoint")
+    out_dir = tmp_path / "translated"
+    partial_dir = tmp_path / "translated.partial"
+    args = argparse.Namespace(report_id="H6-TEST", batch_size=4, git_commit="a" * 40)
+
+    monkeypatch.setattr(mod, "load_generators", lambda *_a, **_k: (
+        cyclegan.CycleGANConfig(), 100, object(), object(), checkpoint))
+    monkeypatch.setattr(
+        mod, "translate_u8", lambda *_a, **_k: pytest.fail("generator inference reached"))
+
+    assert mod._translate_locked(
+        args, {"training_data": current}, cache / "sim_sem.npy", cache / "sim_depth.npy",
+        cache / "sim_case.npy", real_path, ckpt, out_dir, partial_dir) == 3
+    assert not out_dir.exists()
+    assert not partial_dir.exists()
 
 
 def test_translate_refuses_test_path_before_hashing_anything(tmp_path, monkeypatch, capsys):

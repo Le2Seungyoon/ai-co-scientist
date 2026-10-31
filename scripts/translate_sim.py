@@ -67,6 +67,7 @@ from ai_co_scientist.cyclegan import (
     reject_test_paths,
     require_gate_passed,
     require_current_git_commit,
+    require_matching_training_data,
     require_source_name,
     sha256_file,
     translate_u8,
@@ -174,8 +175,9 @@ def _translate_locked(args, gate, sim_path, depth_path, case_path, real_path, ck
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     try:
-        cfg, ckpt_epoch, g_sim2real, _g_real2sim, _training_data = load_generators(
+        cfg, ckpt_epoch, g_sim2real, _g_real2sim, checkpoint_training_data = load_generators(
             ckpt_path, device)
+        require_matching_training_data(checkpoint_training_data, gate.get("training_data"))
     except GateFailedError as e:
         return _refuse(str(e))
 
