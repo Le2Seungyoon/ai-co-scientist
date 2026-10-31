@@ -14,12 +14,13 @@ not a date** — a hypothesis is revisited, and a date would lie about when it w
 |---|---|---|
 | 질문 · 조건 · 무엇이 답인가, `status: 계획` | orchestrator | before dispatch, on `main` |
 | 결과 · 관찰 · 판정 · 미검증, `status: 진행중 → 측정됨 → 판정`, `verdict` | the lane | during/after its run |
-| 이관 범위, `registry` (append the issued id) | orchestrator | after merge |
+| 이관 범위, `registry` (append each issued id) | orchestrator | after merge |
 
 **`registry: []` is appended, not drafted.** `EXP-0NN` ids are issued by `new_report` against
 `runtime/registry.jsonl` — the same single-writer reasoning that keeps the registry the original
-(above) puts landing the confirmed id in front-matter on the orchestrator, after merge. The
-lane's own 결과 table may already name the id it expects; this field is the reconciled copy.
+(below) puts landing each confirmed id in front-matter on the orchestrator, after merge. The
+field is a list because a hypothesis may collect several reports. The lane's own 결과 table may
+already name the ids it expects; this field is the reconciled copy.
 
 **A lane touches only its own hypothesis file.** Not another lane's, not the backlog. Two lanes
 therefore never edit the same path, so git merges them without a conflict — the property depends
@@ -41,6 +42,9 @@ was rejected. A dispatched hypothesis moves to its own file and is closed there.
 
 ## The registry is the original; the file quotes it
 
+- **`runtime/registry.jsonl` is an append-only list of report records.** Each report has one
+  unique `report_id`; recording more arms or results updates that report rather than issuing
+  another id.
 - **Numbers, conditions, the code commit: `runtime/registry.jsonl`.** The file copies only the
   headline figures a reader needs to follow the verdict.
 - **Judgment, plan, transfer scope: this file.**
@@ -49,11 +53,14 @@ was rejected. A dispatched hypothesis moves to its own file and is closed there.
 ## The join key
 
 Every pre-report carries `hypothesis=<id>` — one id, a plain string — so the link is queryable
-both ways: which runs tested H12, and why a run exists at all. The relation is many-to-one: a
-hypothesis accumulates many reports (EXP-010 recorded a 3-arm sweep as one report against one
-hypothesis), but one report names exactly one hypothesis. `registry.new_report` refuses without
-it, and `tests/test_registry.py` pins that — an untagged record is invisible to the join and
-nothing else notices, which is why it is a refusal and not a convention.
+both ways: which runs tested H12, and why a run exists at all. **One report names exactly one
+hypothesis; one hypothesis may have many reports** — report → hypothesis is many-to-one,
+hypothesis → reports is one-to-many. Arms stay inside one report: EXP-010 recorded a 3-arm sweep
+under one `report_id`. `registry.new_report` refuses a missing or blank id, and
+`tests/test_registry.py` pins both refusals and that two reports may share one hypothesis id —
+an untagged record is invisible to the join and nothing else notices, which is why it is a
+refusal and not a convention. The registry does not validate the id's shape: `H12,H13` would be
+stored as one string, so "exactly one" is a lane contract, not a registry gate.
 
 **`new_report` runs before dispatch, not after the lane reports** — an id issued once the run's
 outcome is already known is registry data pretending to be pre-registration.
@@ -67,6 +74,7 @@ closing it unrun — the second is what makes a hypothesis cost nothing.
 ## One lane, one hypothesis
 
 Two lanes on one hypothesis is a dispatch bug, not a merge bug: the single-writer property above
-is what the automatic merge depends on. The orchestrator writes 질문 · 조건 · 무엇이 답인가
+is what the automatic merge depends on. Assign one lane per hypothesis, even when that
+hypothesis accumulates several reports. The orchestrator writes 질문 · 조건 · 무엇이 답인가
 **before** dispatch, on `main`, so pre-registration is proved by commit order. How a lane is
 dispatched and driven: `orca-parallel.md`.
