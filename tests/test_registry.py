@@ -437,6 +437,14 @@ def test_new_report_refuses_a_blank_hypothesis(tmp_path):
         registry.new_report(**BASE, hypothesis="   ", path=path)
 
 
+def test_new_report_refuses_null_hypothesis_before_coercion(tmp_path):
+    # None used to become the nonempty string "None" and enter the registry as a false join key.
+    path = tmp_path / "r.jsonl"
+    with pytest.raises(ValueError, match="hypothesis"):
+        registry.new_report(**BASE, hypothesis=None, path=path)
+    assert not path.exists()
+
+
 def test_many_runs_may_answer_one_hypothesis(tmp_path):
     """관계는 다대일이다 — EXP-010은 3-arm을 한 항목으로 기록했다. (스키마·docstring과
     한 번 더 맞춘다: registry.py의 new_report 주석과 experiment-ledger.md도 다대일이라 적는다.)"""

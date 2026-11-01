@@ -104,6 +104,8 @@ def deliver_one(path, mailbox, orca="orca", runner=None):
         # Accept both plain UTF-8 and the BOM-prefixed UTF-8 commonly emitted by PowerShell.
         with open(staged, encoding="utf-8-sig") as fh:
             msg = json.load(fh)
+        if not isinstance(msg, dict):
+            raise ValueError("message must be a JSON object")
         argv = build_command(msg, orca)
     except (ValueError, OSError) as exc:
         os.replace(staged, os.path.join(failed, name))

@@ -129,6 +129,26 @@ with tempfile.TemporaryDirectory() as mb:
     check(not ok, "deliver_one: 깨진 JSON을 전달했다")
     check(os.path.isfile(os.path.join(mb, "failed", "m4.json")), "deliver_one: 깨진 JSON을 failed/로 옮기지 않았다")
 
+# A JSON value can decode cleanly yet still lack the object shape required by build_command.
+# One malformed inbox item must take the existing failed/ path and leave the next one deliverable.
+for bad_value in ([], None):
+    with tempfile.TemporaryDirectory() as mb:
+        write_msg(mb, "a-invalid.json", bad_value)
+        write_msg(mb, "b-valid.json", GOOD)
+        sent_argv = []
+        outcomes = []
+        for path in relay.scan(mb):
+            outcomes.append(relay.deliver_one(
+                path, mb, runner=lambda a: sent_argv.append(a) or FakeProc(0)))
+        check([ok for ok, _ in outcomes] == [False, True],
+              "deliver_one: non-object JSON interrupted a following valid message")
+        check(os.path.isfile(os.path.join(mb, "failed", "a-invalid.json")),
+              "deliver_one: non-object JSON did not move to failed/")
+        check(os.path.isfile(os.path.join(mb, "sent", "b-valid.json")),
+              "deliver_one: valid message after non-object JSON did not move to sent/")
+        check(len(sent_argv) == 1,
+              "deliver_one: non-object JSON reached Orca or valid message was skipped")
+
 # --- scan: only the inbox, and oldest first ---------------------------------------------------
 with tempfile.TemporaryDirectory() as mb:
     os.makedirs(os.path.join(mb, "sent"))

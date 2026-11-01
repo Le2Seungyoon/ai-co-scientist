@@ -94,7 +94,7 @@ def get(report_id: str, path=None) -> dict:
 
 
 def _require(name: str, value: str) -> str:
-    if not str(value).strip():
+    if value is None or not str(value).strip():
         raise ValueError(f"선보고 필수 항목 누락: {name}")
     return str(value).strip()
 
