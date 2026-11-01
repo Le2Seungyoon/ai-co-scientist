@@ -30,6 +30,7 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ai_co_scientist.adabn import adapt_bn_exact, iter_cache_batches, save_bn_stats
 from ai_co_scientist.config import ensure_utf8_console
+from ai_co_scientist.locks import GPU_LOCK, ResourceBusy, resource_lock
 from ai_co_scientist.sem import (
     GROUPS, LEVELS, assemble_depth, load_labels, pixel_features, qda_log_posterior,
     smooth_levels, softmax, viterbi_levels,
@@ -269,7 +270,19 @@ def main():
     if args.level_hmm and args.level_smooth > 1:
         ap.error("--level-hmm과 --level-smooth는 함께 쓸 수 없다 — 평활기를 두 번 겹치면 "
                  "어느 쪽이 점수를 움직였는지 분리되지 않는다. 하나만 고를 것")
+    if (args.level_hmm or args.dump_level_proba) and args.level_source == "mean_only":
+        ap.error("--level-source mean_only는 사후확률을 내지 않는다 — "
+                 "--level-hmm / --dump-level-proba는 cnn 또는 qda에서만 쓸 수 있다")
 
+    try:
+        with resource_lock(GPU_LOCK):
+            return _run_locked(args)
+    except ResourceBusy as e:
+        ap.error(f"{GPU_LOCK} 사용 중: {e}")
+
+
+def _run_locked(args):
+    """모델 로딩부터 덤프·zip 출력까지 같은 GPU 락 안에서 실행한다."""
     cache = Path(args.cache_dir)
     model, arch = load_model(args.ckpt, args.arch, args.width)
     print(f"구조 모델: {args.ckpt} (arch={arch})", flush=True)
@@ -295,9 +308,6 @@ def main():
             print(f"BN 통계 덤프 → {save_bn_stats(model, args.adabn_dump)}", flush=True)
 
     want_proba = bool(args.level_hmm or args.dump_level_proba)
-    if want_proba and args.level_source == "mean_only":
-        ap.error("--level-source mean_only는 사후확률을 내지 않는다 — "
-                 "--level-hmm / --dump-level-proba는 cnn 또는 qda에서만 쓸 수 있다")
     if want_proba:
         cls, diag, proba = fit_predict_levels(Path(args.data_dir), cache, args.level_source,
                                               args.level_ckpt, return_proba=True)

@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ai_co_scientist.locks import GPU_LOCK as GPU_LOCK
 from ai_co_scientist.sem import CASE_LEVEL
 
 # ── 상수 ────────────────────────────────────────────────────
@@ -39,8 +40,6 @@ INFERENCE_PREREGISTERED = {
 
 MASK_RATE_TOLERANCE = 0.10  # |pred_rate - sim_gt_rate| >= 0.10 -> 제출 중단 (사전등록: 10pp)
 MASK_THRESHOLD = 0.5        # 붕괴 게이트/비율 진단 전용 — 출력 조립에는 쓰지 않는다 (soft product)
-
-GPU_LOCK = "gpu-0"  # train_two_head.py·infer_two_head.py가 공유하는 자원 락 이름 (locks.resource_lock)
 
 # 두 arm 체크포인트 매니페스트가 반드시 일치해야 하는 키 (arm 자체와 n_params·loss·output·
 # ckpt_selection·git_dirty·resumed_from_epoch·sim_mask_gate는 의도적으로 제외 — arm마다

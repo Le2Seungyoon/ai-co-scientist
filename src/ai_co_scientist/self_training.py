@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ai_co_scientist.locks import GPU_LOCK as GPU_LOCK
 from ai_co_scientist.sem import map_level_split
 
 IMAGE_SHAPE = (72, 48)
@@ -70,9 +71,6 @@ PARITY_ALLOWED_DIFFS = frozenset({
     "extra_sampler_seed", "out_sha256",
 })
 DIRTY_SUFFIX = "+dirty"
-# 두 GPU 진입점(라벨 생성·학습)이 잡는 기계 단위 락 이름 — `locks.resource_lock`
-GPU_LOCK = "gpu-0"
-
 # canonical_json/check_arm_parity 내부에서만 쓰는 결측 표시자 — 합법적인 None/빈문자열과
 # 절대 겹치지 않도록 문자열 안에 넣을 수 없는 NUL을 포함시킨다.
 _MISSING = "\u0000__missing__\u0000"

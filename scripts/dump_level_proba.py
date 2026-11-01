@@ -16,6 +16,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ai_co_scientist.config import ensure_utf8_console  # noqa: E402
+from ai_co_scientist.locks import GPU_LOCK, ResourceBusy, resource_lock  # noqa: E402
 from infer_decomposed import predict_levels_cnn  # noqa: E402
 
 
@@ -28,6 +29,15 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="사후확률 .npy 출력 경로 (N,4) float32")
     args = ap.parse_args()
 
+    try:
+        with resource_lock(GPU_LOCK):
+            return _run_locked(args)
+    except ResourceBusy as e:
+        ap.error(f"{GPU_LOCK} 사용 중: {e}")
+
+
+def _run_locked(args) -> int:
+    """추론과 산출물 저장은 같은 배타 구간이다."""
     _, proba = predict_levels_cnn(Path(args.cache_dir), args.level_ckpt,
                                   return_proba=True, npy=args.npy)
     out = Path(args.out)

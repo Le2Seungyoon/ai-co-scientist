@@ -10,6 +10,7 @@ Each scenario needs its own tree because the verdict turns on whether
 
 Stdlib only, no test runner: pytest does not collect this file (`testpaths = ["tests"]`).
 """
+import ast
 import importlib.util
 import json
 import os
@@ -95,6 +96,7 @@ def main():
         "uv run python scripts/train_level.py",
         "uv run python scripts/exp.py new --title x",
         "uv run python scripts/infer_decomposed.py --submit runtime/submissions/a.zip",
+        "uv run python scripts/dump_level_proba.py --out level.npy",
         "uv run python scripts/dacon_submit.py runtime/submissions/a.zip",
         "uv run python scripts/train_dann.py --arm B --lambda-max 1.0",
         "uv run python scripts/build_pseudo_labels.py build --out labels.npy",
@@ -188,6 +190,28 @@ def main():
         path = os.path.join(repo_root, *script.split("/"))
         check(f"GUARDED entry exists on disk: {script}", os.path.isfile(path), path)
 
+    # A new resource-locking entry point must not silently bypass the worktree hook.
+    exclusive_scripts = set()
+    scripts_dir = os.path.join(repo_root, "scripts")
+    for filename in os.listdir(scripts_dir):
+        if not filename.endswith(".py"):
+            continue
+        with open(os.path.join(scripts_dir, filename), encoding="utf-8") as source:
+            tree = ast.parse(source.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+                if name == "resource_lock":
+                    exclusive_scripts.add("scripts/" + filename)
+    check("resource-locking entry points are non-empty", bool(exclusive_scripts))
+    check("every resource-locking entry point is governed by EXCLUSIVE",
+          exclusive_scripts == set(hook_mod.EXCLUSIVE),
+          repr(sorted(exclusive_scripts.symmetric_difference(hook_mod.EXCLUSIVE))))
+    for script in sorted(exclusive_scripts):
+        out, _ = run(worktree, "uv run python " + script)
+        check("enumerated entry point denied: " + script, denied(out), out[:120] or "silent")
+
     print("grade split -- what unlocks in a registry-less tree, and what stays guarded")
     with tempfile.TemporaryDirectory() as root:  # no registry.jsonl = a worktree
         out, _ = run(root, "uv run python scripts/probe_level.py --cache-dir ../../x/runtime/cache")
@@ -210,11 +234,8 @@ def main():
                 "and permanently unlock the gate in this tree"
             )
 
-        for script in ("train_level.py", "train_structure.py", "infer_decomposed.py",
-                       "dacon_submit.py", "train_dann.py", "build_pseudo_labels.py",
-                       "train_self_training.py", "train_cyclegan.py", "translate_sim.py",
-                       "train_two_head.py", "infer_two_head.py"):
-            out, _ = run(root, "uv run python scripts/{0} --submit a.zip".format(script),
+        for script in sorted(exclusive_scripts):
+            out, _ = run(root, "uv run python {0} --submit a.zip".format(script),
                          env_extra={"ACS_RUNTIME_EXEMPT": "measured one-off"})
             if out.strip():
                 failures.append(

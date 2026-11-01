@@ -33,6 +33,7 @@ from tqdm.auto import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ai_co_scientist.config import ensure_utf8_console
+from ai_co_scientist.locks import GPU_LOCK, ResourceBusy, resource_lock
 from ai_co_scientist.sem import GROUPS, LEVELS, load_labels, site_split
 from ai_co_scientist.sem import score_classes as score
 
@@ -118,6 +119,15 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
+    try:
+        with resource_lock(GPU_LOCK):
+            return _run_locked(args)
+    except ResourceBusy as e:
+        ap.error(f"{GPU_LOCK} 사용 중: {e}")
+
+
+def _run_locked(args):
+    """기존 학습·출력 구간은 GPU 락을 보유한 채 실행한다."""
     seed_everything(args.seed)
     cache = Path(args.cache_dir)
     sem = np.load(cache / "real_sem.npy", mmap_mode="r")

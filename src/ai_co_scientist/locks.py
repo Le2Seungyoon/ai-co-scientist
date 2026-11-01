@@ -10,7 +10,6 @@
 같은 자원을 두고 다투므로 기계 단위 경로여야 한다.
 """
 import os
-import subprocess
 import sys
 import tempfile
 import time
@@ -21,58 +20,110 @@ from pathlib import Path
 LOCK_STALE = 120.0  # 레지스트리용. 이보다 오래된 락은 죽은 프로세스가 남긴 것으로 보고 회수한다
 LOCK_STALE_RESOURCE = 6 * 3600  # GPU 같은 자원용. 학습은 1.5-2시간 지속되므로 6시간이 합리적이다
 _LOCK_DIRNAME = "ai-co-scientist-locks"
+GPU_LOCK = "gpu-0"
+DACON_LOCK = "dacon-slot"
 
 
 class ResourceBusy(RuntimeError):
     """다른 보유자가 자원을 들고 있다. `timeout=0`에서는 즉시 난다."""
 
 
-def _read_pid(lock: Path) -> "int | None":
-    """락 토큰(`{uuid}:{pid}`)에서 pid를 뽑는다. 형식이 아니면 None — 회수 여부는 나이만으로 판단한다."""
-    try:
-        token = lock.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return None
+def _parse_token(token: str) -> "tuple[int, str] | None":
+    """신형 uuid:pid:start와 구형 uuid:pid를 모두 읽는다."""
     parts = token.split(":")
-    if len(parts) != 2:
+    if len(parts) not in (2, 3):
         return None
     try:
-        return int(parts[1])
+        pid = int(parts[1])
     except ValueError:
         return None
+    if not 0 < pid <= 0xFFFFFFFF:
+        return None
+    return pid, parts[2] if len(parts) == 3 else ""
 
 
-def _pid_alive(pid: int) -> bool:
-    """pid가 아직 살아있는가. POSIX는 `kill(pid, 0)`, Windows는 `kill` 시그널 경로가 없어 `tasklist`로 잰다.
+def _linux_process_identity(pid: int) -> "tuple[bool, int | None]":
+    """comm 안의 괄호를 건너뛰고 /proc stat의 22번째 필드(starttime)를 읽는다."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False, None
+    except OSError:
+        return True, None  # 조회 불가를 사망으로 오인하지 않는다
+    try:
+        return True, int(raw[raw.rfind(")") + 2:].split()[19])
+    except (ValueError, IndexError):
+        return True, None
 
-    확인 자체가 실패하면(도구 없음, 권한 등) False — 나이 기반 회수로 폴백한다. 영원히 막는 것보다
-    잘못 회수하는 쪽이 덜 나쁘다: 토큰 검증이 이미 "잘못 회수돼도 새 보유자의 락은 지우지 않는다"를
-    보장한다.
-    """
-    if sys.platform == "win32":
+
+def _windows_process_identity(pid: int) -> "tuple[bool, int | None]":
+    """정확한 PID의 실행 상태와 FILETIME 생성시각을 조회한다 (문자열 부분일치 금지)."""
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        time_ptr = ctypes.POINTER(wintypes.FILETIME)
+        kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [time_ptr] * 4
+        kernel.GetProcessTimes.restype = wintypes.BOOL
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.GetExitCodeProcess.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return ctypes.get_last_error() != 87, None  # ERROR_INVALID_PARAMETER만 사망
         try:
-            out = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                capture_output=True, text=True, timeout=5,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return str(pid) in out.stdout
+            exit_code = wintypes.DWORD()
+            if not kernel.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True, None
+            if exit_code.value != 259:  # STILL_ACTIVE; 종료 뒤 핸들만 남은 프로세스 제외
+                return False, None
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if not kernel.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+                return True, None
+            return True, (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        finally:
+            kernel.CloseHandle(handle)
+    except (OSError, AttributeError, ValueError):
+        return True, None
+
+
+def _process_identity(pid: int) -> "tuple[bool, int | None]":
+    """같은 PID라도 시작시각이 다르면 재사용된 별개 프로세스다."""
+    if sys.platform == "win32":
+        return _windows_process_identity(pid)
+    if sys.platform.startswith("linux"):
+        return _linux_process_identity(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # 존재는 하지만 시그널 권한이 없다 — 살아있는 것으로 본다
+        return False, None
     except OSError:
+        return True, None
+    return True, None
+
+
+def _pid_alive(pid: int) -> bool:
+    return _process_identity(pid)[0]
+
+
+def _token_still_alive(token: str) -> bool:
+    """읽었던 바로 그 토큰의 소유자만 검사한다. 조회 불가는 보수적으로 점유로 본다."""
+    parsed = _parse_token(token)
+    if parsed is None:
         return False
-    return True
-
-
-def _holder_still_alive(lock: Path) -> bool:
-    """스테일 판정된 락의 보유자가 여전히 살아있는가. pid를 못 읽으면 False(기존 나이 기반 동작)."""
-    pid = _read_pid(lock)
-    return pid is not None and _pid_alive(pid)
+    pid, start = parsed
+    alive, actual = _process_identity(pid)
+    if not alive:
+        return False
+    try:
+        expected = int(start)
+    except ValueError:
+        return True  # 구형·시작시각 없는 토큰은 PID 생존으로 판단
+    return actual is None or actual == expected
 
 
 @contextmanager
@@ -90,7 +141,8 @@ def file_lock(lock_path, *, timeout: float, stale: float = LOCK_STALE):
     lock.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + timeout
     fd = None
-    token = f"{uuid.uuid4().hex}:{os.getpid()}"  # 이 획득을 식별하는 고유 토큰
+    _, start = _process_identity(os.getpid())
+    token = f"{uuid.uuid4().hex}:{os.getpid()}:{start if start is not None else ''}"
     while fd is None:
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -100,19 +152,37 @@ def file_lock(lock_path, *, timeout: float, stale: float = LOCK_STALE):
             # 놓친다. `exists()`와 `stat()` 사이에 해제되면 FileNotFoundError(TOCTOU).
             try:
                 age = time.time() - lock.stat().st_mtime
+                # 새 락을 읽는 핸들은 Windows에서 소유자의 unlink를 방해할 수 있다.
+                judged_token = (lock.read_text(encoding="utf-8", errors="replace").strip()
+                                if age > stale else "")
             except FileNotFoundError:
                 continue  # 방금 해제됐다 — 즉시 재시도
-            if age > stale and not _holder_still_alive(lock):
-                lock.unlink(missing_ok=True)  # 죽은 프로세스가 남긴 락 회수
-                continue
+            except OSError:
+                age, judged_token = 0.0, ""  # 못 읽으면 회수하지 않고 데드라인을 검사
+            if age > stale and not _token_still_alive(judged_token):
+                try:
+                    current = lock.read_text(encoding="utf-8", errors="replace").strip()
+                    # 비교와 unlink 사이의 작은 경쟁 창은 남는다 (원자적 compare-delete 없음).
+                    if current == judged_token:
+                        lock.unlink(missing_ok=True)
+                        continue
+                except OSError:
+                    pass  # 재확인·삭제 불가도 대기 한도 안에서 ResourceBusy로 종료
             # age > stale인데 보유자가 살아있으면 회수하지 않는다 — 정당하게 오래 걸리거나
             # 디버거에 멈춘 보유자가 자원을 쥔 채로 새 보유자와 부딪히는 것을 막는다.
             if time.monotonic() >= deadline:
                 raise ResourceBusy(f"자원이 사용 중이다({timeout}초 대기): {lock}")
             time.sleep(0.05)
     try:
-        os.write(fd, token.encode())
+        payload = token.encode()
+        if os.write(fd, payload) != len(payload):
+            raise OSError("incomplete lock token write")
+    except OSError:
         os.close(fd)
+        lock.unlink(missing_ok=True)
+        raise
+    os.close(fd)
+    try:
         yield lock
     finally:
         # 이 획득이 여전히 락 파일을 소유하는지 확인하고, 맞을 때만 unlink한다.

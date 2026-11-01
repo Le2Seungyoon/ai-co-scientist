@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -159,3 +160,45 @@ def test_train_structure_rejects_tampered_manifest_before_opening_cache_arrays(t
     assert proc.returncode != 0
     assert "cache manifest 검증 실패" in proc.stderr
     assert "sim_sem.npy" not in proc.stderr
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_structure_manifest_hashing_finishes_before_gpu_lock(tmp_path, monkeypatch, tamper):
+    # Real translated manifest + real hashes; only the training body is replaced.
+    from tests.test_exclusive_entrypoints import load_script
+
+    cache, manifest = _valid_translated_cache(tmp_path)
+    expected_hash = cyclegan.sha256_file(manifest)
+    if tamper:
+        (cache / "sim_sem.npy").write_bytes(b"changed after manifest")
+    events = []
+    real_hash = cyclegan.sha256_file
+
+    def checked_hash(path):
+        assert "lock" not in events, "H6 hashes must be checked before GPU ownership"
+        events.append("hash")
+        return real_hash(path)
+
+    @contextmanager
+    def acquire(name):
+        assert "hash" in events
+        events.append("lock")
+        yield
+
+    module = load_script(monkeypatch, "train_structure")
+    monkeypatch.setattr(module, "resource_lock", acquire)
+    monkeypatch.setattr(cyclegan, "sha256_file", checked_hash)
+    received = []
+    monkeypatch.setattr(module, "_run_locked", lambda args, provenance: received.append(provenance))
+    monkeypatch.setattr(sys, "argv", ["train_structure", "--cache-dir", str(cache),
+                                     "--cache-manifest", str(manifest)])
+    if tamper:
+        with pytest.raises(SystemExit) as exc:
+            module.main()
+        assert exc.value.code == 2
+        assert "lock" not in events
+        assert received == []
+    else:
+        module.main()
+        assert events[-1] == "lock"
+        assert received[0]["cache_manifest"]["sha256"] == expected_hash

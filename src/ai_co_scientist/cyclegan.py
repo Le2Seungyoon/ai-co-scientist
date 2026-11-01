@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ai_co_scientist.locks import GPU_LOCK as GPU_LOCK
 from ai_co_scientist.sem import map_level_split
 
 # ── 상수 ──────────────────────────────────────────────────────
@@ -65,8 +66,6 @@ LOCAL_PROBE_METHOD = {
     "flag_median_over": SHIFT_MEDIAN_MAX,
     "flag_p95_over": SHIFT_P95_MAX,
 }
-
-GPU_LOCK = "gpu-0"  # 학습·gate·번역의 runtime 구간이 잡는 `locks.resource_lock` 이름 — 기계 단위 1장
 
 ALLOWED_SOURCES = ("sim_sem.npy", "real_sem.npy")  # 변환기 입력으로 허용되는 파일명
 FORBIDDEN_NAMES = ("test_sem.npy", "test_names.json")  # real test — 변환기 학습에 넣으면 안 된다

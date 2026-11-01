@@ -62,12 +62,19 @@ training, so the parallel gain is in analysis, criticism, proposals, and prepari
 experiments still queued.
 
 `engineer` and `executor` hold the SAME tools. What separates them is
-`.agent-hooks/block_runtime_commands.py`, which guards five scripts in two tiers — `exp.py` as
-a registry writer, and `train_level.py` / `train_structure.py` / `infer_decomposed.py` /
-`dacon_submit.py` as exclusive-resource scripts — wherever `runtime/registry.jsonl` is absent
+`.agent-hooks/block_runtime_commands.py`, whose `REGISTRY_WRITERS` and `EXCLUSIVE` lists own
+the governed set — registry writers and GPU / submission entry points (including posterior
+dumping) — wherever `runtime/registry.jsonl` is absent
 (`probe_level.py` was released: read-only, no `runtime/` writes). That hook cannot see which
 sub-agent issued a command, so it only makes the boundary real in a worktree — **the engineer
 lane must run in a worktree**, or its contract is prose alone.
+
+The hook's companion test enumerates direct `resource_lock()` callers in `scripts/` and checks
+that they match `EXCLUSIVE`. The hook controls where commands run; `src/ai_co_scientist/locks.py`
+controls simultaneous ownership across checkouts through canonical `GPU_LOCK` and `DACON_LOCK`
+names in a shared temporary directory. CLI parsing and CPU validation precede acquisition;
+H6 structure-cache provenance and manifest hashes are verified before the GPU lock. DACON zip
+verification and `--verify-only` stay outside the lock; only the backend submit holds its slot.
 
 **CPU reassembly is a fourth class.** `scripts/assemble_submission.py` rebuilds a submission from
 a dumped ŝ and level posterior with numpy and stdlib only -- no torch, no cv2, so it runs in a

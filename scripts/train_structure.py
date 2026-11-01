@@ -34,6 +34,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
 from ai_co_scientist.config import ensure_utf8_console  # noqa: E402
+from ai_co_scientist.locks import GPU_LOCK, ResourceBusy, resource_lock
 from ai_co_scientist.cyclegan import (  # noqa: E402
     bind_structure_checkpoint,
     require_matching_structure_provenance,
@@ -255,6 +256,16 @@ def main():
     except (OSError, ValueError, json.JSONDecodeError) as e:
         ap.error(f"cache manifest 검증 실패: {e}")
 
+    try:
+        with resource_lock(GPU_LOCK):
+            return _run_locked(args, data_provenance)
+    except ResourceBusy as e:
+        ap.error(f"{GPU_LOCK} 사용 중: {e}")
+
+
+def _run_locked(args, data_provenance):
+    """H6 manifest 해시 검증은 호출부에서 끝내고 그 provenance를 그대로 사용한다."""
+    cache = Path(args.cache_dir)
     seed_everything(args.seed)
     out = args.out or f"runtime/ckpt/structure-{args.arch.replace(':', '_')}.pt"
     sem = np.load(cache / "sim_sem.npy", mmap_mode="r")
