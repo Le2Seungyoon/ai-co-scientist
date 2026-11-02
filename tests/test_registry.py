@@ -1,5 +1,6 @@
 """실험 기록소 — 선보고 강제와 지표 도메인 일치 판정이 핵심 계약."""
 import json
+from pathlib import Path
 
 import pytest
 
@@ -454,3 +455,94 @@ def test_many_runs_may_answer_one_hypothesis(tmp_path):
     assert a["report_id"] != b["report_id"]
     ids = [r["report_id"] for r in registry.load_all(path) if r["hypothesis"] == "H12"]
     assert ids == [a["report_id"], b["report_id"]]
+
+
+# --- 기록소 링크: 승인된 레인이 메인 기록소를 공유한다 ------------------------------------
+
+def _tree(root, with_registry):
+    (root / "runtime").mkdir(parents=True, exist_ok=True)
+    reg = root / "runtime" / "registry.jsonl"
+    if with_registry:
+        reg.write_text("", encoding="utf-8")
+    return reg
+
+
+def _link(lane, target):
+    (lane / "runtime").mkdir(parents=True, exist_ok=True)
+    (lane / "runtime" / registry.LINK_NAME).write_text(str(target) + "\n", encoding="utf-8")
+
+
+def test_default_path_prefers_local_registry(tmp_path, monkeypatch):
+    local = _tree(tmp_path, with_registry=True)
+    monkeypatch.setattr(registry, "project_root", lambda: tmp_path)
+    assert registry._default_path() == local
+
+
+def test_default_path_follows_link_when_no_local_registry(tmp_path, monkeypatch):
+    main_reg = _tree(tmp_path / "main", with_registry=True)
+    lane = tmp_path / "lane"
+    _link(lane, main_reg)
+    monkeypatch.setattr(registry, "project_root", lambda: lane)
+    assert registry._default_path() == main_reg
+
+
+def test_default_path_refuses_broken_link(tmp_path, monkeypatch):
+    lane = tmp_path / "lane"
+    _link(lane, tmp_path / "gone" / "registry.jsonl")
+    monkeypatch.setattr(registry, "project_root", lambda: lane)
+    with pytest.raises(FileNotFoundError, match="registry.link"):
+        registry._default_path()
+
+
+def test_linked_lane_continues_main_ids_without_forking(tmp_path, monkeypatch):
+    main_reg = _tree(tmp_path / "main", with_registry=True)
+    registry.new_report(path=main_reg, **BASE, hypothesis="H0")
+    lane = tmp_path / "lane"
+    _link(lane, main_reg)
+    monkeypatch.setattr(registry, "project_root", lambda: lane)
+
+    rec = registry.new_report(**BASE, hypothesis="H1")
+
+    assert rec["report_id"] == "EXP-002"
+    assert len(registry.load_all(main_reg)) == 2
+    assert not (lane / "runtime" / "registry.jsonl").exists()
+
+
+def test_write_link_points_lane_at_this_trees_registry(tmp_path, monkeypatch):
+    main_reg = _tree(tmp_path / "main", with_registry=True)
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    monkeypatch.setattr(registry, "project_root", lambda: tmp_path / "main")
+
+    link = registry.write_link(lane)
+
+    assert link == lane / "runtime" / registry.LINK_NAME
+    assert Path(link.read_text(encoding="utf-8").strip()) == main_reg.resolve()
+
+
+def test_write_link_refuses_without_a_real_registry(tmp_path, monkeypatch):
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    monkeypatch.setattr(registry, "project_root", lambda: tmp_path / "empty")
+    with pytest.raises(FileNotFoundError, match="메인 체크아웃"):
+        registry.write_link(lane)
+
+
+def test_write_link_refuses_to_propagate_from_a_linked_lane(tmp_path, monkeypatch):
+    main_reg = _tree(tmp_path / "main", with_registry=True)
+    lane_a = tmp_path / "lane_a"
+    _link(lane_a, main_reg)
+    lane_b = tmp_path / "lane_b"
+    lane_b.mkdir()
+    monkeypatch.setattr(registry, "project_root", lambda: lane_a)
+    with pytest.raises(FileNotFoundError, match="메인 체크아웃"):
+        registry.write_link(lane_b)
+
+
+def test_write_link_refuses_lane_with_its_own_registry(tmp_path, monkeypatch):
+    _tree(tmp_path / "main", with_registry=True)
+    lane = tmp_path / "lane"
+    _tree(lane, with_registry=True)
+    monkeypatch.setattr(registry, "project_root", lambda: tmp_path / "main")
+    with pytest.raises(FileExistsError, match="가려진다"):
+        registry.write_link(lane)
