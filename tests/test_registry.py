@@ -546,3 +546,28 @@ def test_write_link_refuses_lane_with_its_own_registry(tmp_path, monkeypatch):
     monkeypatch.setattr(registry, "project_root", lambda: tmp_path / "main")
     with pytest.raises(FileExistsError, match="가려진다"):
         registry.write_link(lane)
+
+
+def test_cli_link_issues_link_into_worktree(tmp_path, monkeypatch, capsys):
+    main_reg = _tree(tmp_path / "main", with_registry=True)
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    monkeypatch.setattr(registry, "project_root", lambda: tmp_path / "main")
+    cli = _load_exp_cli()
+    monkeypatch.setattr("sys.argv", ["exp.py", "link", str(lane)])
+
+    cli.main()
+
+    assert "linked" in capsys.readouterr().out
+    link = lane / "runtime" / registry.LINK_NAME
+    assert Path(link.read_text(encoding="utf-8").strip()) == main_reg.resolve()
+
+
+def test_cli_link_refusal_is_a_clean_exit(tmp_path, monkeypatch):
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    monkeypatch.setattr(registry, "project_root", lambda: tmp_path / "empty")
+    cli = _load_exp_cli()
+    monkeypatch.setattr("sys.argv", ["exp.py", "link", str(lane)])
+    with pytest.raises(SystemExit, match="링크 발급 거부"):
+        cli.main()

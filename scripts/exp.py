@@ -8,6 +8,8 @@
             값이 다른 키를 덮어쓰려면 --replace-key KEY, 통째 교체는 --replace)
   리더보드: python scripts/exp.py lb EXP-001 --public 7.35 --private 7.34
   판정:    python scripts/exp.py verdict EXP-001 "기준선"
+  링크:    python scripts/exp.py link <worktree>
+           (메인 체크아웃에서, 오케스트레이터가 레인 계획을 승인할 때 — 링크가 곧 실행 허가)
   조회:    python scripts/exp.py list | show EXP-001 | render
 """
 import argparse
@@ -59,6 +61,8 @@ def main():
     sh = sub.add_parser("show")
     sh.add_argument("report_id")
     sub.add_parser("render")
+    ln = sub.add_parser("link", help="승인된 레인 worktree에 메인 기록소 링크 발급 (메인 체크아웃에서)")
+    ln.add_argument("worktree")
 
     a = ap.parse_args()
     if a.cmd == "new":
@@ -102,6 +106,12 @@ def main():
         out = project_root() / load_config()["paths"]["registry_doc"]
         out.write_text(registry.render_markdown(), encoding="utf-8")
         print(f"rendered → {out}")
+    elif a.cmd == "link":
+        try:
+            link = registry.write_link(a.worktree)
+        except (FileNotFoundError, FileExistsError) as e:
+            raise SystemExit(f"링크 발급 거부: {e}") from e
+        print(f"linked → {link}")
 
 
 if __name__ == "__main__":
