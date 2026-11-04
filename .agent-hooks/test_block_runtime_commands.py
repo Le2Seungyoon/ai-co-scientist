@@ -81,6 +81,12 @@ def make_tree(with_registry):
     return root
 
 
+def write_link(root, target):
+    os.makedirs(os.path.join(root, "runtime"), exist_ok=True)
+    with open(os.path.join(root, "runtime", "registry.link"), "w", encoding="utf-8") as f:
+        f.write(target + "\n")
+
+
 def load_hook_module():
     spec = importlib.util.spec_from_file_location("block_runtime_commands", HOOK)
     module = importlib.util.module_from_spec(spec)
@@ -205,12 +211,49 @@ def main():
                 if name == "resource_lock":
                     exclusive_scripts.add("scripts/" + filename)
     check("resource-locking entry points are non-empty", bool(exclusive_scripts))
-    check("every resource-locking entry point is governed by EXCLUSIVE",
-          exclusive_scripts == set(hook_mod.EXCLUSIVE),
-          repr(sorted(exclusive_scripts.symmetric_difference(hook_mod.EXCLUSIVE))))
+    check("every resource-locking entry point is governed by EXCLUSIVE or MAIN_ONLY",
+          exclusive_scripts == set(hook_mod.EXCLUSIVE) | set(hook_mod.MAIN_ONLY),
+          repr(sorted(exclusive_scripts.symmetric_difference(
+              set(hook_mod.EXCLUSIVE) | set(hook_mod.MAIN_ONLY)))))
     for script in sorted(exclusive_scripts):
         out, _ = run(worktree, "uv run python " + script)
         check("enumerated entry point denied: " + script, denied(out), out[:120] or "silent")
+
+    print("registry link -- an approved lane executes, but never submits")
+    link_main = make_tree(with_registry=True)
+    linked = make_tree(with_registry=False)
+    write_link(linked, os.path.join(link_main, "runtime", "registry.jsonl"))
+    for cmd in (
+        "uv run python scripts/train_structure.py --arch mlp",
+        "uv run python scripts/infer_decomposed.py --submit runtime/submissions/a.zip",
+        "uv run python scripts/exp.py result EXP-001 --val {}",
+    ):
+        out, rc = run(linked, cmd)
+        check(f"linked lane: passes {cmd.split()[3]}", not denied(out), out[:120])
+        check("linked lane: exits 0", rc == 0, f"rc={rc}")
+
+    out, _ = run(linked, "uv run python scripts/dacon_submit.py runtime/submissions/a.zip")
+    check("linked lane: submission still denied", denied(out), out[:120] or "silent")
+    check("main-only deny offers no escape hatch", "ACS_RUNTIME_EXEMPT" not in out, out[:160])
+    check("main-only deny names the orchestrator and the user", "orchestrator" in out and
+          "user" in out, out[:200])
+    out, _ = run(linked, "uv run python scripts/dacon_submit.py a.zip",
+                 env_extra={"ACS_RUNTIME_EXEMPT": "urgent resubmit"})
+    check("escape hatch does NOT unlock submission", denied(out), out[:120] or "silent")
+
+    out, _ = run(main_tree, "uv run python scripts/dacon_submit.py runtime/submissions/a.zip")
+    check("main checkout: submission passes", not denied(out), out[:120])
+
+    broken = make_tree(with_registry=False)
+    write_link(broken, os.path.join(broken, "gone", "registry.jsonl"))
+    out, _ = run(broken, "uv run python scripts/train_level.py")
+    check("broken link: denied, not silently run", denied(out), out[:120] or "silent")
+    check("broken link deny names the re-issue command", "exp.py link" in out, out[:200])
+    out, _ = run(broken, "uv run python scripts/exp.py new --title x")
+    check("broken link: registry writer denied too", denied(out), out[:120] or "silent")
+
+    out, _ = run(worktree, "uv run python scripts/train_level.py")
+    check("unlinked worktree deny points at the approval link", "registry.link" in out, out[:300])
 
     print("grade split -- what unlocks in a registry-less tree, and what stays guarded")
     with tempfile.TemporaryDirectory() as root:  # no registry.jsonl = a worktree
@@ -234,7 +277,7 @@ def main():
                 "and permanently unlock the gate in this tree"
             )
 
-        for script in sorted(exclusive_scripts):
+        for script in sorted(exclusive_scripts - set(hook_mod.MAIN_ONLY)):
             out, _ = run(root, "uv run python {0} --submit a.zip".format(script),
                          env_extra={"ACS_RUNTIME_EXEMPT": "measured one-off"})
             if out.strip():

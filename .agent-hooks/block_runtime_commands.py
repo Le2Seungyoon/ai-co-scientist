@@ -5,15 +5,16 @@ See `.agents/rules/enforcement.md` -> Hook contracts and
 `.agents/rules/architecture.md` -> Parallel execution contract.
 
   Event     PreToolUse (Bash) only. It DENIES; the advisory counterpart is check_rules_size.py.
-  Governed  The commands in GUARDED (REGISTRY_WRITERS + EXCLUSIVE), which all read or write
+  Governed  The commands in GUARDED (REGISTRY_WRITERS + EXCLUSIVE + MAIN_ONLY), which all read or write
             `runtime/` -- graded by why they are guarded, not by one blanket reason.
             REGISTRY_WRITERS (`scripts/exp.py`) would fork the experiment registry.
             EXCLUSIVE (`train_level.py`, `train_structure.py`, `infer_decomposed.py`,
             `train_dann.py`, `build_pseudo_labels.py`, `train_self_training.py`,
             `train_cyclegan.py`, `translate_sim.py`, `train_two_head.py`, `infer_two_head.py`,
-            `dump_level_proba.py`, `dacon_submit.py`) need a resource the main worktree owns:
-            the single 8 GB GPU, or
-            the finite DACON submission quota.
+            `dump_level_proba.py`) need a resource the main worktree owns:
+            the single 8 GB GPU (serialized across trees by the gpu-0 resource lock).
+            MAIN_ONLY (`dacon_submit.py`) spends the DACON quota -- a user decision, so it runs
+            only in the main checkout, and neither a link nor the escape hatch unlocks it.
             `scripts/probe_level.py` (read-only, no
             `runtime/` writes) and `scripts/assemble_submission.py` (CPU-only, writes only its
             own tree) are deliberately NOT guarded. `scripts/legacy/*.py` also touch `runtime/`
@@ -24,12 +25,17 @@ See `.agents/rules/enforcement.md` -> Hook contracts and
             report_id 1 again and fork the registry silently. Registry divergence is worse
             than a lost race: `registry.locked()` locks a per-worktree path, so two worktrees
             never even contend.
+            A worktree whose plan the orchestrator approved holds `runtime/registry.link` (one
+            line: the main registry's absolute path, written by `scripts/exp.py link`). A valid
+            link unlocks REGISTRY_WRITERS and EXCLUSIVE there -- registry writes follow the link
+            and share the main lock. A dangling link is denied with its own reason.
   Failure   Unreadable or unparseable payload -> exit 0, note on stderr. A hook must never
             block an edit for a reason unrelated to what it checks.
   Escape    `ACS_RUNTIME_EXEMPT="<reason>"` in the environment, but ONLY for EXCLUSIVE. A blank
             reason does not pass: the point is to turn a silent bypass into a decision a
             reviewer can see. REGISTRY_WRITERS has NO escape hatch: writing here would itself
             create the sentinel and thereby unlock every other gate in this tree for good.
+            MAIN_ONLY has none either.
   Tests     `test_block_runtime_commands.py`, beside this file.
 
 KNOWN GAP (state it rather than let it pass quietly)
@@ -53,7 +59,7 @@ import sys
 # writing here CREATES the sentinel, which would permanently unlock the gate in that tree.
 REGISTRY_WRITERS = ("scripts/exp.py",)
 
-# Exclusive resources: the single 8 GB GPU, and the finite DACON submission quota.
+# Exclusive resources: the single 8 GB GPU.
 EXCLUSIVE = (
     "scripts/train_level.py",
     "scripts/train_structure.py",
@@ -66,17 +72,23 @@ EXCLUSIVE = (
     "scripts/translate_sim.py",
     "scripts/train_two_head.py",
     "scripts/infer_two_head.py",
-    "scripts/dacon_submit.py",
 )
+
+# The DACON submission quota is finite and spending it is the USER's decision, relayed by the
+# orchestrator -- not a resource a lane may take by holding a lock. So it runs only where the real
+# registry lives (the main checkout), a registry link does not unlock it, and there is no escape
+# hatch: a lane that could submit would be taking a user decision for itself.
+MAIN_ONLY = ("scripts/dacon_submit.py",)
 
 # `scripts/probe_level.py` is deliberately absent: it reads with mmap_mode="r" and writes
 # nothing under runtime/, so it has no registry-fork path. With no cache in the tree `np.load`
 # fails loudly -- there is no silent-corruption route to guard against.
 # `scripts/assemble_submission.py` is absent for the same reason: it writes only its own tree.
-GUARDED = REGISTRY_WRITERS + EXCLUSIVE
+GUARDED = REGISTRY_WRITERS + EXCLUSIVE + MAIN_ONLY
 
 EXEMPT_VAR = "ACS_RUNTIME_EXEMPT"
 SENTINEL = os.path.join("runtime", "registry.jsonl")
+LINK = os.path.join("runtime", "registry.link")
 
 REASON_REGISTRY = (
     "This tree has no {sentinel}. Two situations look identical to this gate -- tell them "
@@ -105,6 +117,28 @@ REASON_EXCLUSIVE = (
     "-- .agents/rules/architecture.md -> Parallel execution contract"
 )
 
+REASON_MAIN_ONLY = (
+    "`{hit}` spends the finite DACON submission quota, and submitting is the user's decision. "
+    "It runs only in the MAIN checkout, by the orchestrator, after the user approves. A lane "
+    "builds and verifies the zip (`verify_submission()`), reports it, and stops there. There is "
+    "no escape hatch: a lane that could submit would be taking a user decision for itself. "
+    "-- .agents/rules/architecture.md -> Parallel execution contract"
+)
+
+REASON_BROKEN_LINK = (
+    "This tree's {link} points at `{target}`, which is not a file. The link is how an approved "
+    "lane reaches the main registry, so `{hit}` would run against nothing -- or start a fresh "
+    "registry at report_id 1. Ask the orchestrator to re-issue it from the main checkout: "
+    "`uv run python scripts/exp.py link <this worktree>`. "
+    "-- .agents/rules/architecture.md -> Parallel execution contract"
+)
+
+LINK_HINT = (
+    " If this is a lane whose plan the orchestrator approved, the approval is incomplete: the "
+    "orchestrator writes runtime/registry.link into this worktree (`scripts/exp.py link`), "
+    "which unlocks both tiers here."
+)
+
 
 def project_root():
     """`__file__`-based, not cwd: this file is `<root>/.agent-hooks/`."""
@@ -126,7 +160,7 @@ def deny(message):
 def guarded_hit(command):
     """Return (guarded script, kind) the command *executes*, or (None, None).
 
-    `kind` is "registry" or "exclusive" -- the deny reason and whether the escape hatch
+    `kind` is "registry", "exclusive" or "main_only" -- the deny reason and whether the escape hatch
     applies both turn on it.
 
     A match requires an invocation token -- `uv run` or a `python`/`pythonX.Y` token -- to START
@@ -156,8 +190,30 @@ def guarded_hit(command):
         escaped = re.escape(script).replace("/", r"[/\\]")
         pattern = r"(?:^|[;&|\n])\s*(?:uv\s+run|python[\w.]*)\b[^;&|\n]*" + escaped
         if re.search(pattern, command):
-            return script, ("registry" if script in REGISTRY_WRITERS else "exclusive")
+            if script in REGISTRY_WRITERS:
+                return script, "registry"
+            if script in MAIN_ONLY:
+                return script, "main_only"
+            return script, "exclusive"
     return None, None
+
+
+def linked_registry(root):
+    """(state, target) of `<root>/runtime/registry.link`: absent, valid, or broken.
+
+    Broken is its own state, not "absent": a lane whose link dangles was approved once, and
+    falling back to "no registry here" would print the wrong reason for the denial."""
+    path = os.path.join(root, LINK)
+    if not os.path.exists(path):
+        return "absent", None
+    try:
+        with open(path, encoding="utf-8") as f:
+            target = f.read().strip()
+    except OSError:
+        return "broken", path
+    if target and os.path.isfile(target):
+        return "valid", target
+    return "broken", target or path
 
 
 def main():
@@ -174,18 +230,30 @@ def main():
     if not hit:
         return
 
-    if os.path.exists(os.path.join(project_root(), SENTINEL)):
+    root = project_root()
+    if os.path.exists(os.path.join(root, SENTINEL)):
+        return
+
+    if kind == "main_only":
+        deny(REASON_MAIN_ONLY.format(hit=hit))
+        return
+
+    state, target = linked_registry(root)
+    if state == "valid":
+        return
+    if state == "broken":
+        deny(REASON_BROKEN_LINK.format(link=LINK.replace("\\", "/"), target=target, hit=hit))
         return
 
     sentinel = SENTINEL.replace("\\", "/")
     if kind == "registry":
-        deny(REASON_REGISTRY.format(sentinel=sentinel, hit=hit))
+        deny(REASON_REGISTRY.format(sentinel=sentinel, hit=hit) + LINK_HINT)
         return
 
     if os.environ.get(EXEMPT_VAR, "").strip():
         return
 
-    deny(REASON_EXCLUSIVE.format(sentinel=sentinel, hit=hit, var=EXEMPT_VAR))
+    deny(REASON_EXCLUSIVE.format(sentinel=sentinel, hit=hit, var=EXEMPT_VAR) + LINK_HINT)
 
 
 if __name__ == "__main__":
