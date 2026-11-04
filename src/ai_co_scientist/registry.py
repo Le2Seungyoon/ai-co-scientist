@@ -53,10 +53,17 @@ def _default_path() -> Path:
     link = local.with_name(LINK_NAME)
     if not link.exists():
         return local
-    target = Path(link.read_text(encoding="utf-8").strip())
-    if not target.is_file():
+    try:
+        raw = link.read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):  # UnicodeDecodeError는 ValueError — 깨진 링크로 취급
+        raw = ""
+    target = Path(raw) if raw else None
+    # 훅(block_runtime_commands.linked_registry)과 같은 규칙: 절대경로 + registry.jsonl + 파일.
+    if target is None or not (
+            target.is_absolute() and target.name == local.name and target.is_file()):
         raise FileNotFoundError(
-            f"{link}가 가리키는 기록소가 없다: {target} — 메인 체크아웃에서 "
+            f"{link}가 가리키는 기록소가 유효하지 않다: {raw or '<empty>'} — 절대경로의 "
+            f"{local.name} 파일이어야 한다. 메인 체크아웃에서 "
             "`scripts/exp.py link <worktree>`로 다시 발급할 것")
     return target
 

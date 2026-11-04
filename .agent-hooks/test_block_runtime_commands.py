@@ -248,9 +248,41 @@ def main():
     write_link(broken, os.path.join(broken, "gone", "registry.jsonl"))
     out, _ = run(broken, "uv run python scripts/train_level.py")
     check("broken link: denied, not silently run", denied(out), out[:120] or "silent")
+    check("broken link deny is the broken-link reason", "which is not a file" in out, out[:200])
     check("broken link deny names the re-issue command", "exp.py link" in out, out[:200])
+    check("broken link deny is not the unlinked hint", "approval is incomplete" not in out,
+          out[:200])
+    check("broken link deny states there is no escape hatch", "no escape hatch" in out, out[:300])
+    out, _ = run(broken, "uv run python scripts/train_level.py",
+                 env_extra={"ACS_RUNTIME_EXEMPT": "reason"})
+    check("broken link: escape hatch does not release it", denied(out), out[:120] or "silent")
     out, _ = run(broken, "uv run python scripts/exp.py new --title x")
     check("broken link: registry writer denied too", denied(out), out[:120] or "silent")
+
+    # Every invalid link shape is refused as BROKEN (own reason, no escape hatch), never
+    # treated as absent (which the escape hatch would release) and never as valid.
+    plain_file = os.path.join(link_main, "runtime", "notes.txt")
+    with open(plain_file, "w", encoding="utf-8") as f:
+        f.write("x")
+    shapes = {}
+    shapes["undecodable"] = None
+    shapes["relative"] = os.path.join("runtime", "registry.jsonl")
+    shapes["self-referential"] = os.path.join("runtime", "registry.link")
+    shapes["empty"] = ""
+    shapes["non-registry basename"] = plain_file
+    for label, target in shapes.items():
+        bad = make_tree(with_registry=False)
+        if target is None:
+            os.makedirs(os.path.join(bad, "runtime"))
+            with open(os.path.join(bad, "runtime", "registry.link"), "wb") as f:
+                f.write(bytes([0xFF, 0xFE]) + "x".encode("utf-16-le"))
+        else:
+            write_link(bad, target)
+        for cmd in ("uv run python scripts/train_level.py", "uv run python scripts/exp.py new"):
+            out, rc = run(bad, cmd, env_extra={"ACS_RUNTIME_EXEMPT": "reason"})
+            check(f"{label} link: denied as broken ({cmd.split()[3]})",
+                  denied(out) and "which is not a file" in out and rc == 0,
+                  out[:160] or f"silent rc={rc}")
 
     out, _ = run(worktree, "uv run python scripts/train_level.py")
     check("unlinked worktree deny points at the approval link", "registry.link" in out, out[:300])

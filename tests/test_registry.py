@@ -486,6 +486,32 @@ def test_default_path_follows_link_when_no_local_registry(tmp_path, monkeypatch)
     assert registry._default_path() == main_reg
 
 
+@pytest.mark.parametrize("kind", ["relative", "non_registry", "undecodable", "empty"])
+def test_default_path_refuses_invalid_link_targets(tmp_path, monkeypatch, kind):
+    lane = tmp_path / "lane"
+    (lane / "runtime").mkdir(parents=True)
+    link = lane / "runtime" / registry.LINK_NAME
+    if kind == "relative":
+        # the relative target EXISTS from cwd -- it must still be refused (not absolute)
+        _tree(tmp_path / "cwd", with_registry=True)
+        monkeypatch.chdir(tmp_path / "cwd")
+        link.write_text("runtime/registry.jsonl
+", encoding="utf-8")
+    elif kind == "non_registry":
+        other = tmp_path / "other.txt"
+        other.write_text("x", encoding="utf-8")
+        link.write_text(str(other) + "
+", encoding="utf-8")
+    elif kind == "undecodable":
+        link.write_bytes(b"ÿþ" + "x".encode("utf-16-le"))
+    else:
+        link.write_text("
+", encoding="utf-8")
+    monkeypatch.setattr(registry, "project_root", lambda: lane)
+    with pytest.raises(FileNotFoundError, match="registry.link"):
+        registry._default_path()
+
+
 def test_default_path_refuses_broken_link(tmp_path, monkeypatch):
     lane = tmp_path / "lane"
     _link(lane, tmp_path / "gone" / "registry.jsonl")

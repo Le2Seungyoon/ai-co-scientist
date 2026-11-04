@@ -130,6 +130,7 @@ REASON_BROKEN_LINK = (
     "lane reaches the main registry, so `{hit}` would run against nothing -- or start a fresh "
     "registry at report_id 1. Ask the orchestrator to re-issue it from the main checkout: "
     "`uv run python scripts/exp.py link <this worktree>`. "
+    "There is no escape hatch: a dangling permit is not a permit. "
     "-- .agents/rules/architecture.md -> Parallel execution contract"
 )
 
@@ -209,11 +210,14 @@ def linked_registry(root):
     try:
         with open(path, encoding="utf-8") as f:
             target = f.read().strip()
-    except OSError:
-        return "broken", path
-    if target and os.path.isfile(target):
+    except (OSError, ValueError):  # UnicodeDecodeError is a ValueError: undecodable = broken
+        return "broken", "<unreadable>"
+    # Same rule as registry._default_path: an absolute path to a file named registry.jsonl.
+    # A relative target would resolve against the hook's cwd, not this tree.
+    if (target and os.path.isabs(target) and os.path.basename(target) == "registry.jsonl"
+            and os.path.isfile(target)):
         return "valid", target
-    return "broken", target or path
+    return "broken", target or "<empty>"
 
 
 def main():
