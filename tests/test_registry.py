@@ -495,18 +495,15 @@ def test_default_path_refuses_invalid_link_targets(tmp_path, monkeypatch, kind):
         # the relative target EXISTS from cwd -- it must still be refused (not absolute)
         _tree(tmp_path / "cwd", with_registry=True)
         monkeypatch.chdir(tmp_path / "cwd")
-        link.write_text("runtime/registry.jsonl
-", encoding="utf-8")
+        link.write_text("runtime/registry.jsonl\n", encoding="utf-8")
     elif kind == "non_registry":
         other = tmp_path / "other.txt"
         other.write_text("x", encoding="utf-8")
-        link.write_text(str(other) + "
-", encoding="utf-8")
+        link.write_text(str(other) + "\n", encoding="utf-8")
     elif kind == "undecodable":
-        link.write_bytes(b"ÿþ" + "x".encode("utf-16-le"))
+        link.write_bytes(bytes([0xFF, 0xFE]) + "x".encode("utf-16-le"))
     else:
-        link.write_text("
-", encoding="utf-8")
+        link.write_text("\n", encoding="utf-8")
     monkeypatch.setattr(registry, "project_root", lambda: lane)
     with pytest.raises(FileNotFoundError, match="registry.link"):
         registry._default_path()
