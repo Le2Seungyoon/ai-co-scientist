@@ -63,7 +63,9 @@ that is a stop: escalate to the lane's main agent, don't silently reconcile the 
    **Verify the zip**: 25,988 files and every image's max in {140,150,160,170}
    (0.00 % outside). A zip that fails this is not a result. Report the zip path; the orchestrator
    submits it with `dacon_submit.py` from the main checkout after the user approves.
-5. `uv run python scripts/exp.py render`
+5. Report to the lane's main agent: the `report_id`, the recorded numbers and the verified zip
+   path. Then stop — you never wait on or perform submission, and `scripts/exp.py render` is the
+   orchestrator's, on `develop` only.
 
 **Rules**
 - **Never modify code mid-run.** If a run crashes on a bug, do not fix it and retry — the
