@@ -12,9 +12,10 @@ not a date** — a hypothesis is revisited, and a date would lie about when it w
 
 | Section / front-matter field | Written by | When |
 |---|---|---|
-| 질문 · 조건 · 무엇이 답인가, `status: 계획` | orchestrator | before dispatch, on `main` |
-| 결과 · 관찰 · 판정 · 미검증, `status: 진행중 → 측정됨 → 판정`, `verdict` | the lane | during/after its run |
-| 이관 범위, `registry` (append each issued id) | orchestrator | after merge |
+| 질문, `status: 계획` | orchestrator | before dispatch, on `develop` |
+| 조건 · 무엇이 답인가 | the lane (`researcher`, audited by `reviewer`) | Before Execution; fixed when the orchestrator approves |
+| 결과 · 관찰 · 판정, `status: 진행중 → 측정됨 → 판정`, `verdict` | the lane (`analyst`, audited by `reviewer`) | After Execution |
+| 이관 범위, `registry` (append each issued id) | orchestrator | after merge into `develop` |
 
 **`registry: []` is appended, not drafted.** `EXP-0NN` ids are issued by `new_report` against
 `runtime/registry.jsonl` — the same single-writer reasoning that keeps the registry the original
@@ -75,6 +76,7 @@ closing it unrun — the second is what makes a hypothesis cost nothing.
 
 Two lanes on one hypothesis is a dispatch bug, not a merge bug: the single-writer property above
 is what the automatic merge depends on. Assign one lane per hypothesis, even when that
-hypothesis accumulates several reports. The orchestrator writes 질문 · 조건 · 무엇이 답인가
-**before** dispatch, on `main`, so pre-registration is proved by commit order. How a lane is
-dispatched and driven: `orca-parallel.md`.
+hypothesis accumulates several reports. The orchestrator writes 질문 **before** dispatch, on `develop`; the lane writes 조건 and
+무엇이 답인가, and they are fixed when the orchestrator approves the plan — merge into `develop`
+plus the issued `report_id`, both before any run, so pre-registration is proved by commit order.
+How a lane is dispatched and driven: `orca-parallel.md`.

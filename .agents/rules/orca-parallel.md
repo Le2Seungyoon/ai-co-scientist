@@ -5,7 +5,7 @@
 > lives in `orca-measured.md`. Sub-agents stay the default: reach for a second *session* only when
 > the work must outlive a turn, hold its own approval gate, or hold the GPU while this session
 > keeps planning. Which execution class a dispatched session is, and what it may write:
-> `architecture.md` → Extending the contract to a second Orca session.
+> `architecture.md` → Parallel execution contract (lanes).
 
 ## The lifecycle
 
@@ -117,14 +117,19 @@ answers. Surface it the moment it appears.
 
 ## What goes in a spec
 
-**Open with the approval scope.** State that the user approved this lane, list what is approved
-and what is not, and tell the lane to route new questions through the preamble's `ask`. Measured
-in the sibling repo (custflow, 2026-09-21, same worker-start and one variable): without the scope
-both lanes **asked at their own window and sat idle**; with it both started within a minute.
+**Open with the approval scope.** State what the lane may do on its own (its three phases, its
+own sub-agents, edits in its branch), what the orchestrator approves (the plan, before
+Execution — the lane waits for a `report_id` and a registry link), and what only the user
+approves (DACON submission, Lightning, `develop` → `main`). Tell the lane to route every approval
+request through the preamble's `ask`. After reporting a verified zip the lane waits for the
+orchestrator's reply — the scores, or "deferred" — before the analyst runs. Measured in the
+sibling repo (custflow, 2026-09-21, same worker-start and one variable): without the scope both
+lanes **asked at their own window and sat idle**; with it both started within a minute.
 
-**Approval relayed after the fact does not work, and the lane is right to refuse it** — it is a
-quote the lane cannot verify, and a coordinator rule that makes its own relays authoritative is an
-agent granting itself authority. The scope arrives as part of the task, never as a correction to it.
+**Plan approval is the orchestrator's own authority, named in the spec** — so a lane can verify
+it. What a lane must still refuse is a *relayed user decision*: a quote the lane cannot verify.
+User decisions therefore never travel through a lane — the orchestrator performs them itself
+(it submits; it merges to `main`).
 
 **Contradict the preamble where this machine contradicts it.** The injected contract tells every
 lane to report with `orca orchestration send`; a Codex lane cannot reach that binary here, and
