@@ -18,10 +18,21 @@ Don't skip this even for "small" changes or doc edits.
 
 - New feature: `feature/<name>` · bug fix: `fix/<name>`
 
+## Branch model: `main` protected, `develop` for agents
+
+- `main` is protected: only the user approves a `develop` → `main` merge, and any remote push.
+- `develop` is the agents' integration branch. The orchestrator merges finished lanes into it
+  on its own; the main checkout sits on `develop`.
+- A lane branch (`feature/<name>`) is cut from `develop`, never from `main` or from whatever the
+  main checkout happens to hold.
+
 ## Protected Commands
 
-Do not run without explicit confirmation: `git checkout`/`switch`, `git pull`/`push`, branch
-creation (`checkout -b`, `branch`), `git reset`/`rebase`.
+Do not run without explicit confirmation: `git checkout`/`switch` in the main checkout,
+`git pull`/`push`, `git reset`/`rebase`, and any merge into `main`. **The orchestrator may, on
+its own:** create a lane branch off `develop` and its worktree, and merge a lane into `develop` —
+these are the lane lifecycle, and asking for each would put the user back in the loop the
+contract takes them out of.
 
 **Why prose and not `permissions.deny`**: this is a collaboration convention that protects a shared
 repo — it doesn't hold in every context. A solo admin who authorizes direct git on their own
