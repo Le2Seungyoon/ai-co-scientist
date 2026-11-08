@@ -9,8 +9,9 @@ Capturing Learnings asks *what should outlive this task*.
 down, not just thought: into the PR description when the task becomes a PR, into the completion
 report when it does not. Work that never opens a PR still needs ②.
 
-Where a PR is involved, run it **after** merging the default branch in and **before** you push
-(`git-workflow.md` → Merge main before opening a PR) — gates run on the merged state or they
+Where a PR is involved, run it **after** merging the branch's base in (`develop` for a lane,
+`origin/main` for the `develop` → `main` PR) and **before** you push
+(`git-workflow.md` → Merge the base before opening a PR) — gates run on the merged state or they
 prove nothing.
 
 ## ① Gates — run them, paste the output
