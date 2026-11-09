@@ -77,6 +77,9 @@ def write_link(worktree, target=None) -> Path:
     if not target.is_file():
         raise FileNotFoundError(
             f"링크 대상 기록소가 없다: {target} — 기록소가 있는 메인 체크아웃에서 실행할 것")
+    if not Path(worktree).is_dir():
+        raise FileNotFoundError(
+            f"링크할 worktree 디렉터리가 없다: {worktree} — 레인 worktree를 먼저 만든 뒤 발급할 것")
     local = Path(worktree) / load_config()["paths"]["registry"]
     if local.exists():
         raise FileExistsError(
@@ -104,8 +107,9 @@ def locked(path=None):
     발급하고, 나중 write가 앞선 선보고를 통째로 덮어쓴다(실측 확인). `_write_all`이 파일 전체를
     다시 쓰는 load-modify-write이므로 락 없이는 append조차 안전하지 않다.
 
-    획득 루프는 `locks.file_lock`에 있다. **경로는 의도적으로 트리별이다** — 기록소는 워크트리가
-    복제하지 않는 자원이고, 기계 단위 자원은 `locks.resource_lock`이 맡는다.
+    획득 루프는 `locks.file_lock`에 있다. **락은 해석된 기록소 경로를 따른다**(`_path`) — 링크된
+    레인은 메인 기록소로 해석되므로 메인과 같은 락을 공유하고, report_id가 갈라지지 않는다.
+    기계 단위 자원(GPU)은 `locks.resource_lock`이 맡는다.
 
     `try`는 **획득 한 줄만** 감싼다. `yield`까지 감싸면 본문 안에서 난 `ResourceBusy`(중첩된
     `resource_lock` 등)가 이 락의 타임아웃으로 잘못 보고된다 — 엉뚱한 파일 이름을 댄 채로.

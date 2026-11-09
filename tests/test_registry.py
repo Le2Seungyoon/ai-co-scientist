@@ -562,6 +562,14 @@ def test_write_link_refuses_to_propagate_from_a_linked_lane(tmp_path, monkeypatc
         registry.write_link(lane_b)
 
 
+def test_write_link_refuses_a_missing_worktree(tmp_path, monkeypatch):
+    _tree(tmp_path / "main", with_registry=True)
+    monkeypatch.setattr(registry, "project_root", lambda: tmp_path / "main")
+    with pytest.raises(FileNotFoundError, match="worktree"):
+        registry.write_link(tmp_path / "no_such_lane")
+    assert not (tmp_path / "no_such_lane").exists()
+
+
 def test_write_link_refuses_lane_with_its_own_registry(tmp_path, monkeypatch):
     _tree(tmp_path / "main", with_registry=True)
     lane = tmp_path / "lane"
