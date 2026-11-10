@@ -6,7 +6,8 @@ half proves the deny fires; the must-pass half is what keeps false positives fro
 A test that only ever asserts "it blocked" cannot notice the day the hook blocks everything.
 
 Each scenario needs its own tree because the verdict turns on whether
-`<root>/runtime/registry.jsonl` exists. `CLAUDE_PROJECT_DIR` points the hook at that tree.
+`<root>/runtime/registry.jsonl` exists and whether `<root>/.git` is a directory (main checkout)
+or a file (git worktree). `CLAUDE_PROJECT_DIR` points the hook at that tree.
 
 Stdlib only, no test runner: pytest does not collect this file (`testpaths = ["tests"]`).
 """
@@ -40,8 +41,8 @@ def run(root, command, env_extra=None, raw=None):
 
 def run_no_project_dir(command, env_extra=None):
     """Same as run(), but with CLAUDE_PROJECT_DIR unset -- exercises the __file__ fallback in
-    project_root(). The real repo root may be the main checkout (registry present) or a linked
-    worktree (registry absent), so the expected decision follows that sentinel."""
+    project_root(). The real repo root may be the main checkout (`.git` directory) or a linked
+    worktree (`.git` file), with or without a registry, so the expected decision follows both."""
     env = dict(os.environ)
     env.pop("CLAUDE_PROJECT_DIR", None)
     if env_extra:
@@ -72,8 +73,15 @@ def check(label, condition, detail=""):
         failures.append(label)
 
 
-def make_tree(with_registry):
+def make_tree(with_registry, git=None):
+    """`git`: "dir" = main checkout, "file" = git worktree (`.git` holds `gitdir: ...`), None =
+    no `.git` at all."""
     root = tempfile.mkdtemp()
+    if git == "dir":
+        os.makedirs(os.path.join(root, ".git"))
+    elif git == "file":
+        with open(os.path.join(root, ".git"), "w", encoding="utf-8") as f:
+            f.write("gitdir: /elsewhere/.git/worktrees/lane\n")
     if with_registry:
         os.makedirs(os.path.join(root, "runtime"))
         with open(os.path.join(root, "runtime", "registry.jsonl"), "w") as f:
@@ -96,7 +104,7 @@ def load_hook_module():
 
 def main():
     print("must-block")
-    worktree = make_tree(with_registry=False)
+    worktree = make_tree(with_registry=False, git="file")
     for cmd in (
         "uv run python scripts/train_structure.py --arch mlp",
         "uv run python scripts/train_level.py",
@@ -120,19 +128,36 @@ def main():
     check("deny names the rule file", "architecture.md" in out, out[:120])
     check("registry deny does NOT name the escape hatch -- there is none for it",
           "ACS_RUNTIME_EXEMPT" not in out, out[:120])
-    check("registry deny names the bootstrap path (fresh clone / re-imaged / lost runtime/)",
-          "bootstrap" in out and "mkdir -p runtime" in out, out[:300])
+    check("worktree registry deny does NOT advise creating the sentinel",
+          "mkdir -p runtime" not in out and "bootstrap" not in out, out[:600])
+    check("worktree registry deny points at the approval link", "registry.link" in out and
+          "Do not write it yourself" in out, out[:600])
+    bare_main = make_tree(with_registry=False, git="dir")
+    out, _ = run(bare_main, "uv run python scripts/exp.py new --title x")
+    check("main checkout without registry: denied", denied(out), out[:120] or "silent")
+    check("main checkout registry deny names the bootstrap path (fresh clone / lost runtime/)",
+          "bootstrap" in out and "mkdir -p runtime" in out, out[:600])
+    unknown = make_tree(with_registry=False)
+    out, _ = run(unknown, "uv run python scripts/exp.py new --title x")
+    check("no .git at all: registry deny does NOT advise creating the sentinel",
+          denied(out) and "mkdir -p runtime" not in out, out[:600])
 
     out, _ = run(worktree, "uv run python scripts/train_level.py")
     check("exclusive deny names the rule file", "architecture.md" in out, out[:120])
     check("exclusive deny names the escape hatch", "ACS_RUNTIME_EXEMPT" in out, out[:120])
+    check("exclusive deny says a lane never sets the hatch", "a lane never sets it" in out,
+          out[:600])
+    check("exclusive deny points at approval", "approval" in out and "registry.link" in out,
+          out[:600])
+    check("exclusive deny drops the stale quota / additive-code text",
+          "submission quota" not in out and "additive code" not in out, out[:600])
 
     out, _ = run(worktree, "uv run python scripts/train_level.py",
                  env_extra={"ACS_RUNTIME_EXEMPT": "   "})
     check("empty exemption reason does NOT pass", denied(out), out[:120] or "silent")
 
     print("must-pass")
-    main_tree = make_tree(with_registry=True)
+    main_tree = make_tree(with_registry=True, git="dir")
     out, rc = run(main_tree, "uv run python scripts/train_structure.py --arch mlp")
     check("main worktree: experiment command passes", not denied(out), out[:120])
     check("main worktree: exits 0", rc == 0, f"rc={rc}")
@@ -184,8 +209,10 @@ def main():
     fallback_has_registry = os.path.isfile(
         os.path.join(repo_root, "runtime", "registry.jsonl")
     )
-    check("no CLAUDE_PROJECT_DIR: decision follows fallback root registry sentinel",
-          denied(out) is not fallback_has_registry, out[:120])
+    # A local registry is trusted only where `.git` is not a file (a worktree's is shadowing).
+    fallback_trusted = fallback_has_registry and not os.path.isfile(os.path.join(repo_root, ".git"))
+    check("no CLAUDE_PROJECT_DIR: decision follows fallback root sentinel and .git kind",
+          denied(out) is not fallback_trusted, out[:120])
     check("no CLAUDE_PROJECT_DIR: exits 0", rc == 0, f"rc={rc}")
 
     print("finding 3 -- GUARDED stays tied to reality")
@@ -220,8 +247,8 @@ def main():
         check("enumerated entry point denied: " + script, denied(out), out[:120] or "silent")
 
     print("registry link -- an approved lane executes, but never submits")
-    link_main = make_tree(with_registry=True)
-    linked = make_tree(with_registry=False)
+    link_main = make_tree(with_registry=True, git="dir")
+    linked = make_tree(with_registry=False, git="file")
     write_link(linked, os.path.join(link_main, "runtime", "registry.jsonl"))
     for cmd in (
         "uv run python scripts/train_structure.py --arch mlp",
@@ -244,7 +271,7 @@ def main():
     out, _ = run(main_tree, "uv run python scripts/dacon_submit.py runtime/submissions/a.zip")
     check("main checkout: submission passes", not denied(out), out[:120])
 
-    broken = make_tree(with_registry=False)
+    broken = make_tree(with_registry=False, git="file")
     write_link(broken, os.path.join(broken, "gone", "registry.jsonl"))
     out, _ = run(broken, "uv run python scripts/train_level.py")
     check("broken link: denied, not silently run", denied(out), out[:120] or "silent")
@@ -259,6 +286,53 @@ def main():
     out, _ = run(broken, "uv run python scripts/exp.py new --title x")
     check("broken link: registry writer denied too", denied(out), out[:120] or "silent")
 
+    print("link scope -- a lane records its results; registration stays the orchestrator's")
+    for sub in ("result EXP-001 --val {}", "show EXP-001", "list", "verdict EXP-001 adopt"):
+        cmd = "uv run python scripts/exp.py " + sub
+        out, rc = run(linked, cmd)
+        check(f"linked lane: exp.py {sub.split()[0]} passes", not denied(out) and rc == 0,
+              out[:160] or f"rc={rc}")
+    for sub in ("new --title x", "lb EXP-001 --public 0.5 --private 0.5", "render",
+                "link ../other"):
+        cmd = "uv run python scripts/exp.py " + sub
+        out, rc = run(linked, cmd, env_extra={"ACS_RUNTIME_EXEMPT": "reason"})
+        check(f"linked lane: exp.py {sub.split()[0]} denied as an orchestrator command",
+              denied(out) and "orchestrator command" in out and rc == 0, out[:160] or "silent")
+        check(f"linked lane: exp.py {sub.split()[0]} deny offers no escape hatch",
+              "ACS_RUNTIME_EXEMPT" not in out, out[:300])
+    for cmd in ("uv run python scripts/exp.py", "uv run python scripts/exp.py --help",
+                'uv run python scripts/exp.py "new" --title x',
+                "uv run python scripts/exp.py list; uv run python scripts/exp.py new --title x"):
+        out, _ = run(linked, cmd)
+        check(f"linked lane: undetermined/second subcommand fails closed: {cmd[22:]}",
+              denied(out), out[:160] or "silent")
+    for sub in ("new --title x", "result EXP-001 --val {}", "show EXP-001", "list",
+                "verdict EXP-001 adopt", "lb EXP-001 --public 0.5 --private 0.5", "render",
+                "link ../lane"):
+        out, _ = run(main_tree, "uv run python scripts/exp.py " + sub)
+        check(f"main checkout: exp.py {sub.split()[0]} passes", not denied(out), out[:160])
+
+    print("ruling R13 -- a worktree's own registry is never trusted")
+    shadow = make_tree(with_registry=True, git="file")
+    for cmd in ("uv run python scripts/dacon_submit.py a.zip",
+                "uv run python scripts/train_level.py",
+                "uv run python scripts/exp.py result EXP-001 --val {}",
+                "uv run python scripts/exp.py new --title x"):
+        out, rc = run(shadow, cmd, env_extra={"ACS_RUNTIME_EXEMPT": "reason"})
+        check(f"worktree with own registry: {cmd[22:]} denied",
+              denied(out) and rc == 0, out[:160] or "silent")
+        check("shadow deny names the shadowing reason",
+              "must not hold its own registry" in out and "shadows" in out, out[:300])
+        check("shadow deny offers no escape hatch", "ACS_RUNTIME_EXEMPT" not in out, out[:300])
+    write_link(shadow, os.path.join(link_main, "runtime", "registry.jsonl"))
+    out, _ = run(shadow, "uv run python scripts/train_level.py")
+    check("worktree with own registry AND a valid link: still denied as shadowing",
+          denied(out) and "shadows" in out, out[:300])
+    no_git_main = make_tree(with_registry=True)
+    out, _ = run(no_git_main, "uv run python scripts/dacon_submit.py a.zip")
+    check("sentinel without a .git directory: submission denied", denied(out),
+          out[:120] or "silent")
+
     # Every invalid link shape is refused as BROKEN (own reason, no escape hatch), never
     # treated as absent (which the escape hatch would release) and never as valid.
     plain_file = os.path.join(link_main, "runtime", "notes.txt")
@@ -271,7 +345,7 @@ def main():
     shapes["empty"] = ""
     shapes["non-registry basename"] = plain_file
     for label, target in shapes.items():
-        bad = make_tree(with_registry=False)
+        bad = make_tree(with_registry=False, git="file")
         if target is None:
             os.makedirs(os.path.join(bad, "runtime"))
             with open(os.path.join(bad, "runtime", "registry.link"), "wb") as f:

@@ -20,30 +20,37 @@ See `.agents/rules/enforcement.md` -> Hook contracts and
             own tree) are deliberately NOT guarded. `scripts/legacy/*.py` also touch `runtime/`
             and were considered -- excluded because they are frozen, reproduction-only, and
             never run (`scripts/legacy/README.md`), not because they were overlooked.
-  Verdict   Turns on whether `<project root>/runtime/registry.jsonl` exists. `runtime/` is
-            gitignored, so a git worktree has none -- running `exp.py new` there would issue
-            report_id 1 again and fork the registry silently. Registry divergence is worse
-            than a lost race: `registry.locked()` locks a per-worktree path, so two worktrees
-            never even contend.
-            A worktree whose plan the orchestrator approved holds `runtime/registry.link` (one
-            line: the main registry's absolute path, written by `scripts/exp.py link`). A valid
-            link unlocks REGISTRY_WRITERS and EXCLUSIVE there -- registry writes follow the link
-            and share the main lock. A dangling link is denied with its own reason.
+  Verdict   Turns on two facts about `<project root>`: whether `runtime/registry.jsonl` exists
+            (the sentinel), and whether `.git` is a DIRECTORY (the main checkout) or a FILE (a
+            git worktree). `runtime/` is gitignored, so a worktree has none -- running
+            `exp.py new` there would issue report_id 1 again and fork the registry silently.
+            A worktree holding its own registry is denied outright, whatever the command: it
+            shadows the link and forks ids. MAIN_ONLY additionally requires `.git` to be a
+            directory.
+            A lane whose plan the orchestrator approved holds `runtime/registry.link` (one
+            line: the main registry's absolute path, written by `scripts/exp.py link` from the
+            main checkout). A valid link unlocks EXCLUSIVE and the lane's own `exp.py`
+            subcommands (`result`, `show`, `list`, `verdict`) -- registry writes follow the link
+            and `registry.locked()` locks the resolved registry path, so every linked lane
+            contends on main's lock and report_ids never fork. `new`, `lb`, `render` and `link`
+            stay the orchestrator's. A dangling link is denied with its own reason.
   Failure   Unreadable or unparseable payload -> exit 0, note on stderr. A hook must never
             block an edit for a reason unrelated to what it checks.
   Escape    `ACS_RUNTIME_EXEMPT="<reason>"` in the environment, but ONLY for EXCLUSIVE. A blank
             reason does not pass: the point is to turn a silent bypass into a decision a
-            reviewer can see. REGISTRY_WRITERS has NO escape hatch: writing here would itself
+            reviewer can see. Setting it is the user's or the orchestrator's decision; a lane
+            never sets it. REGISTRY_WRITERS has NO escape hatch: writing here would itself
             create the sentinel and thereby unlock every other gate in this tree for good.
-            MAIN_ONLY has none either.
+            MAIN_ONLY, a shadowing local registry and a broken link have none either.
   Tests     `test_block_runtime_commands.py`, beside this file.
 
 KNOWN GAP (state it rather than let it pass quietly)
     This hook cannot see WHICH sub-agent issued the command -- the PreToolUse payload does not
-    carry the sub-agent identity. So it does not stop an `engineer` from training inside the
-    MAIN worktree; it only makes the boundary real in a registry-less tree. The consequence is
-    a requirement, not a caveat: **the engineer lane must run in a worktree**, or its contract
-    is prose only. And like every hook it sees this session's tool calls -- an IDE terminal
+    carry the sub-agent identity. So it does not stop an agent from training inside the MAIN
+    checkout; it only makes the boundary real in a lane's worktree. The consequence is a
+    requirement, not a caveat: **every lane runs in its own worktree** and the orchestrator
+    runs no sub-agent in main, or the contract is prose only. And like every hook it sees
+    this session's tool calls -- an IDE terminal
     bypasses it entirely. Separately, the matcher itself only looks within one command segment
     (split on `;`, `&`, `|`, newline): `python -V; sh scripts/train_level.py` is not caught,
     because the invocation token and the guarded path sit in different segments. See
@@ -58,6 +65,11 @@ import sys
 # over at 1 and the two truths can never be merged -- the escape hatch does NOT cover this:
 # writing here CREATES the sentinel, which would permanently unlock the gate in that tree.
 REGISTRY_WRITERS = ("scripts/exp.py",)
+
+# What a valid link unlocks of REGISTRY_WRITERS: the lane records its own results. Registering a
+# report (`new`), recording the leaderboard (`lb`), rendering (`render`) and issuing links
+# (`link`) are the orchestrator's, run from the main checkout.
+LANE_EXP_SUBCOMMANDS = ("result", "show", "list", "verdict")
 
 # Exclusive resources: the single 8 GB GPU.
 EXCLUSIVE = (
@@ -88,32 +100,58 @@ GUARDED = REGISTRY_WRITERS + EXCLUSIVE + MAIN_ONLY
 
 EXEMPT_VAR = "ACS_RUNTIME_EXEMPT"
 SENTINEL = os.path.join("runtime", "registry.jsonl")
+GIT = ".git"
 LINK = os.path.join("runtime", "registry.link")
 
 REASON_REGISTRY = (
-    "This tree has no {sentinel}. Two situations look identical to this gate -- tell them "
-    "apart yourself: "
-    "(1) This is a git worktree: `runtime/` is gitignored so it was never copied here. "
-    "Running `{hit}` here would fork the registry -- report_id comes from len(records), so a "
-    "second tree starts over at 1 and the two truths can never be merged. Run registry "
-    "commands in the MAIN worktree, where the registry lives. "
-    "(2) This already IS the main worktree -- a fresh clone, a re-imaged machine, or a "
-    "`runtime/` lost to cleanup -- and there is no other tree to defer to. That is a "
-    "bootstrap, not a fork: create the sentinel yourself, outside this gate, with an empty "
-    "file (`mkdir -p runtime && touch {sentinel}`, no `{hit}` involved); the next `{hit}` run "
-    "then sees zero existing records and starts at report_id 1, same as any other first run. "
-    "There is NO escape hatch through this gate for either case: letting `{hit}` itself "
-    "create {sentinel} would unlock every other gate in this tree for good. "
+    "This tree has no {sentinel} and no runtime/registry.link. "
+    "If this is a git worktree (a lane): `runtime/` is gitignored so it was never copied here, "
+    "and running `{hit}` here would fork the registry -- report_id comes from len(records), so "
+    "a second tree starts over at 1 and the two truths can never be merged. The registry lives "
+    "in the main checkout; a lane reaches it only through the orchestrator's approval link. "
+    "{bootstrap}"
+    "There is NO escape hatch through this gate: letting `{hit}` itself create {sentinel} "
+    "would unlock every other gate in this tree for good. "
     "-- .agents/rules/architecture.md -> Parallel execution contract"
 )
 
+# The bootstrap case of REASON_REGISTRY -- shown only where `.git` is a directory. In a worktree
+# (or a tree whose kind is unknown) the only path forward is approval; advising a lane to create
+# the sentinel would hand it a registry of its own.
+REASON_BOOTSTRAP = (
+    "If instead this IS the main checkout (`.git` is a directory here) -- a fresh clone, a "
+    "re-imaged machine, or a `runtime/` lost to cleanup -- and there is no other tree to defer "
+    "to. That is a bootstrap, not a fork: create the sentinel yourself, outside this gate, with "
+    "an empty file (`mkdir -p runtime && touch {sentinel}`, no `{hit}` involved); the next "
+    "`{hit}` run then sees zero existing records and starts at report_id 1, same as any other "
+    "first run. "
+)
+
 REASON_EXCLUSIVE = (
-    "This tree has no {sentinel} -- it is a git worktree, and `runtime/` is gitignored so it "
-    "was never copied. `{hit}` needs an exclusive resource the MAIN worktree owns: the single "
-    "8 GB GPU, or the finite DACON submission quota. This lane is for additive code, offline "
-    "tests, and CPU reassembly (`scripts/assemble_submission.py`, `scripts/probe_level.py`), "
-    "which are not guarded here. "
-    "Escape hatch: set {var}=\"<reason>\" for this command. "
+    "This tree has no {sentinel} and no runtime/registry.link -- a lane whose plan is not "
+    "approved yet. `{hit}` needs the single 8 GB GPU, which a lane uses only after approval: "
+    "the orchestrator merges the plan, registers it from the main checkout and links this "
+    "worktree (`scripts/exp.py link`). Ask the orchestrator for that approval. "
+    "Escape hatch: {var}=\"<reason>\" exists, but setting it is the user's or the "
+    "orchestrator's decision -- a lane never sets it. "
+    "-- .agents/rules/architecture.md -> Parallel execution contract"
+)
+
+REASON_SHADOW = (
+    "This tree's `.git` is a file -- it is a git worktree -- yet it holds its own {sentinel}. "
+    "A worktree must not hold its own registry: it shadows runtime/registry.link (the registry "
+    "code reads the local file first) and forks report_ids, which can never be merged back. "
+    "`{hit}` is denied here. Delete {sentinel} from this worktree and ask the orchestrator for "
+    "a link (`scripts/exp.py link <this worktree>`, run from the main checkout). "
+    "There is no escape hatch. "
+    "-- .agents/rules/architecture.md -> Parallel execution contract"
+)
+
+REASON_ORCHESTRATOR_EXP = (
+    "`{hit} {sub}` is an orchestrator command. A linked lane may run only `exp.py "
+    "result|show|list|verdict`; `new` (registration at approval), `lb` (leaderboard after "
+    "submission), `render` and `link` are run by the orchestrator from the main checkout. Report "
+    "what you need to the orchestrator instead. There is no escape hatch. "
     "-- .agents/rules/architecture.md -> Parallel execution contract"
 )
 
@@ -136,8 +174,8 @@ REASON_BROKEN_LINK = (
 
 LINK_HINT = (
     " If this is a lane whose plan the orchestrator approved, the approval is incomplete: the "
-    "orchestrator writes runtime/registry.link into this worktree (`scripts/exp.py link`), "
-    "which unlocks both tiers here."
+    "orchestrator writes runtime/registry.link into this worktree (`scripts/exp.py link`, run "
+    "from the main checkout), which unlocks the lane's commands here. Do not write it yourself."
 )
 
 
@@ -199,6 +237,28 @@ def guarded_hit(command):
     return None, None
 
 
+def git_kind(root):
+    """"dir" (main checkout), "file" (git worktree: `.git` holds `gitdir: ...`) or "absent"."""
+    path = os.path.join(root, GIT)
+    if os.path.isdir(path):
+        return "dir"
+    if os.path.isfile(path):
+        return "file"
+    return "absent"
+
+
+def exp_subcommands(command):
+    """The subcommand token after each `scripts/exp.py` invocation in `command`.
+
+    Same segment anchoring as `guarded_hit`. A token that cannot be determined (nothing
+    follows, an option or a quote comes first, the path runs on into other characters) is
+    returned as None, and the caller denies it: fail closed."""
+    escaped = re.escape(REGISTRY_WRITERS[0]).replace("/", r"[/\\]")
+    pattern = (r"(?:^|[;&|\n])\s*(?:uv\s+run|python[\w.]*)\b[^;&|\n]*" + escaped
+               + r"(?:\s+([A-Za-z_]\w*)(?=$|[\s;&|]))?")
+    return [m.group(1) for m in re.finditer(pattern, command)]
+
+
 def linked_registry(root):
     """(state, target) of `<root>/runtime/registry.link`: absent, valid, or broken.
 
@@ -235,23 +295,39 @@ def main():
         return
 
     root = project_root()
-    if os.path.exists(os.path.join(root, SENTINEL)):
+    git = git_kind(root)
+    sentinel = SENTINEL.replace("\\", "/")
+    local = os.path.exists(os.path.join(root, SENTINEL))
+
+    # A worktree's own registry is never trusted: it would shadow the link and fork ids.
+    if local and git == "file":
+        deny(REASON_SHADOW.format(sentinel=sentinel, hit=hit))
         return
 
     if kind == "main_only":
+        if local and git == "dir":
+            return
         deny(REASON_MAIN_ONLY.format(hit=hit))
+        return
+
+    if local:
         return
 
     state, target = linked_registry(root)
     if state == "valid":
+        if kind == "registry":
+            for sub in exp_subcommands(command):
+                if sub not in LANE_EXP_SUBCOMMANDS:
+                    deny(REASON_ORCHESTRATOR_EXP.format(hit=hit, sub=sub or "<undetermined>"))
+                    return
         return
     if state == "broken":
         deny(REASON_BROKEN_LINK.format(link=LINK.replace("\\", "/"), target=target, hit=hit))
         return
 
-    sentinel = SENTINEL.replace("\\", "/")
     if kind == "registry":
-        deny(REASON_REGISTRY.format(sentinel=sentinel, hit=hit) + LINK_HINT)
+        bootstrap = REASON_BOOTSTRAP.format(sentinel=sentinel, hit=hit) if git == "dir" else ""
+        deny(REASON_REGISTRY.format(sentinel=sentinel, hit=hit, bootstrap=bootstrap) + LINK_HINT)
         return
 
     if os.environ.get(EXEMPT_VAR, "").strip():
