@@ -60,15 +60,20 @@ its own sub-agents in three phases.
 
 **Approval is the pre-registration.** The plan is fixed when the orchestrator merges the lane's
 plan commit into `develop` and issues the `report_id` — before any run, so commit order proves
-it. `scripts/exp.py new` runs on the orchestrator's side, in the main checkout; an id issued once
-the outcome is known would be registry data pretending to be pre-registration.
+it. `scripts/exp.py new` runs on the orchestrator's side, in the main checkout, with the lane's
+branch and plan commit as `--source-branch/--source-commit` — never the orchestrator's own HEAD.
+An id issued once the outcome is known would be registry data pretending to be pre-registration.
 
 **The link is the execution permit.** `uv run python scripts/exp.py link <worktree>` writes
 `runtime/registry.link` — the main registry's absolute path. `registry.py` follows it, so writes
 share the main registry's lock and ids never fork. `block_runtime_commands.py` unlocks
-experiment commands only where the real registry or a valid link exists; a dangling link is
-denied with its own reason. **Never create `runtime/registry.jsonl` in a worktree** — it would
-shadow the link.
+experiment commands only in the main checkout (`.git` a directory, registry present) or behind a
+valid link, where `exp.py` is limited to `result|show|list|verdict`; a dangling link is denied
+with its own reason. **A lane never writes, edits or copies `runtime/registry.link`** — only
+`scripts/exp.py link`, run by the orchestrator from the main checkout, does. **Never create
+`runtime/registry.jsonl` in a worktree** — it would shadow the link; the hook denies every guarded
+command there. A lane never sets `ACS_RUNTIME_EXEMPT`; that hatch is the user's or the
+orchestrator's decision.
 
 **File domains inside a lane.** `engineer`: `src/ scripts/ tests/`. `harness-manager`:
 `AGENTS.md`, `.agents/**`, `.agent-hooks/**`, both registrations. `analyst`: the lane's hypothesis
@@ -88,8 +93,10 @@ defers, the analyst reports on validation/holdout only and marks the leaderboard
 "pending".
 
 **Execution environment.** A lane that executes needs `uv sync --group baseline` in its own
-worktree (never a shared `.venv`). Data, caches and checkpoints stay in the main checkout; the
-recipe names their absolute paths. `docs/experiment-registry.md` is rendered (`scripts/exp.py
+worktree (never a shared `.venv`). Inputs (data, caches, prior checkpoints) come from the main
+checkout by the absolute paths the recipe names; outputs are named per `report_id` and written to
+the lane's own `runtime/`, kept until the lane is merged and the orchestrator copies what must
+survive — never overwrite shared paths in main. `docs/experiment-registry.md` is rendered (`scripts/exp.py
 render`) on `develop` by the orchestrator, never in a lane — two lanes rendering it would
 conflict on a generated file.
 

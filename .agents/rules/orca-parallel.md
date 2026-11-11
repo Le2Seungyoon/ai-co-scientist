@@ -2,10 +2,10 @@
 
 > **Orca-only**, measured on **1.4.206 / Windows, 2026-09-21**. Behaviour claims carry their own
 > date; anything unmeasured says so, and the evidence behind the rules here — probe by probe —
-> lives in `orca-measured.md`. Sub-agents stay the default: reach for a second *session* only when
-> the work must outlive a turn, hold its own approval gate, or hold the GPU while this session
-> keeps planning. Which execution class a dispatched session is, and what it may write:
-> `architecture.md` → Parallel execution contract (lanes).
+> lives in `orca-measured.md`. Every hypothesis is a lane — an Orca worker session in its own
+> worktree; sub-agents run only inside a lane, never in the orchestrator. What a lane runs, what
+> the orchestrator approves, and what each may write: `architecture.md` → Parallel execution
+> contract (lanes).
 
 ## The lifecycle
 
@@ -72,8 +72,8 @@ uv run python .agent-hooks/orca_mailbox_relay.py --mailbox <dir> --interval 3   
 ```
 
 **`--mailbox` has no default, deliberately.** One directory has to be shared by every lane and the
-coordinator, so a path derived from `__file__` would break it per worktree — the flaw
-`architecture.md` names for `registry.locked()`. It must also sit under a root the lane's sandbox
+coordinator, so a path derived from `__file__` would resolve to a different directory in each
+worktree and the lanes would never meet. It must also sit under a root the lane's sandbox
 trusts, which is why a machine-level temp directory is wrong here and right in `locks.py`.
 `runtime/lane-mailbox/` works: gitignored, so lane traffic never dirties the tree.
 
@@ -121,7 +121,8 @@ answers. Surface it the moment it appears.
 own sub-agents, edits in its branch), what the orchestrator approves (the plan, before
 Execution — the lane waits for a `report_id` and a registry link), and what only the user
 approves (DACON submission, Lightning, `develop` → `main`). Tell the lane to route every approval
-request through the preamble's `ask`. After reporting a verified zip the lane waits for the
+request through the preamble's `ask`, and that a lane never sets `ACS_RUNTIME_EXEMPT` — the
+hatch is the user's or the orchestrator's decision. After reporting a verified zip the lane waits for the
 orchestrator's reply — the scores, or "deferred" — before the analyst runs. Measured in the
 sibling repo (custflow, 2026-09-21, same worker-start and one variable): without the scope both
 lanes **asked at their own window and sat idle**; with it both started within a minute.

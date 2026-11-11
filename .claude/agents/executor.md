@@ -30,8 +30,15 @@ GPU is serialized by the `gpu-0` resource lock, which spans every checkout.
 - **You never submit.** Build the zip, run `verify_submission()`, record the numbers, report the
   path. `dacon_submit.py` runs only in the main checkout, by the orchestrator, after the user
   approves — the hook denies it here with no escape hatch.
-- Data, cache and checkpoints live in the main checkout: the recipe names their absolute paths.
-  Never create `runtime/registry.jsonl` in a worktree.
+- Inputs (data, caches, prior checkpoints) come from the main checkout by the absolute paths the
+  recipe names. Outputs are named per `report_id` and written to this lane's own `runtime/`,
+  kept until the lane is merged and the orchestrator copies what must survive — never overwrite
+  shared paths in main. Never create `runtime/registry.jsonl` in a worktree.
+- A lane never writes, edits or copies `runtime/registry.link` — only `scripts/exp.py link`, run
+  by the orchestrator from the main checkout, does. With the link you may run `exp.py
+  result|show|list|verdict`; `new`, `lb`, `render` and `link` are the orchestrator's.
+- A lane never sets `ACS_RUNTIME_EXEMPT`; that escape hatch is the user's or the orchestrator's
+  decision.
 
 **Order of operations (do not skip step 1):**
 

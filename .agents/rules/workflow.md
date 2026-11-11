@@ -33,7 +33,8 @@ For a **new feature** or a **3+ file patch**, before writing code use `AskUserQu
 whether to apply a superpowers workflow: `brainstorming` (lock intent/design) /
 `test-driven-development` (failing test first) / `verification-before-completion` (gather evidence
 before done). If selected, actually invoke it with the `Skill` tool. Skip for trivial edits /
-1–2 lines / doc-only changes.
+1–2 lines / doc-only changes. Inside a lane, route that question through the preamble's `ask` to
+the orchestrator instead — `AskUserQuestion` there would block the lane on a prompt nobody sees.
 
 ## Bug Fixing
 

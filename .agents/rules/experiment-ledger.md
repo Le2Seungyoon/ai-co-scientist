@@ -63,7 +63,7 @@ an untagged record is invisible to the join and nothing else notices, which is w
 refusal and not a convention. The registry does not validate the id's shape: `H12,H13` would be
 stored as one string, so "exactly one" is a lane contract, not a registry gate.
 
-**`new_report` runs before dispatch, not after the lane reports** — an id issued once the run's
+**`new_report` runs at plan approval, before any run — not after the lane reports** — an id issued once the run's
 outcome is already known is registry data pretending to be pre-registration.
 
 ## Write the "don't run" condition too

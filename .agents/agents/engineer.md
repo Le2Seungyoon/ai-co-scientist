@@ -42,10 +42,11 @@ Three things, together:
 - **You produce no number that enters the registry.** You prove the code runs; you never prove
   it is good. Only the leaderboard knows that, and only `executor` may ask it.
 - **Never run the guarded scripts** — `exp.py` (registry writer), `train_level.py`,
-  `train_structure.py`, `infer_decomposed.py`, `dacon_submit.py` (exclusive-resource). Until the
-  orchestrator links the lane (`runtime/registry.link`), `.agent-hooks/block_runtime_commands.py`
-  denies them here; once linked it unlocks them, so the contract is the only thing holding.
-  Do not lean on the hook.
+  `train_structure.py`, `infer_decomposed.py` (exclusive-resource). Until the orchestrator links
+  the lane (`runtime/registry.link`), `.agent-hooks/block_runtime_commands.py` denies them here;
+  once linked it unlocks the GPU scripts and the lane's `exp.py` subcommands, so the contract is
+  the only thing holding. Do not lean on the hook. `dacon_submit.py` is `MAIN_ONLY`: no link
+  unlocks it — the orchestrator submits from the main checkout after the user approves.
   `probe_level.py` and `scripts/assemble_submission.py` are not guarded — read-only or
   CPU-only, they carry no registry-fork or resource risk.
 - **Never read `data/` to report a measurement.** Real numbers come from `executor` alone.
