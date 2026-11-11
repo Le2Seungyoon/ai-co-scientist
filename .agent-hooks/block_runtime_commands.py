@@ -250,11 +250,14 @@ def git_kind(root):
 def exp_subcommands(command):
     """The subcommand token after each `scripts/exp.py` invocation in `command`.
 
-    Same segment anchoring as `guarded_hit`. A token that cannot be determined (nothing
+    Same segment anchoring as `guarded_hit`, one entry per segment-anchored invocation. The
+    token read is the one after the FIRST `scripts/exp.py` following the invocation token (lazy
+    quantifier) -- the script actually run, not a later mention of the path inside an argument
+    such as `--title "... scripts/exp.py result"`. A token that cannot be determined (nothing
     follows, an option or a quote comes first, the path runs on into other characters) is
     returned as None, and the caller denies it: fail closed."""
     escaped = re.escape(REGISTRY_WRITERS[0]).replace("/", r"[/\\]")
-    pattern = (r"(?:^|[;&|\n])\s*(?:uv\s+run|python[\w.]*)\b[^;&|\n]*" + escaped
+    pattern = (r"(?:^|[;&|\n])\s*(?:uv\s+run|python[\w.]*)\b[^;&|\n]*?" + escaped
                + r"(?:\s+([A-Za-z_]\w*)(?=$|[\s;&|]))?")
     return [m.group(1) for m in re.finditer(pattern, command)]
 

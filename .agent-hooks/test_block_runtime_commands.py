@@ -306,6 +306,24 @@ def main():
         out, _ = run(linked, cmd)
         check(f"linked lane: undetermined/second subcommand fails closed: {cmd[22:]}",
               denied(out), out[:160] or "silent")
+    # The subcommand is read after the FIRST exp.py path in a segment -- the script actually run,
+    # not a later mention of the path inside an argument.
+    out, _ = run(linked, 'uv run python scripts/exp.py new --title "x scripts/exp.py result y"')
+    check("linked lane: exp.py new hiding a later 'exp.py result' mention is denied",
+          denied(out) and "orchestrator command" in out, out[:160] or "silent")
+    out, _ = run(linked, 'uv run python scripts/exp.py result EXP-001 --note "scripts/exp.py"')
+    check("linked lane: exp.py result with a later path mention passes", not denied(out),
+          out[:160])
+    out, _ = run(linked, "uv run python scripts/exp.py result EXP-001 --val {}; "
+                         "uv run python scripts/exp.py new --title x")
+    check("linked lane: chained result; new still denied", denied(out) and
+          "orchestrator command" in out, out[:160] or "silent")
+    mod = load_hook_module()
+    check("exp_subcommands: one entry per segment-anchored invocation",
+          mod.exp_subcommands('uv run python scripts/exp.py list --x "scripts/exp.py new"; '
+                              "python scripts/exp.py show EXP-001") == ["list", "show"],
+          repr(mod.exp_subcommands('uv run python scripts/exp.py list --x "scripts/exp.py new"; '
+                                   "python scripts/exp.py show EXP-001")))
     for sub in ("new --title x", "result EXP-001 --val {}", "show EXP-001", "list",
                 "verdict EXP-001 adopt", "lb EXP-001 --public 0.5 --private 0.5", "render",
                 "link ../lane"):
